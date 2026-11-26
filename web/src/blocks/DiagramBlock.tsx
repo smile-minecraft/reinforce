@@ -12,6 +12,12 @@ function sanitizeSvg(svg: string): string {
   })
 }
 
+interface RenderResult {
+  key: string
+  svg: string | null
+  error: string | null
+}
+
 export function DiagramBlock({
   source,
   syntax,
@@ -26,9 +32,7 @@ export function DiagramBlock({
   const { t } = useTranslation()
   const { resolved } = useTheme()
   const uniqueId = useId().replace(/[^a-zA-Z0-9_-]/g, '')
-  const [renderedSvg, setRenderedSvg] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [result, setResult] = useState<RenderResult | null>(null)
 
   const precompiledSvg = useMemo(() => {
     if (svgCache) return sanitizeSvg(svgCache)
@@ -36,18 +40,13 @@ export function DiagramBlock({
     return null
   }, [svgCache, syntax, source])
 
+  const needsMermaid = !precompiledSvg && syntax === 'mermaid'
+  const renderKey = `${source}::${resolved}`
+
   useEffect(() => {
-    if (precompiledSvg || syntax !== 'mermaid') {
-      setRenderedSvg(null)
-      setError(null)
-      setLoading(false)
-      return
-    }
+    if (!needsMermaid) return
 
     let cancelled = false
-    setLoading(true)
-    setError(null)
-
     import('mermaid')
       .then(async (mod) => {
         if (cancelled) return
@@ -61,23 +60,28 @@ export function DiagramBlock({
         const renderId = `rf-mermaid-${uniqueId}-${resolved}`
         const { svg } = await mermaid.render(renderId, source)
         if (!cancelled) {
-          setRenderedSvg(sanitizeSvg(svg))
-          setLoading(false)
+          setResult({ key: renderKey, svg: sanitizeSvg(svg), error: null })
         }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : t('blocks.diagramError'))
-          setLoading(false)
+          setResult({
+            key: renderKey,
+            svg: null,
+            error: err instanceof Error ? err.message : t('blocks.diagramError'),
+          })
         }
       })
 
     return () => {
       cancelled = true
     }
-  }, [precompiledSvg, syntax, source, resolved, uniqueId, t])
+  }, [needsMermaid, source, resolved, uniqueId, renderKey, t])
 
-  const finalSvg = precompiledSvg ?? renderedSvg
+  const currentResult = result?.key === renderKey ? result : null
+  const finalSvg = precompiledSvg ?? currentResult?.svg ?? null
+  const loading = needsMermaid && !currentResult
+  const error = needsMermaid ? (currentResult?.error ?? null) : null
 
   return (
     <div className="my-3 rounded-xl border border-border bg-surface p-3 sm:p-4">
