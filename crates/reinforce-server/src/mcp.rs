@@ -4,6 +4,7 @@
 //! content and proposals but can never approve or reject a proposal. Both the
 //! stdio transport and the Streamable HTTP transport share this handler.
 
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use axum::extract::{Request, State};
@@ -436,6 +437,7 @@ pub async fn run_stdio(args: McpArgs) -> ApiResult<()> {
         port: 3000,
         db: args.db,
         blobs: args.blobs,
+        fonts: PathBuf::from("./fonts"),
         auth: AuthMode::Single,
         demo: false,
     };
@@ -562,6 +564,7 @@ mod tests {
             port: 3000,
             db: root.join("reinforce.db"),
             blobs: root.join("blobs"),
+            fonts: root.join("fonts"),
             auth: AuthMode::Single,
             demo: false,
         };

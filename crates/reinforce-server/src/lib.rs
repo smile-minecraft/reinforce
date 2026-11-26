@@ -5,6 +5,8 @@ pub mod config;
 pub mod demo;
 pub mod embed;
 pub mod error;
+pub mod export;
+pub mod export_scope;
 pub mod guard;
 pub mod mcp;
 pub mod routes;
@@ -35,6 +37,7 @@ pub async fn run() -> ApiResult<()> {
         config::Command::Mcp(args) => mcp::run_stdio(args).await,
         config::Command::Check(args) => cli::check(args).await,
         config::Command::Import(args) => cli::import(args).await,
+        config::Command::Export(args) => cli::export(args).await,
     }
 }
 

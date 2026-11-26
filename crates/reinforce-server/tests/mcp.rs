@@ -49,6 +49,7 @@ async fn test_state(mode: AuthMode, host: &str, dir: &TestDir) -> (Router<()>, A
         port: 0,
         db: dir.db(),
         blobs: dir.0.join("blobs"),
+        fonts: dir.0.join("fonts"),
         auth: mode,
         demo: false,
     };
@@ -436,6 +437,7 @@ async fn mcp_batch_proposal_flow_is_validated_approved_and_checks_clean() {
         port: 0,
         db: dir.db(),
         blobs: dir.0.join("blobs"),
+        fonts: dir.0.join("fonts"),
         auth: AuthMode::Single,
         demo: false,
     };
