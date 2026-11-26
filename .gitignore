@@ -1,0 +1,29 @@
+# Rust
+/target/
+
+# Web
+node_modules/
+/web/dist/
+*.tsbuildinfo
+
+# Local runtime data
+*.db
+*.db-shm
+*.db-wal
+/blobs/
+/fonts/
+
+# Internal development docs (specs, plans, agent instructions) stay local
+/docs/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.claude/
+
+# Environment & editors
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
