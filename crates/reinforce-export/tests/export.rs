@@ -355,3 +355,20 @@ fn markdown_round_trip_preserves_all_data() {
     let imported = import_markdown(output.path()).unwrap();
     assert_eq!(fixture.input, imported);
 }
+
+#[test]
+fn fonts_in_nested_folders_are_found() {
+    let root = TempDir::new().expect("temp dir");
+    let nested = root.path().join("family").join("regular");
+    std::fs::create_dir_all(&nested).expect("nested font dir");
+    for (index, font) in typst_assets::fonts().enumerate() {
+        std::fs::write(nested.join(format!("font-{index}.ttf")), font).expect("font file");
+    }
+    let fixture = fixture();
+    let bytes = render_pdf(
+        &fixture.input,
+        &options(PdfPreset::Standard, root.path(), true),
+    )
+    .expect("fonts below the fonts directory are loaded");
+    assert_valid_pdf(&bytes, 1);
+}

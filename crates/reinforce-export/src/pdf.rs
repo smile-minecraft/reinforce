@@ -8,14 +8,23 @@ use crate::model::{Error, Result, is_font_file};
 use crate::typst_source::render_typst_source;
 use crate::{ExportInput, PdfOptions};
 
-fn load_fonts(dir: &Path) -> Result<Vec<Vec<u8>>> {
-    let mut fonts = Vec::new();
+/// Font packages usually ship in nested folders (for example `Noto/CJK/`),
+/// so the fonts directory is searched recursively.
+fn collect_fonts(dir: &Path, fonts: &mut Vec<Vec<u8>>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
-        if path.is_file() && is_font_file(&path) {
+        if path.is_dir() {
+            collect_fonts(&path, fonts)?;
+        } else if path.is_file() && is_font_file(&path) {
             fonts.push(std::fs::read(path)?);
         }
     }
+    Ok(())
+}
+
+fn load_fonts(dir: &Path) -> Result<Vec<Vec<u8>>> {
+    let mut fonts = Vec::new();
+    collect_fonts(dir, &mut fonts)?;
     if fonts.is_empty() {
         return Err(Error::NoFonts(dir.to_path_buf()));
     }
