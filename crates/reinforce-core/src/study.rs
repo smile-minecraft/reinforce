@@ -27,6 +27,23 @@ pub struct AttemptLog {
     pub error_tags: Vec<String>,
     pub created_at: Timestamp,
     pub sync_cursor: i64,
+    pub affects_scheduling: bool,
+}
+
+/// Voided questions stay in the append-only log for auditability but must never
+/// influence grading totals or FSRS. The marker is carried in the payload so no
+/// second column is needed.
+pub fn is_voided_attempt(attempt: &AttemptLog) -> bool {
+    attempt
+        .submitted_payload
+        .get("voided")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || attempt
+            .submitted_payload
+            .get("grading_mode")
+            .and_then(Value::as_str)
+            == Some("voided")
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

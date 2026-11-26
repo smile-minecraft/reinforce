@@ -8,8 +8,10 @@ pub mod db;
 pub mod fsrs;
 pub mod hash;
 pub mod primitives;
+pub mod quiz;
 pub mod study;
 pub mod timestamp;
+pub mod weakness;
 
 pub use content::{
     Anchor, ContentBlock, Edge, EdgeEndpoint, ExamSet, GraphNode, KnowledgeCard, Note, Proposal,
@@ -24,9 +26,12 @@ pub use timestamp::Timestamp;
 
 pub use db::Database;
 pub use db::content as content_store;
+pub use db::quiz as quiz_store;
 pub use db::search;
 pub use db::study as study_store;
+pub use quiz::{QuizSession, SessionState};
 pub use study::{AttemptLog, CardScheduling, User, UserCardMeta};
+pub use weakness::WeaknessReport;
 
 /// The Reinforce release version, taken from the workspace `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

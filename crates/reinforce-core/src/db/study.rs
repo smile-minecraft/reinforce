@@ -33,8 +33,9 @@ pub fn append_attempt(connection: &Connection, attempt: &AttemptLog) -> Result<(
     connection.execute(
         "INSERT INTO attempt_logs (
             id, user_id, card_id, direction, session_mode, submitted_payload,
-            is_correct, duration_ms, confidence, error_tags_json, created_at, sync_cursor
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            is_correct, duration_ms, confidence, error_tags_json, created_at, sync_cursor,
+            affects_scheduling
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             attempt.id,
             attempt.user_id,
@@ -48,6 +49,7 @@ pub fn append_attempt(connection: &Connection, attempt: &AttemptLog) -> Result<(
             serde_json::to_string(&attempt.error_tags)?,
             attempt.created_at,
             attempt.sync_cursor,
+            i64::from(attempt.affects_scheduling),
         ],
     )?;
     Ok(())
@@ -61,7 +63,8 @@ pub fn list_attempts(
 ) -> Result<Vec<AttemptLog>> {
     let mut statement = connection.prepare(
         "SELECT id, user_id, card_id, direction, session_mode, submitted_payload,
-                is_correct, duration_ms, confidence, error_tags_json, created_at, sync_cursor
+                is_correct, duration_ms, confidence, error_tags_json, created_at, sync_cursor,
+                affects_scheduling
          FROM attempt_logs
          WHERE user_id = ?1 AND card_id = ?2 AND direction = ?3
          ORDER BY created_at, id",
@@ -80,6 +83,7 @@ pub fn list_attempts(
             error_tags: from_json(&row.get::<_, String>(9)?)?,
             created_at: row.get(10)?,
             sync_cursor: row.get(11)?,
+            affects_scheduling: row.get::<_, i64>(12)? != 0,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
