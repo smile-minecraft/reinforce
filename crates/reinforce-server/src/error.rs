@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::multipart::MultipartRejection;
+use axum::extract::multipart::{Multipart, MultipartRejection};
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::StatusCode;
@@ -190,5 +190,20 @@ where
         let axum::extract::Path(value) =
             axum::extract::Path::<T>::from_request_parts(parts, state).await?;
         Ok(Self(value))
+    }
+}
+
+/// Multipart extractor with the same JSON rejection shape as the other bodies.
+pub struct MultipartBody(pub Multipart);
+
+impl<S> FromRequest<S> for MultipartBody
+where
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let multipart = Multipart::from_request(request, state).await?;
+        Ok(Self(multipart))
     }
 }

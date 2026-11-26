@@ -3,7 +3,7 @@ use std::io::SeekFrom;
 use std::str::FromStr;
 
 use axum::body::Body;
-use axum::extract::{Multipart, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use axum::routing::get;
@@ -27,7 +27,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio_util::io::ReaderStream;
 
 use crate::auth::Principal;
-use crate::error::{ApiError, ApiResult, PathParam, QueryParams};
+use crate::error::{ApiError, ApiResult, MultipartBody, PathParam, QueryParams};
 use crate::state::AppState;
 
 const MAX_UPLOAD_BYTES: u64 = 64 * 1024 * 1024;
@@ -569,16 +569,50 @@ async fn get_anchor(
     Ok(Json(anchor))
 }
 
+struct TempUpload(Option<PathBuf>);
+
+impl TempUpload {
+    fn new(root: &PathBuf) -> Self {
+        Self(Some(
+            root.join(format!(".upload-{}", AppState::new_session_id())),
+        ))
+    }
+
+    async fn publish(&mut self, target: &PathBuf) -> ApiResult<()> {
+        let Some(path) = self.0.clone() else {
+            return Ok(());
+        };
+        if target.exists() {
+            tokio::fs::remove_file(&path).await?;
+        } else {
+            if let Some(parent) = target.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::rename(&path, target).await?;
+        }
+        self.0 = None;
+        Ok(())
+    }
+}
+
+impl Drop for TempUpload {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 async fn upload_resource(
     State(state): State<AppState>,
     principal: Principal,
-    mut multipart: Multipart,
+    MultipartBody(mut multipart): MultipartBody,
 ) -> ApiResult<Json<Resource>> {
     if !principal.is_owner() {
         return Err(ApiError::forbidden("only the owner can upload resources"));
     }
     let mut fields = UploadFields::default();
-    let mut uploaded: Option<(String, PathBuf, u64)> = None;
+    let mut uploaded: Option<(String, TempUpload, u64)> = None;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -586,10 +620,18 @@ async fn upload_resource(
     {
         let name = field.name().unwrap_or_default().to_owned();
         if name == "file" {
-            let temp = state
-                .blobs
-                .join(format!(".upload-{}", AppState::new_session_id()));
-            let mut file = File::create(&temp).await?;
+            if uploaded.is_some() {
+                return Err(ApiError::bad_request(
+                    "file",
+                    "only one file field is allowed",
+                ));
+            }
+            let mut temp = TempUpload::new(&state.blobs);
+            let path = temp
+                .0
+                .clone()
+                .ok_or_else(|| ApiError::internal("missing upload path"))?;
+            let mut file = File::create(&path).await?;
             let mut hasher = Sha256::new();
             let mut size = 0_u64;
             let mut field = field;
@@ -597,8 +639,6 @@ async fn upload_resource(
                 let chunk =
                     chunk.map_err(|error| ApiError::bad_request("file", error.to_string()))?;
                 if size + chunk.len() as u64 > MAX_UPLOAD_BYTES {
-                    drop(file);
-                    let _ = tokio::fs::remove_file(&temp).await;
                     return Err(ApiError::bad_request("file", "upload exceeds 64 MiB"));
                 }
                 hasher.update(&chunk);
@@ -633,26 +673,15 @@ async fn upload_resource(
             }
         }
     }
-    let Some((hash, temp, size)) = uploaded else {
+    let Some((hash, mut temp, size)) = uploaded else {
         return Err(ApiError::bad_request("file", "missing file field"));
     };
     if size == 0 {
-        let _ = tokio::fs::remove_file(&temp).await;
         return Err(ApiError::bad_request("file", "file is empty"));
     }
     let sha256: ContentHash = hash
         .parse()
         .map_err(|error: reinforce_core::Error| ApiError::from(error))?;
-    let target = state.blob_path(sha256.as_str());
-    if let Some(parent) = target.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    if target.exists() {
-        tokio::fs::remove_file(&temp).await?;
-    } else {
-        tokio::fs::rename(&temp, &target).await?;
-    }
-
     let kind = ResourceKind::from_str(fields.kind.as_deref().unwrap_or("image"))
         .map_err(|error| ApiError::bad_request("kind", error.to_string()))?;
     let sensitivity = fields
@@ -671,6 +700,18 @@ async fn upload_resource(
         .map_err(|error: reinforce_core::Error| {
             ApiError::bad_request("export_policy", error.to_string())
         })?;
+    let width = parse_optional_i64(fields.width.as_deref(), "width")?;
+    let height = parse_optional_i64(fields.height.as_deref(), "height")?;
+    let page_count = parse_optional_i64(fields.page_count.as_deref(), "page_count")?;
+    if width.is_some_and(|value| value <= 0) {
+        return Err(ApiError::bad_request("width", "must be greater than zero"));
+    }
+    if height.is_some_and(|value| value <= 0) {
+        return Err(ApiError::bad_request("height", "must be greater than zero"));
+    }
+    if page_count.is_some_and(|value| value < 0) {
+        return Err(ApiError::bad_request("page_count", "must not be negative"));
+    }
     let resource = Resource {
         id: ResourceId::generate(),
         kind,
@@ -678,11 +719,11 @@ async fn upload_resource(
             .title
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| ApiError::bad_request("title", "cannot be empty"))?,
-        sha256,
+        sha256: sha256.clone(),
         byte_size: i64::try_from(size).map_err(|_| ApiError::bad_request("file", "too large"))?,
-        page_count: parse_optional_i64(fields.page_count.as_deref(), "page_count")?,
-        width: parse_optional_i64(fields.width.as_deref(), "width")?,
-        height: parse_optional_i64(fields.height.as_deref(), "height")?,
+        page_count,
+        width,
+        height,
         license: fields.license,
         attribution_url: fields.attribution_url,
         attribution_notice: fields.attribution_notice,
@@ -690,14 +731,16 @@ async fn upload_resource(
         export_policy,
         created_at: Timestamp::now(),
     };
-    let response = resource.clone();
-    state
+    let target = state.blob_path(sha256.as_str());
+    temp.publish(&target).await?;
+    let stored = state
         .with_db(move |database| {
-            content_store::upsert_resource(database.connection(), &resource)?;
-            Ok(())
+            let id = content_store::store_resource(database.connection(), &resource)?;
+            content_store::get_resource(database.connection(), &id)?
+                .ok_or_else(|| ApiError::not_found("resource"))
         })
         .await?;
-    Ok(Json(response))
+    Ok(Json(stored))
 }
 
 fn parse_optional_i64(value: Option<&str>, field: &str) -> ApiResult<Option<i64>> {
@@ -766,8 +809,12 @@ async fn stream_blob(
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type)
+        .header("x-content-type-options", "nosniff")
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_LENGTH, length.to_string());
+    if is_svg_resource(&resource) {
+        builder = builder.header("content-security-policy", "sandbox");
+    }
     if partial {
         builder = builder.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"));
     }
@@ -776,10 +823,14 @@ async fn stream_blob(
         .map_err(|error| ApiError::internal(format!("cannot build response: {error}")))
 }
 
+fn is_svg_resource(resource: &Resource) -> bool {
+    resource.kind == ResourceKind::Image && resource.title.to_lowercase().ends_with(".svg")
+}
+
 fn content_type_for(resource: &Resource) -> HeaderValue {
     let mime = match resource.kind {
         ResourceKind::Image => {
-            if resource.title.to_lowercase().ends_with(".svg") {
+            if is_svg_resource(resource) {
                 "image/svg+xml"
             } else {
                 "image/png"

@@ -1545,3 +1545,184 @@ async fn search_returns_published_results_before_the_limit() {
     assert!(!ids.iter().any(|id| *id == draft_note_id.as_str()));
     assert!(hits.as_array().expect("search hits").len() <= 2);
 }
+
+fn upload_garbage_count(state: &AppState) -> usize {
+    std::fs::read_dir(&state.blobs)
+        .expect("blob directory")
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(".upload-"))
+        .count()
+}
+
+fn duplicate_file_multipart(bytes: &[u8]) -> (String, Vec<u8>) {
+    let boundary = "----reinforce-duplicate-file-boundary";
+    let mut body = Vec::new();
+    for name in ["first", "second"] {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"dup.svg\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+#[tokio::test]
+async fn duplicate_uploads_reuse_the_stored_resource() {
+    let (app, state, _dir) = test_state(AuthMode::Single).await;
+    let (content_type, bytes) = multipart(
+        &[("title", "duplicate.svg"), ("kind", "image")],
+        "duplicate.svg",
+        b"<svg></svg>",
+    );
+    let first = expect_json(
+        call(
+            &app,
+            Method::POST,
+            "/api/resources/upload",
+            Some(&content_type),
+            bytes.clone(),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let second = expect_json(
+        call(
+            &app,
+            Method::POST,
+            "/api/resources/upload",
+            Some(&content_type),
+            bytes,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(first["id"], second["id"]);
+    assert_eq!(upload_garbage_count(&state), 0);
+}
+
+#[tokio::test]
+async fn invalid_uploads_are_rejected_before_creating_blobs() {
+    let (app, state, _dir) = test_state(AuthMode::Single).await;
+    let cases = [
+        (vec![("kind", "image")], b"missing title".as_slice()),
+        (
+            vec![("title", "bad-width.svg"), ("width", "0")],
+            b"bad width".as_slice(),
+        ),
+        (
+            vec![("title", "bad-height.svg"), ("height", "0")],
+            b"bad height".as_slice(),
+        ),
+        (
+            vec![("title", "bad-pages.pdf"), ("page_count", "-1")],
+            b"bad page count".as_slice(),
+        ),
+        (
+            vec![("title", "bad-kind.bin"), ("kind", "unknown")],
+            b"bad kind".as_slice(),
+        ),
+    ];
+    for (fields, bytes) in cases {
+        let field_refs: Vec<(&str, &str)> =
+            fields.iter().map(|(name, value)| (*name, *value)).collect();
+        let (content_type, body) = multipart(&field_refs, "invalid.bin", bytes);
+        assert_eq!(
+            call(
+                &app,
+                Method::POST,
+                "/api/resources/upload",
+                Some(&content_type),
+                body,
+                None,
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let hash = reinforce_core::ContentHash::from_bytes(bytes);
+        assert!(!state.blob_path(hash.as_str()).exists());
+        assert_eq!(upload_garbage_count(&state), 0);
+    }
+
+    let (content_type, body) = duplicate_file_multipart(b"two files");
+    assert_eq!(
+        call(
+            &app,
+            Method::POST,
+            "/api/resources/upload",
+            Some(&content_type),
+            body,
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(upload_garbage_count(&state), 0);
+
+    let response = json_call(
+        &app,
+        Method::POST,
+        "/api/resources/upload",
+        Some(json!({"title": "not multipart"})),
+        None,
+    )
+    .await;
+    let body = expect_json(response, StatusCode::BAD_REQUEST).await;
+    assert_eq!(body["error"]["code"], "invalid_request");
+}
+
+#[tokio::test]
+async fn blob_responses_disable_sniffing_and_sandbox_svg() {
+    let (app, state, _dir) = test_state(AuthMode::Single).await;
+    let (content_type, bytes) = multipart(
+        &[("title", "secure-chart.svg"), ("kind", "image")],
+        "secure-chart.svg",
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+    );
+    let uploaded = expect_json(
+        call(
+            &app,
+            Method::POST,
+            "/api/resources/upload",
+            Some(&content_type),
+            bytes,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let id = uploaded["id"].as_str().expect("resource id");
+    let response = json_call(
+        &app,
+        Method::GET,
+        &format!("/api/resources/{id}/blob"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-content-type-options").unwrap(),
+        "nosniff"
+    );
+    assert_eq!(
+        response.headers().get("content-security-policy").unwrap(),
+        "sandbox"
+    );
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "image/svg+xml"
+    );
+    let _ = &state;
+}
