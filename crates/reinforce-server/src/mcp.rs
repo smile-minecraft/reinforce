@@ -6,6 +6,10 @@
 
 use std::str::FromStr;
 
+use axum::extract::{Request, State};
+use axum::http::header;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use reinforce_core::db::search::{self, SearchHit};
 use reinforce_core::primitives::{ProposalStatus, ResourceKind};
 use reinforce_core::proposal::{
@@ -20,10 +24,15 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::schemars::JsonSchema;
 use rmcp::service::ServiceExt;
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+};
 use rmcp::{ErrorData, tool, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::sync::Arc;
 
+use crate::auth::verify_agent_token;
 use crate::cli;
 use crate::config::{AuthMode, McpArgs, ServeArgs};
 use crate::error::{ApiError, ApiResult};
@@ -440,6 +449,64 @@ pub async fn run_stdio(args: McpArgs) -> ApiResult<()> {
         .await
         .map_err(|error| ApiError::internal(format!("MCP transport stopped: {error}")))
         .map(|_| ())
+}
+
+pub fn http_router(state: AppState) -> axum::Router<AppState> {
+    // HTTP callers act as one shared agent identity: no per-client privilege
+    // difference exists, and approval is never exposed over MCP.
+    let server = McpServer::new(state.clone(), "mcp-http".to_owned());
+    let allowed_hosts = [
+        state.bind_host.clone(),
+        "localhost".to_owned(),
+        "127.0.0.1".to_owned(),
+        "::1".to_owned(),
+    ];
+    let config = StreamableHttpServerConfig::default()
+        .with_allowed_hosts(allowed_hosts)
+        .with_json_response(true);
+    let service = StreamableHttpService::new(
+        move || Ok(server.clone()),
+        Arc::new(LocalSessionManager::default()),
+        config,
+    );
+
+    axum::Router::new()
+        .nest_service("/mcp", service)
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            require_agent_token,
+        ))
+}
+
+async fn require_agent_token(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if state.auth_mode != AuthMode::Invite {
+        return next.run(request).await;
+    }
+
+    let token = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, token)| token.trim())
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned);
+    let Some(token) = token else {
+        return ApiError::unauthorized().into_response();
+    };
+    let valid = state
+        .with_db(move |database| verify_agent_token(database.connection(), &token))
+        .await;
+    match valid {
+        Ok(true) => next.run(request).await,
+        Ok(false) => ApiError::unauthorized().into_response(),
+        Err(error) => error.into_response(),
+    }
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ use state::AppState;
 /// The complete application: every route behind the origin guard.
 pub fn app(state: AppState) -> Router {
     routes::router()
+        .merge(mcp::http_router(state.clone()))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             guard::check_origin,
