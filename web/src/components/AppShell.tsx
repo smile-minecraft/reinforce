@@ -121,31 +121,33 @@ export function AppShell() {
 
           <div className="my-2 border-t border-border" />
 
-          <button
-            type="button"
-            disabled
-            aria-disabled="true"
-            className="flex min-h-11 cursor-not-allowed items-center justify-between rounded-lg px-3 text-sm text-ink-muted/60"
+          <NavLink
+            to="/triage"
+            className={({ isActive }) =>
+              `flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors ${
+                isActive
+                  ? 'bg-accent-soft text-accent'
+                  : 'text-ink-muted hover:bg-subtle hover:text-ink'
+              }`
+            }
           >
-            <span className="flex items-center gap-3">
-              <ClipboardCheck className="h-4 w-4 shrink-0" />
-              <span>{t('nav.triage')}</span>
-            </span>
-            <span className="rounded bg-subtle px-1.5 py-0.5 text-[11px]">{t('app.comingSoon')}</span>
-          </button>
+            <ClipboardCheck className="h-4 w-4 shrink-0" />
+            <span>{t('nav.triage')}</span>
+          </NavLink>
 
-          <button
-            type="button"
-            disabled
-            aria-disabled="true"
-            className="flex min-h-11 cursor-not-allowed items-center justify-between rounded-lg px-3 text-sm text-ink-muted/60"
+          <NavLink
+            to="/export"
+            className={({ isActive }) =>
+              `flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors ${
+                isActive
+                  ? 'bg-accent-soft text-accent'
+                  : 'text-ink-muted hover:bg-subtle hover:text-ink'
+              }`
+            }
           >
-            <span className="flex items-center gap-3">
-              <FileOutput className="h-4 w-4 shrink-0" />
-              <span>{t('nav.export')}</span>
-            </span>
-            <span className="rounded bg-subtle px-1.5 py-0.5 text-[11px]">{t('app.comingSoon')}</span>
-          </button>
+            <FileOutput className="h-4 w-4 shrink-0" />
+            <span>{t('nav.export')}</span>
+          </NavLink>
         </nav>
 
         <div className="border-t border-border p-3 space-y-1.5">
@@ -258,42 +260,66 @@ export function AppShell() {
         aria-label="Mobile navigation"
         className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-border bg-surface/95 backdrop-blur lg:hidden"
       >
-        <div className="mx-auto grid max-w-lg grid-cols-3 gap-1 px-2 pt-1.5">
+        <div className="mx-auto grid max-w-lg grid-cols-5 gap-0.5 px-1.5 pt-1.5">
           <NavLink
             to="/"
             end
             className={({ isActive }) =>
-              `flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg text-xs font-medium ${
+              `flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg px-1 text-[11px] font-medium ${
                 isActive ? 'text-accent' : 'text-ink-muted'
               }`
             }
           >
             <BookOpen className="h-5 w-5" />
-            <span>{t('nav.reading')}</span>
+            <span className="max-w-full truncate">{t('nav.reading')}</span>
           </NavLink>
 
           <NavLink
             to="/study"
             className={({ isActive }) =>
-              `flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg text-xs font-medium ${
+              `flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg px-1 text-[11px] font-medium ${
                 isActive ? 'text-accent' : 'text-ink-muted'
               }`
             }
           >
             <GraduationCap className="h-5 w-5" />
-            <span>{t('nav.study')}</span>
+            <span className="max-w-full truncate">{t('nav.study')}</span>
           </NavLink>
 
           <NavLink
             to="/practical"
             className={({ isActive }) =>
-              `flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg text-xs font-medium ${
+              `flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg px-1 text-[11px] font-medium ${
                 isActive ? 'text-accent' : 'text-ink-muted'
               }`
             }
           >
             <Timer className="h-5 w-5" />
-            <span>{t('nav.practical')}</span>
+            <span className="max-w-full truncate">{t('nav.practical')}</span>
+          </NavLink>
+
+          <NavLink
+            to="/triage"
+            className={({ isActive }) =>
+              `flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg px-1 text-[11px] font-medium ${
+                isActive ? 'text-accent' : 'text-ink-muted'
+              }`
+            }
+          >
+            <ClipboardCheck className="h-5 w-5" />
+            <span className="max-w-full truncate">{t('nav.triageShort')}</span>
+          </NavLink>
+
+          <NavLink
+            to="/export"
+            className={({ isActive }) =>
+              `flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg px-1 text-[11px] font-medium ${
+                isActive ? 'text-accent' : 'text-ink-muted'
+              }`
+            }
+          >
+            <FileOutput className="h-5 w-5" />
+            <span className="max-w-full truncate">{t('nav.exportShort')}</span>
           </NavLink>
         </div>
       </nav>
