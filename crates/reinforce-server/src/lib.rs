@@ -3,6 +3,7 @@ pub mod config;
 pub mod demo;
 pub mod embed;
 pub mod error;
+pub mod guard;
 pub mod routes;
 pub mod state;
 
@@ -12,8 +13,14 @@ use config::Cli;
 use error::ApiResult;
 use state::AppState;
 
-pub fn app() -> Router<AppState> {
+/// The complete application: every route behind the origin guard.
+pub fn app(state: AppState) -> Router {
     routes::router()
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            guard::check_origin,
+        ))
+        .with_state(state)
 }
 
 pub async fn run() -> ApiResult<()> {
@@ -41,7 +48,7 @@ pub async fn run() -> ApiResult<()> {
         config.port,
         config.auth.as_str()
     );
-    axum::serve(listener, app().with_state(state))
+    axum::serve(listener, app(state))
         .await
         .map_err(|error| error::ApiError::internal(format!("server failed: {error}")))
 }

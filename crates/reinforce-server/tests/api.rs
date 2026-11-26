@@ -49,7 +49,7 @@ async fn test_state(mode: AuthMode) -> (TestApp, AppState, TestDir) {
     let state = AppState::open(&config).await.expect("open test state");
     demo::seed(&state).await.expect("seed demo data");
     (
-        reinforce_server::app().with_state(state.clone()),
+        reinforce_server::app(state.clone()),
         state,
         TestDir(directory),
     )
@@ -834,4 +834,105 @@ async fn api_errors_use_the_shared_json_shape() {
     let body = expect_json(response, StatusCode::NOT_FOUND).await;
     assert_eq!(body["error"]["code"], "not_found");
     assert!(body["error"]["message"].is_string());
+}
+
+async fn raw_call(
+    app: &TestApp,
+    method: Method,
+    uri: &str,
+    headers: &[(&str, &str)],
+) -> StatusCode {
+    let mut builder = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = builder
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .expect("build request");
+    app.clone()
+        .oneshot(request)
+        .await
+        .expect("run request")
+        .status()
+}
+
+#[tokio::test]
+async fn single_mode_rejects_foreign_hosts_and_cross_origin_writes() {
+    let (app, _state, _dir) = test_state(AuthMode::Single).await;
+
+    assert_eq!(
+        raw_call(
+            &app,
+            Method::GET,
+            "/api/meta",
+            &[("host", "localhost:3000")]
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        raw_call(
+            &app,
+            Method::GET,
+            "/api/knowledge_cards",
+            &[("host", "rebound.attacker.example:3000")]
+        )
+        .await,
+        StatusCode::FORBIDDEN,
+        "a DNS-rebinding host must not reach the owner's data"
+    );
+    assert_eq!(
+        raw_call(
+            &app,
+            Method::POST,
+            "/api/proposals",
+            &[
+                ("host", "127.0.0.1:3000"),
+                ("origin", "https://attacker.example")
+            ]
+        )
+        .await,
+        StatusCode::FORBIDDEN,
+        "a cross-site page must not write through the owner's local server"
+    );
+    assert_ne!(
+        raw_call(
+            &app,
+            Method::POST,
+            "/api/proposals",
+            &[
+                ("host", "127.0.0.1:3000"),
+                ("origin", "http://127.0.0.1:3000")
+            ]
+        )
+        .await,
+        StatusCode::FORBIDDEN,
+        "same-origin writes from the WebApp still pass the guard"
+    );
+}
+
+#[tokio::test]
+async fn owner_can_upload_files_larger_than_the_default_body_limit() {
+    let (app, _state, _dir) = test_state(AuthMode::Single).await;
+    let pdf = vec![b'%'; 5 * 1024 * 1024];
+    let (content_type, bytes) = multipart(
+        &[("title", "textbook.pdf"), ("kind", "pdf")],
+        "textbook.pdf",
+        &pdf,
+    );
+    let response = call(
+        &app,
+        Method::POST,
+        "/api/resources/upload",
+        Some(&content_type),
+        bytes,
+        None,
+    )
+    .await;
+    assert!(
+        response.status().is_success(),
+        "a 5 MiB upload must be accepted, got {}",
+        response.status()
+    );
 }

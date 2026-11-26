@@ -31,6 +31,8 @@ use crate::error::{ApiError, ApiResult, PathParam, QueryParams};
 use crate::state::AppState;
 
 const MAX_UPLOAD_BYTES: u64 = 64 * 1024 * 1024;
+/// Request body allowance for uploads: the file cap plus room for multipart framing.
+const UPLOAD_BODY_LIMIT: usize = MAX_UPLOAD_BYTES as usize + 1024 * 1024;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -46,7 +48,13 @@ pub fn router() -> Router<AppState> {
         .route("/graph/{kind}/{id}/neighbors", get(graph_neighbors))
         .route("/resources/{id}", get(get_resource))
         .route("/resources/{id}/blob", get(stream_blob))
-        .route("/resources/upload", axum::routing::post(upload_resource))
+        .route(
+            "/resources/upload",
+            axum::routing::post(upload_resource)
+                // The handler enforces the real per-file cap; this only lifts
+                // axum's 2 MiB default so textbook-sized PDFs can reach it.
+                .layer(axum::extract::DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
+        )
         .route("/anchors/{id}", get(get_anchor))
 }
 
