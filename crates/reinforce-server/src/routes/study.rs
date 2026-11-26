@@ -408,11 +408,17 @@ async fn tick_session(
     State(state): State<AppState>,
     PathParam(id): PathParam<String>,
     principal: Principal,
-) -> ApiResult<Json<TickOutcome>> {
+) -> ApiResult<Json<Value>> {
     let mut sessions = sessions(&state)?;
     let slot = slot(&mut sessions, &id, &principal.user_id)?;
     let outcome = slot.session.tick(Timestamp::now())?;
-    Ok(Json(outcome))
+    let mut value = serde_json::to_value(&outcome)?;
+    if let TickOutcome::QuestionTimedOut { index, .. } = &outcome {
+        if let Some(question) = slot.session.questions().get(*index) {
+            value["revealed_question"] = json!(question);
+        }
+    }
+    Ok(Json(value))
 }
 
 async fn submit_answer(

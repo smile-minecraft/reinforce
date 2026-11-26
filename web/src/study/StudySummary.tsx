@@ -2,7 +2,6 @@ import { CheckCircle2, ChevronDown, ChevronUp, Info, Scale, XCircle } from 'luci
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
-import { useQuestion } from '../api/hooks/useQuestions'
 import type {
   AnswerSubmission,
   Confidence,
@@ -46,8 +45,7 @@ function ReviewEntryItem({
 }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
-  const { data: fullQuestion } = useQuestion(entry.question.id, open)
-  const question = fullQuestion ?? entry.question
+  const question = entry.question
 
   const outcome = entry.grading
   const isVoided = outcome?.voided || question.grading_mode === 'voided'
