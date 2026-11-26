@@ -3,7 +3,7 @@ use axum::response::{IntoResponse, Response};
 use rust_embed::Embed;
 
 #[derive(Embed)]
-#[folder = "web/dist"]
+#[folder = "../../web/dist"]
 #[allow_missing = true]
 struct WebAssets;
 
@@ -21,7 +21,10 @@ pub fn serve_spa(path: &str) -> Response {
     } else {
         requested
     };
-    let file = WebAssets::get(candidate).or_else(|| WebAssets::get("index.html"));
+    let (file, content_path) = match WebAssets::get(candidate) {
+        Some(file) => (Some(file), candidate),
+        None => (WebAssets::get("index.html"), "index.html"),
+    };
     let Some(file) = file else {
         return (
             StatusCode::OK,
@@ -33,7 +36,7 @@ pub fn serve_spa(path: &str) -> Response {
         )
             .into_response();
     };
-    let content_type = mime_for(candidate);
+    let content_type = mime_for(content_path);
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)

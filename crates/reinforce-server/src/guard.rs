@@ -39,7 +39,11 @@ fn is_local_hostname(name: &str) -> bool {
 fn host_is_allowed(host: &str, bind_host: &str) -> bool {
     let name = hostname(host);
     let bind = bind_host.trim_start_matches('[').trim_end_matches(']');
-    is_local_hostname(name) || name.trim_start_matches('[').trim_end_matches(']') == bind
+    is_local_hostname(name)
+        || name
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .eq_ignore_ascii_case(bind)
 }
 
 /// Authority of an `Origin` header value such as `http://localhost:3000`.
@@ -53,24 +57,21 @@ fn is_unsafe(method: &Method) -> bool {
 }
 
 pub async fn check_origin(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    let headers = request.headers();
-    let host = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok());
+    let host_value = request.headers().get(header::HOST).cloned();
+    let host = host_value.as_ref().and_then(|value| value.to_str().ok());
 
     if state.auth_mode == AuthMode::Single {
-        if let Some(host) = host {
-            if !host_is_allowed(host, &state.bind_host) {
-                return ApiError::forbidden(format!(
-                    "host {host} is not allowed; open Reinforce through localhost"
-                ))
-                .into_response();
+        match host {
+            Some(host) if host_is_allowed(host, &state.bind_host) => {}
+            _ => {
+                return ApiError::forbidden("a valid local Host header is required")
+                    .into_response();
             }
         }
     }
 
     if is_unsafe(request.method()) {
-        if let Some(origin) = headers.get(header::ORIGIN) {
+        if let Some(origin) = request.headers().get(header::ORIGIN) {
             let same_origin = origin
                 .to_str()
                 .ok()
@@ -102,6 +103,12 @@ mod tests {
         ] {
             assert!(host_is_allowed(host, "127.0.0.1"), "{host}");
         }
+    }
+
+    #[test]
+    fn bind_host_comparison_ignores_case() {
+        assert!(host_is_allowed("LOCALHOST:3000", "localhost"));
+        assert!(host_is_allowed("[::1]:3000", "::1"));
     }
 
     #[test]

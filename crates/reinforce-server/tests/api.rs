@@ -32,6 +32,10 @@ impl Drop for TestDir {
 }
 
 async fn test_state(mode: AuthMode) -> (TestApp, AppState, TestDir) {
+    test_state_with_host(mode, "127.0.0.1").await
+}
+
+async fn test_state_with_host(mode: AuthMode, host: &str) -> (TestApp, AppState, TestDir) {
     let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
         "reinforce-api-test-{}-{sequence}",
@@ -39,7 +43,7 @@ async fn test_state(mode: AuthMode) -> (TestApp, AppState, TestDir) {
     ));
     std::fs::create_dir_all(&directory).expect("create test directory");
     let config = ServeArgs {
-        host: "127.0.0.1".to_owned(),
+        host: host.to_owned(),
         port: 0,
         db: directory.join("test.db"),
         blobs: directory.join("blobs"),
@@ -317,6 +321,7 @@ async fn single_mode_serves_demo_content_and_ranges() {
     let request = Request::builder()
         .method(Method::GET)
         .uri(format!("/api/resources/{BASE_RESOURCE}/blob"))
+        .header(header::HOST, "127.0.0.1")
         .header(header::RANGE, "bytes=10-19")
         .body(Body::empty())
         .expect("range request");
@@ -1829,4 +1834,75 @@ async fn invite_owner_setup_reuses_the_existing_owner_user() {
         .await
         .expect("count users");
     assert_eq!(users, 1);
+}
+
+#[tokio::test]
+async fn spa_fallback_returns_html_content_type() {
+    let (app, _state, _dir) = test_state(AuthMode::Single).await;
+    let response = json_call(&app, Method::GET, "/quiz", None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/html; charset=utf-8"
+    );
+}
+
+#[tokio::test]
+async fn single_mode_rejects_missing_or_invalid_host() {
+    let (app, _state, _dir) = test_state(AuthMode::Single).await;
+
+    let missing = Request::builder()
+        .uri("/api/meta")
+        .body(Body::empty())
+        .expect("request without host");
+    assert_eq!(
+        app.clone()
+            .oneshot(missing)
+            .await
+            .expect("missing host response")
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let invalid = Request::builder()
+        .uri("/api/meta")
+        .header(
+            header::HOST,
+            axum::http::HeaderValue::from_bytes(&[0xff]).expect("invalid host header"),
+        )
+        .body(Body::empty())
+        .expect("request with invalid host");
+    assert_eq!(
+        app.clone()
+            .oneshot(invalid)
+            .await
+            .expect("invalid host response")
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn bind_host_comparison_is_case_insensitive() {
+    let (app, _state, _dir) = test_state_with_host(AuthMode::Single, "Intranet.Example").await;
+    assert_eq!(
+        raw_call(
+            &app,
+            Method::GET,
+            "/api/meta",
+            &[("host", "intranet.example:3000")]
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        raw_call(
+            &app,
+            Method::GET,
+            "/api/meta",
+            &[("host", "attacker.example:3000")]
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
 }
