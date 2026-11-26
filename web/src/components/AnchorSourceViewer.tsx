@@ -4,6 +4,17 @@ import { resourceBlobUrl } from '../api/client'
 import { useAnchor, useResource } from '../api/hooks/useResources'
 import type { Anchor, Resource } from '../api/types'
 
+/** Attribution links come from submitted content, so only plain web URLs become clickable. */
+function isHttpUrl(value: string | null | undefined): value is string {
+  if (!value) return false
+  try {
+    const { protocol } = new URL(value)
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function formatMs(ms: number): string {
   const totalSec = Math.max(0, Math.floor(ms / 1000))
   const m = Math.floor(totalSec / 60)
@@ -166,7 +177,7 @@ export function AnchorSourceViewer({
               {resource.attribution_notice}
             </div>
           )}
-          {resource.attribution_url && (
+          {isHttpUrl(resource.attribution_url) && (
             <a
               href={resource.attribution_url}
               target="_blank"
