@@ -22,17 +22,21 @@ and human review before it is published.
 Requirements: a recent stable Rust toolchain, Node.js 24+ and pnpm 9+.
 
 ```sh
+# WebApp: build it first, the server embeds web/dist
+cd web
+pnpm install
+pnpm build
+cd ..
+
 # Rust workspace
 cargo check --workspace
 cargo test --workspace
 cargo run -p reinforce-server -- serve --demo   # http://127.0.0.1:3000 with sample data
-
-# WebApp
-cd web
-pnpm install
-pnpm dev
-pnpm build
 ```
+
+`web/dist` is not committed. Without it the server shows a placeholder page;
+run `pnpm build` in `web/` and reload. Use `pnpm dev` in `web/` for frontend
+work with hot reload.
 
 The workspace version in the root `Cargo.toml` is the single source of truth
 for every crate, the WebApp package and all documentation.
