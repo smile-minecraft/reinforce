@@ -11,8 +11,10 @@ use reinforce_core::proposal::{
     ApprovalOptions, BatchOperation, SubmitOutcome, approve_batch, batch_from_proposal,
     reject_batch, submit_batch,
 };
-use reinforce_core::validation::{Actor, validate_snapshot};
-use reinforce_core::{BatchPayload, Proposal, ResourceId, Timestamp};
+use reinforce_core::validation::{
+    Actor, ValidationError, ValidationReport, ValidationRule, validate_snapshot,
+};
+use reinforce_core::{BatchPayload, Error as CoreError, Proposal, ResourceId, Timestamp};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -27,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/proposals/{id}/approve", post(approve))
         .route("/proposals/{id}/reject", post(reject))
         .route("/proposals/{id}/pins", patch(adjust_pins))
+        .route("/proposals/{id}/operations/{index}", patch(edit_operation))
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -59,6 +62,17 @@ struct PinAdjustment {
     y: f64,
     label_x: f64,
     label_y: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationPath {
+    id: ProposalId,
+    index: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperationEditRequest {
+    data: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +121,59 @@ async fn get_proposal(
         .with_db(move |database| Ok(content_store::get_proposal(database.connection(), &id)?))
         .await?
         .ok_or_else(|| ApiError::not_found("proposal"))?;
+    Ok(Json(proposal))
+}
+
+async fn edit_operation(
+    State(state): State<AppState>,
+    PathParam(path): PathParam<OperationPath>,
+    principal: Principal,
+    JsonBody(request): JsonBody<OperationEditRequest>,
+) -> ApiResult<Json<Proposal>> {
+    require_owner(&principal)?;
+    let OperationPath { id, index } = path;
+    let proposal = state
+        .with_db(move |database| {
+            let mut proposal = content_store::get_proposal(database.connection(), &id)?
+                .ok_or_else(|| ApiError::not_found("proposal"))?;
+            if proposal.status != ProposalStatus::Pending {
+                return Err(ApiError::conflict("only a pending proposal can be edited"));
+            }
+            let mut payload = batch_from_proposal(&proposal)?;
+            let Some(operation) = payload.operations.get_mut(index) else {
+                return Err(ApiError::not_found("operation"));
+            };
+            operation.data = request.data;
+            let temp_ref = operation.temp_ref.clone();
+            let snapshot = match snapshot_from_payload(&payload) {
+                Ok(snapshot) => snapshot,
+                Err(CoreError::InvalidValue(_, message)) => {
+                    let report = ValidationReport::new(vec![ValidationError {
+                        op_index: Some(index),
+                        temp_ref,
+                        field_path: "data".to_owned(),
+                        rule: ValidationRule::OperationShape,
+                        message,
+                    }]);
+                    return Err(ApiError::validation(report));
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let report = validate_snapshot(&snapshot, database.connection())?;
+            if !report.is_ok() {
+                return Err(ApiError::validation(report));
+            }
+            proposal.payload = serde_json::to_value(&payload)?;
+            proposal.updated_at = Timestamp::now();
+            content_store::update_proposal_payload(
+                database.connection(),
+                &id,
+                &proposal.payload,
+                proposal.updated_at,
+            )?;
+            Ok(proposal)
+        })
+        .await?;
     Ok(Json(proposal))
 }
 
