@@ -46,7 +46,10 @@ fn has_math_content(blocks: &[ContentBlock]) -> bool {
 }
 
 fn needs_math_font(input: &ExportInput) -> bool {
-    input.cards.iter().any(|card| has_math_content(&card.blocks))
+    input
+        .cards
+        .iter()
+        .any(|card| has_math_content(&card.blocks))
         || input.questions.iter().any(|question| {
             has_math_content(&question.stem_blocks)
                 || has_math_content(&question.explanation_blocks)
@@ -74,8 +77,7 @@ pub fn render_pdf(input: &ExportInput, options: &PdfOptions) -> Result<Vec<u8>> 
     let fonts = load_fonts(&options.fonts_dir)?;
     if needs_math_font(input) && !fonts.iter().any(|font| has_math_table(font)) {
         return Err(Error::FontsUnavailable(
-            "the loaded fonts contain no MATH table for the math content in this export"
-                .to_owned(),
+            "the loaded fonts contain no MATH table for the math content in this export".to_owned(),
         ));
     }
 

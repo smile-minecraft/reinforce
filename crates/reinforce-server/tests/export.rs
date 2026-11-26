@@ -765,9 +765,7 @@ async fn api_and_cli_report_missing_math_font() {
     let dir = TestDir::new();
     let fonts_dir = dir.0.join("fonts");
     std::fs::create_dir_all(&fonts_dir).expect("fonts dir");
-    let text_font = typst_assets::fonts()
-        .next()
-        .expect("bundled text font");
+    let text_font = typst_assets::fonts().next().expect("bundled text font");
     std::fs::write(fonts_dir.join("text-only.otf"), text_font).expect("font file");
 
     let state = state(&dir.0, AuthMode::Invite, &fonts_dir).await;
@@ -902,8 +900,7 @@ fn cli_exports_pdf_and_round_trip_markdown_from_demo_bundle() {
         "{}",
         String::from_utf8_lossy(&import.stderr)
     );
-    let import_report: Value =
-        serde_json::from_slice(&import.stdout).expect("import JSON report");
+    let import_report: Value = serde_json::from_slice(&import.stdout).expect("import JSON report");
     assert_eq!(import_report["blobs_written"], 2);
 
     let pdf = dir.0.join("out.pdf");
