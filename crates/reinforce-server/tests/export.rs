@@ -363,6 +363,10 @@ async fn seed_content(state: &AppState) -> ContentFixture {
                     ContentBlock::Markdown {
                         text: "PUBLISHED_VISIBLE".to_owned(),
                     },
+                    ContentBlock::Math {
+                        latex: "\\frac{1}{2}".to_owned(),
+                        display: true,
+                    },
                     ContentBlock::InteractivePins {
                         resource_id: allow.id.clone(),
                         overlay_resource_id: None,
@@ -757,6 +761,51 @@ async fn api_pdf_export_is_inline_and_valid() {
 }
 
 #[tokio::test]
+async fn api_and_cli_report_missing_math_font() {
+    let dir = TestDir::new();
+    let fonts_dir = dir.0.join("fonts");
+    std::fs::create_dir_all(&fonts_dir).expect("fonts dir");
+    let text_font = typst_assets::fonts().next().expect("bundled text font");
+    std::fs::write(fonts_dir.join("text-only.otf"), text_font).expect("font file");
+
+    let state = state(&dir.0, AuthMode::Invite, &fonts_dir).await;
+    let app = reinforce_server::app(state.clone());
+    let owner = setup_owner(&app, &state).await;
+    seed_content(&state).await;
+
+    let response = call(
+        &app,
+        Method::POST,
+        "/api/export",
+        Some(subject_request("pdf", Some("standard"))),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["code"], "fonts_missing");
+    let message = body["error"]["message"].as_str().expect("message");
+    assert!(message.contains("New Computer Modern Math"));
+    assert!(message.contains("CJK"));
+    assert!(!message.contains(dir.0.to_str().unwrap()));
+
+    let db = dir.0.join("test.db");
+    let output = Command::new(env!("CARGO_BIN_EXE_reinforce"))
+        .args(["export", "--format", "pdf", "--preset", "standard"])
+        .args(["--subject", SUBJECT])
+        .args(["--db", db.to_str().unwrap()])
+        .args(["--blobs", dir.0.join("blobs").to_str().unwrap()])
+        .args(["--fonts", fonts_dir.to_str().unwrap()])
+        .args(["--out", dir.0.join("missing-math.pdf").to_str().unwrap()])
+        .output()
+        .expect("run cli export");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("MATH table"), "{stderr}");
+    assert!(!stderr.contains("internal server error"), "{stderr}");
+}
+
+#[tokio::test]
 async fn api_weakness_scope_includes_tests_linked_questions() {
     let dir = TestDir::new();
     let fonts_dir = fonts(&dir.0);
@@ -838,18 +887,10 @@ fn cli_exports_pdf_and_round_trip_markdown_from_demo_bundle() {
     let dir = TestDir::new();
     let fonts_dir = fonts(&dir.0);
     let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo");
-    let bundle_dir = dir.0.join("bundle");
-    std::fs::create_dir_all(bundle_dir.join("assets")).expect("bundle dir");
-    std::fs::copy(bundle.join("batch.jsonl"), bundle_dir.join("bundle.jsonl"))
-        .expect("copy bundle");
-    for asset in ["phase-diagram.svg", "phase-labels.svg"] {
-        std::fs::copy(bundle.join(asset), bundle_dir.join("assets").join(asset))
-            .expect("copy asset");
-    }
     let db = dir.0.join("demo.db");
     let blobs = dir.0.join("blobs");
     let import = Command::new(env!("CARGO_BIN_EXE_reinforce"))
-        .args(["import", bundle_dir.to_str().unwrap(), "--mode", "owner"])
+        .args(["import", bundle.to_str().unwrap(), "--mode", "owner"])
         .args(["--db", db.to_str().unwrap()])
         .args(["--blobs", blobs.to_str().unwrap()])
         .output()
@@ -859,10 +900,12 @@ fn cli_exports_pdf_and_round_trip_markdown_from_demo_bundle() {
         "{}",
         String::from_utf8_lossy(&import.stderr)
     );
+    let import_report: Value = serde_json::from_slice(&import.stdout).expect("import JSON report");
+    assert_eq!(import_report["blobs_written"], 2);
 
     let pdf = dir.0.join("out.pdf");
     let export_pdf = Command::new(env!("CARGO_BIN_EXE_reinforce"))
-        .args(["export", "--format", "pdf", "--preset", "worksheet"])
+        .args(["export", "--format", "pdf", "--preset", "goodnotes"])
         .args(["--subject", "physics", "--out", pdf.to_str().unwrap()])
         .args(["--db", db.to_str().unwrap()])
         .args(["--blobs", blobs.to_str().unwrap()])

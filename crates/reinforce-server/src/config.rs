@@ -44,6 +44,7 @@ pub enum ExportFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ExportPreset {
     Standard,
+    #[value(name = "goodnotes")]
     GoodNotes,
     Worksheet,
 }
@@ -142,5 +143,54 @@ impl ServeArgs {
             );
         }
         Ok(host)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_accepts_spec_preset_names() {
+        for (name, expected) in [
+            ("standard", ExportPreset::Standard),
+            ("goodnotes", ExportPreset::GoodNotes),
+            ("worksheet", ExportPreset::Worksheet),
+        ] {
+            let cli = Cli::try_parse_from([
+                "reinforce",
+                "export",
+                "--format",
+                "pdf",
+                "--preset",
+                name,
+                "--subject",
+                "physics",
+                "--out",
+                "out.pdf",
+            ])
+            .unwrap_or_else(|error| panic!("preset {name} should parse: {error}"));
+            let Command::Export(args) = cli.command else {
+                panic!("expected export command");
+            };
+            assert_eq!(args.preset, Some(expected));
+        }
+    }
+
+    #[test]
+    fn cli_rejects_unknown_preset_names() {
+        let result = Cli::try_parse_from([
+            "reinforce",
+            "export",
+            "--format",
+            "pdf",
+            "--preset",
+            "good-notes",
+            "--subject",
+            "physics",
+            "--out",
+            "out.pdf",
+        ]);
+        assert!(result.is_err());
     }
 }

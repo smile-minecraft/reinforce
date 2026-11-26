@@ -299,15 +299,29 @@ fn resource_image(
     Ok(path)
 }
 
-fn dimensions(resource: &Resource) -> (f64, f64) {
-    let width = 16.0;
-    let height = match (resource.width, resource.height) {
+fn aspect_ratio(resource: &Resource) -> f64 {
+    match (resource.width, resource.height) {
         (Some(width_px), Some(height_px)) if width_px > 0 && height_px > 0 => {
-            width * height_px as f64 / width_px as f64
+            height_px as f64 / width_px as f64
         }
-        _ => 10.0,
-    };
-    (width, height)
+        _ => 0.625,
+    }
+}
+
+/// Place an image at the current column width and return a frame whose inner
+/// coordinates are tied to the actual rendered size, not a fixed centimetre
+/// value. This keeps diagrams inside the GoodNotes annotation margin.
+fn diagram_frame(image_path: &str, aspect: f64, annotations: &str, output: &mut String) {
+    output.push_str("#block(width: 100%, layout(size => {\n");
+    output.push_str("let w = size.width\n");
+    output.push_str(&format!("let h = w * {}\n", number(aspect)));
+    output.push_str("block(width: w, height: h, [\n");
+    output.push_str(&format!(
+        "#image({}, width: w, height: h)\n",
+        escape_typst_string(image_path)
+    ));
+    output.push_str(annotations);
+    output.push_str("])\n}))\n\n");
 }
 
 fn pinned_diagram(
@@ -317,39 +331,32 @@ fn pinned_diagram(
     worksheet: bool,
     output: &mut String,
 ) {
-    let (width, height) = dimensions(resource);
-    output.push_str(&format!(
-        "#block(width: {width}cm, height: {height}cm, fill: white, stroke: 0.5pt + gray, [\n"
-    ));
-    output.push_str(&format!(
-        "#image({}, width: {width}cm, height: {height}cm)\n",
-        escape_typst_string(image_path)
-    ));
+    let mut annotations = String::new();
     for pin in pins {
-        let start_x = pin.x.clamp(0.0, 1.0) * width;
-        let start_y = pin.y.clamp(0.0, 1.0) * height;
-        let end_x = pin.label_x.clamp(0.0, 1.0) * width;
-        let end_y = pin.label_y.clamp(0.0, 1.0) * height;
-        output.push_str(&format!(
-            "#place(top + left, dx: 0cm, dy: 0cm, line(start: ({}cm, {}cm), end: ({}cm, {}cm), stroke: 0.7pt + blue))\n",
+        let start_x = pin.x.clamp(0.0, 1.0);
+        let start_y = pin.y.clamp(0.0, 1.0);
+        let end_x = pin.label_x.clamp(0.0, 1.0);
+        let end_y = pin.label_y.clamp(0.0, 1.0);
+        annotations.push_str(&format!(
+            "#place(top + left, dx: w * ({}), dy: h * ({}), line(start: (0pt, 0pt), end: (w * ({}), h * ({})), stroke: 0.7pt + blue))\n",
             number(start_x),
             number(start_y),
-            number(end_x),
-            number(end_y)
+            number(end_x - start_x),
+            number(end_y - start_y)
         ));
         let label = if worksheet {
             pin.no.to_string()
         } else {
             pin.term_primary.clone()
         };
-        output.push_str(&format!(
-            "#place(top + left, dx: {}cm, dy: {}cm, [#text(size: 9pt, fill: blue, {})])\n",
+        annotations.push_str(&format!(
+            "#place(top + left, dx: w * ({}), dy: h * ({}), [#text(size: 9pt, fill: blue, {})])\n",
             number(end_x),
             number(end_y),
             escape_typst_string(&label)
         ));
     }
-    output.push_str("])\n\n");
+    diagram_frame(image_path, aspect_ratio(resource), &annotations, output);
 }
 
 fn answer_table(pins: &[Pin], output: &mut String) {
@@ -395,25 +402,21 @@ fn render_image_occlusion(
             if path.is_empty() {
                 return Ok(());
             }
-            let (width, height) = dimensions(resource);
-            output.push_str(&format!(
-                "#block(width: {width}cm, height: {height}cm, [\n#image({}, width: {width}cm, height: {height}cm)\n",
-                escape_typst_string(&path)
-            ));
+            let mut annotations = String::new();
             for mask in masks {
-                let x = mask.rect.x.clamp(0.0, 1.0) * width;
-                let y = mask.rect.y.clamp(0.0, 1.0) * height;
-                let w = mask.rect.w.clamp(0.0, 1.0) * width;
-                let h = mask.rect.h.clamp(0.0, 1.0) * height;
-                output.push_str(&format!(
-                    "#place(top + left, dx: {}cm, dy: {}cm, rect(width: {}cm, height: {}cm, fill: rgb(30, 30, 30)))\n",
+                let x = mask.rect.x.clamp(0.0, 1.0);
+                let y = mask.rect.y.clamp(0.0, 1.0);
+                let w = mask.rect.w.clamp(0.0, 1.0);
+                let h = mask.rect.h.clamp(0.0, 1.0);
+                annotations.push_str(&format!(
+                    "#place(top + left, dx: w * ({}), dy: h * ({}), rect(width: w * ({}), height: h * ({}), fill: rgb(30, 30, 30)))\n",
                     number(x),
                     number(y),
                     number(w),
                     number(h)
                 ));
             }
-            output.push_str("])\n\n");
+            diagram_frame(&path, aspect_ratio(resource), &annotations, output);
             Ok(())
         }
     }

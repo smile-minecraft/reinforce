@@ -49,12 +49,16 @@ pub fn empty_export() -> ApiError {
     )
 }
 
-pub fn fonts_missing(path: &Path) -> ApiError {
-    ApiError::new(
+const FONT_GUIDANCE: &str = "export fonts are missing or incomplete: install text fonts, a math font such as New Computer Modern Math, and CJK fonts such as Noto Sans CJK SC or Noto Serif CJK for Chinese content";
+
+pub fn fonts_missing(reason: impl Into<String>) -> ApiError {
+    let mut error = ApiError::new(
         StatusCode::SERVICE_UNAVAILABLE,
         "fonts_missing",
-        format!("no export fonts found in {}", path.display()),
-    )
+        FONT_GUIDANCE,
+    );
+    error.diagnostic = Some(reason.into());
+    error
 }
 
 fn is_font(path: &Path) -> bool {
@@ -83,16 +87,13 @@ fn has_fonts(dir: &Path) -> std::io::Result<bool> {
 
 fn map_export_error(error: ExportError) -> ApiError {
     match error {
-        ExportError::NoFonts(_) => ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "fonts_missing",
-            "no export fonts available",
-        ),
-        ExportError::Io(source) if source.kind() == std::io::ErrorKind::NotFound => ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "fonts_missing",
-            "export fonts directory is missing",
-        ),
+        ExportError::NoFonts(source) => {
+            fonts_missing(format!("no export fonts found in {}", source.display()))
+        }
+        ExportError::FontsUnavailable(reason) => fonts_missing(reason),
+        ExportError::Io(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            fonts_missing("export fonts directory is missing")
+        }
         other => ApiError::internal(format!("export failed: {other}")),
     }
 }
@@ -109,8 +110,17 @@ pub fn render_blocking(input: &ExportInput, job: ExportJob) -> ApiResult<Vec<u8>
             web_base_url,
             viewer_is_owner,
         } => {
-            if !has_fonts(&fonts_dir).map_err(|_| fonts_missing(&fonts_dir))? {
-                return Err(fonts_missing(&fonts_dir));
+            match has_fonts(&fonts_dir) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(fonts_missing(format!(
+                        "no export fonts found in {}",
+                        fonts_dir.display()
+                    )));
+                }
+                Err(error) => {
+                    return Err(fonts_missing(format!("cannot read export fonts: {error}")));
+                }
             }
             render_pdf(
                 input,

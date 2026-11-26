@@ -261,6 +261,49 @@ fn all_presets_produce_valid_pdfs() {
 }
 
 #[test]
+fn diagrams_fit_the_text_column_in_every_preset() {
+    let fixture = fixture();
+    for preset in [
+        PdfPreset::Standard,
+        PdfPreset::GoodNotes,
+        PdfPreset::Worksheet,
+    ] {
+        let source = render_typst_source(
+            &fixture.input,
+            &options(preset, Path::new("unused-fonts"), true),
+        )
+        .unwrap();
+        assert!(
+            source.source.contains("layout(size => {"),
+            "{preset:?} does not measure the text column"
+        );
+        assert!(source.source.contains("let w = size.width"));
+        assert!(source.source.contains("dx: w * ("));
+        for line in source
+            .source
+            .lines()
+            .filter(|line| line.contains("#image("))
+        {
+            assert!(
+                line.contains("width: w") || line.contains("width: 100%"),
+                "fixed image width in {preset:?}: {line}"
+            );
+            assert!(!line.contains("16cm"), "fixed width in {preset:?}: {line}");
+        }
+    }
+    let goodnotes = render_typst_source(
+        &fixture.input,
+        &options(PdfPreset::GoodNotes, Path::new("unused-fonts"), true),
+    )
+    .unwrap();
+    assert!(
+        goodnotes
+            .source
+            .contains("margin: (left: 1.8cm, right: 32%")
+    );
+}
+
+#[test]
 fn malicious_typst_is_escaped_as_text() {
     let fonts = fonts();
     let mut fixture = fixture();
@@ -416,6 +459,20 @@ fn native_math_renders_supported_latex_and_chemistry() {
     let bytes = render_pdf(&input, &options(PdfPreset::Standard, fonts.path(), true))
         .expect("native math must compile into a PDF");
     assert_valid_pdf(&bytes, 1);
+}
+
+#[test]
+fn math_without_a_math_font_returns_fonts_unavailable() {
+    let fonts = TempDir::new().expect("temp dir");
+    let text_font = typst_assets::fonts().next().expect("bundled text font");
+    std::fs::write(fonts.path().join("text-only.otf"), text_font).expect("font file");
+    let input = math_input(r"\frac{1}{2}");
+    let error = render_pdf(&input, &options(PdfPreset::Standard, fonts.path(), true))
+        .expect_err("a math block needs a font with a MATH table");
+    assert!(
+        matches!(error, reinforce_export::Error::FontsUnavailable(_)),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
