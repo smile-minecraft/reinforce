@@ -1,0 +1,15 @@
+[package]
+name = "reinforce-export"
+description = "Typst PDF and lossless Markdown export for Reinforce."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+reinforce-core.workspace = true
+
+[lints]
+workspace = true
