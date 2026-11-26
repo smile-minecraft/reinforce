@@ -11,15 +11,27 @@ repository = "https://github.com/smile-minecraft/reinforce"
 authors = ["The Reinforce Contributors"]
 
 [workspace.dependencies]
+argon2 = { version = "0.6", features = ["getrandom"] }
+axum = { version = "0.8", features = ["multipart"] }
+clap = { version = "4.6", features = ["derive"] }
+futures-util = "0.3"
+pulldown-cmark = { version = "0.13", default-features = false }
+rand = "0.10"
 reinforce-core = { path = "crates/reinforce-core", version = "0.1.0" }
 reinforce-export = { path = "crates/reinforce-export", version = "0.1.0" }
 rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }
-pulldown-cmark = { version = "0.13", default-features = false }
+rust-embed = "8.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
+tokio = { version = "1.54", features = ["fs", "io-util", "macros", "net", "rt-multi-thread"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 typst = { version = "0.15", default-features = false }
 typst-as-lib = { version = "0.18", default-features = false }
 typst-layout = { version = "0.15", default-features = false }
