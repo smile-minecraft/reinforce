@@ -176,7 +176,8 @@ CREATE TABLE IF NOT EXISTS attempt_logs (
     confidence TEXT NOT NULL CHECK (confidence IN ('certain','split','guessed')),
     error_tags_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
-    sync_cursor INTEGER NOT NULL DEFAULT 0
+    sync_cursor INTEGER NOT NULL DEFAULT 0,
+    affects_scheduling INTEGER NOT NULL DEFAULT 1 CHECK (affects_scheduling IN (0,1))
 );
 
 CREATE INDEX IF NOT EXISTS attempt_logs_replay ON attempt_logs (user_id, card_id, direction, created_at);

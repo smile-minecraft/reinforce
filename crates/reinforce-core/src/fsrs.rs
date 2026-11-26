@@ -1,7 +1,7 @@
 use crate::primitives::{
     AttemptDirection, CardId, Confidence, Error, Result, SchedulingState, UserId,
 };
-use crate::study::{AttemptLog, CardScheduling};
+use crate::study::{AttemptLog, CardScheduling, is_voided_attempt};
 use crate::timestamp::Timestamp;
 
 const W: [f64; 19] = [
@@ -104,6 +104,10 @@ pub fn recompute_scheduling(
             ));
         }
 
+        if !attempt.affects_scheduling || is_voided_attempt(attempt) {
+            continue;
+        }
+
         let grade = rating_for_attempt(attempt);
         if reps == 0 {
             stability = W[(grade - 1) as usize];
@@ -187,6 +191,7 @@ mod tests {
             error_tags: vec![],
             created_at,
             sync_cursor: seconds,
+            affects_scheduling: true,
         }
     }
 

@@ -101,6 +101,7 @@ fn attempt_at(
         error_tags: vec![],
         created_at: timestamp.parse().unwrap(),
         sync_cursor: 1,
+        affects_scheduling: true,
     }
 }
 
@@ -459,6 +460,7 @@ fn attempt_logs_are_append_only_and_scheduling_is_deterministic() {
             error_tags: vec![],
             created_at,
             sync_cursor: cursor,
+            affects_scheduling: true,
         });
     }
     for log in &logs {

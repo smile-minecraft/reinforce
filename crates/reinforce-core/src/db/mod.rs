@@ -5,6 +5,7 @@ use rusqlite::{Connection, Transaction};
 use crate::primitives::{Error, Result};
 
 pub mod content;
+pub mod quiz;
 pub mod schema;
 pub mod search;
 pub mod study;
