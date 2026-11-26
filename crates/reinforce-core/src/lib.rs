@@ -35,6 +35,7 @@ pub use validation::{
 };
 
 pub use db::Database;
+pub use db::auth;
 pub use db::content as content_store;
 pub use db::quiz as quiz_store;
 pub use db::search;

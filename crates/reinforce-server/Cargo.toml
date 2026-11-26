@@ -1,6 +1,6 @@
 [package]
 name = "reinforce-server"
-description = "Reinforce server, CLI and MCP entrypoint."
+description = "Reinforce server, CLI and HTTP API entrypoint."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,9 +12,29 @@ authors.workspace = true
 name = "reinforce"
 path = "src/main.rs"
 
+[lib]
+name = "reinforce_server"
+path = "src/lib.rs"
+
 [dependencies]
+argon2.workspace = true
+axum.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+rand.workspace = true
 reinforce-core.workspace = true
-reinforce-export.workspace = true
+rust-embed.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

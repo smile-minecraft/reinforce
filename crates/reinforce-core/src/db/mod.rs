@@ -4,6 +4,7 @@ use rusqlite::{Connection, Transaction};
 
 use crate::primitives::{Error, Result};
 
+pub mod auth;
 pub mod content;
 pub mod quiz;
 pub mod schema;
@@ -102,6 +103,10 @@ mod tests {
             "edges",
             "proposals",
             "users",
+            "app_settings",
+            "credentials",
+            "sessions",
+            "invites",
             "attempt_logs",
             "card_scheduling",
             "user_card_meta",
