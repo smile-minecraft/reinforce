@@ -369,6 +369,7 @@ fn full_exam_orders_by_number_defers_grading_and_excludes_voided_from_score() {
                         values: keys.into_iter().map(str::to_owned).collect(),
                     },
                     confidence: Confidence::Certain,
+                    error_tags: vec![],
                 },
                 base(),
             )
@@ -752,6 +753,7 @@ fn voided_and_practice_attempts_are_kept_but_do_not_update_fsrs() {
                     values: vec!["A".to_owned()],
                 },
                 confidence: Confidence::Certain,
+                error_tags: vec![],
             },
             base(),
         )
@@ -821,6 +823,7 @@ fn voided_and_practice_attempts_are_kept_but_do_not_update_fsrs() {
                     values: vec!["A".to_owned()],
                 },
                 confidence: Confidence::Certain,
+                error_tags: vec![],
             },
             base(),
         )
@@ -945,4 +948,39 @@ fn short_answers_ignore_case_space_and_full_width_forms() {
     assert!(grade("粒線體"));
     assert!(!grade("ribosome"));
     assert!(!grade("   "));
+}
+
+#[test]
+fn submitted_error_tags_reach_attempt_logs() {
+    let question = choice("tagged", "A");
+    let mut session = reinforce_core::quiz::QuizSession::new(
+        SessionMode::DailyDue,
+        vec![question],
+        None,
+        None,
+        GradingConfig::default(),
+        false,
+        false,
+    )
+    .unwrap();
+    session.start(base());
+    session
+        .submit_answer(
+            QuizAnswer {
+                submission: AnswerSubmission::Keys {
+                    values: vec!["B".to_owned()],
+                },
+                confidence: Confidence::Split,
+                error_tags: vec!["概念混淆".to_owned(), "incorrect".to_owned()],
+            },
+            base(),
+        )
+        .unwrap();
+
+    let attempts = session.attempts(&UserId::generate(), 1);
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(
+        attempts[0].error_tags,
+        vec!["incorrect".to_owned(), "概念混淆".to_owned()]
+    );
 }

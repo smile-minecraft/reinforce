@@ -99,6 +99,8 @@ impl Countdown {
 pub struct QuizAnswer {
     pub submission: AnswerSubmission,
     pub confidence: Confidence,
+    #[serde(default)]
+    pub error_tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,6 +109,8 @@ pub struct AnswerRecord {
     pub question_id: crate::QuestionCardId,
     pub submission: AnswerSubmission,
     pub confidence: Confidence,
+    #[serde(default)]
+    pub error_tags: Vec<String>,
     pub duration_ms: i64,
     pub created_at: Timestamp,
     pub timed_out: bool,
@@ -311,6 +315,7 @@ impl QuizSession {
             question_id: self.questions[index].id.clone(),
             submission: answer.submission,
             confidence: answer.confidence,
+            error_tags: answer.error_tags,
             duration_ms,
             created_at: now,
             timed_out: false,
@@ -393,6 +398,11 @@ impl QuizSession {
                 } else if !graded.outcome.is_correct {
                     error_tags.push("incorrect".to_owned());
                 }
+                for tag in &graded.record.error_tags {
+                    if !error_tags.contains(tag) {
+                        error_tags.push(tag.clone());
+                    }
+                }
                 AttemptLog {
                     id: AttemptId::generate(),
                     user_id: user_id.clone(),
@@ -447,6 +457,7 @@ impl QuizSession {
             question_id: self.questions[index].id.clone(),
             submission: AnswerSubmission::TimedOut,
             confidence: Confidence::Guessed,
+            error_tags: Vec::new(),
             duration_ms: self.question_timer.limit_ms() as i64,
             created_at: now,
             timed_out: true,

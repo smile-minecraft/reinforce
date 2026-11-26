@@ -314,24 +314,33 @@ export function parseSessionState(raw: RawSessionState): SessionState {
 // Wire representation from serde's externally-tagged Rust enum TickOutcome
 export type RawTickOutcome =
   | 'None'
-  | { QuestionTimedOut: { index: number; graded: GradedAnswer } }
+  | {
+      QuestionTimedOut: { index: number; graded: GradedAnswer }
+      revealed_question?: QuestionCard | null
+    }
   | { SessionExpired: { index: number } }
   | TickOutcome
 
 export type TickOutcome =
   | { type: 'none' }
-  | { type: 'question_timed_out'; index: number; graded: GradedAnswer }
+  | {
+      type: 'question_timed_out'
+      index: number
+      graded: GradedAnswer
+      revealed_question?: QuestionCard | null
+    }
   | { type: 'session_expired'; index: number }
 
 export function parseTickOutcome(raw: RawTickOutcome): TickOutcome {
   if (raw === 'None') return { type: 'none' }
   if (typeof raw === 'object' && raw !== null) {
-    if ('type' in raw) return raw
+    if ('type' in raw) return raw as TickOutcome
     if ('QuestionTimedOut' in raw) {
       return {
         type: 'question_timed_out',
         index: raw.QuestionTimedOut.index,
         graded: raw.QuestionTimedOut.graded,
+        revealed_question: raw.revealed_question ?? null,
       }
     }
     if ('SessionExpired' in raw) {
@@ -382,6 +391,7 @@ export interface FinishSessionResponse {
   attempts_written: number
   score: Score
   graded?: GradedAnswer[]
+  revealed_questions?: QuestionCard[]
 }
 
 export interface ScoreResponse {
