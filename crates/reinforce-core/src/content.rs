@@ -18,6 +18,10 @@ pub struct Resource {
     pub sha256: ContentHash,
     pub byte_size: i64,
     pub page_count: Option<i64>,
+    #[serde(default)]
+    pub width: Option<i64>,
+    #[serde(default)]
+    pub height: Option<i64>,
     pub license: Option<String>,
     pub attribution_url: Option<String>,
     pub attribution_notice: Option<String>,
@@ -193,6 +197,8 @@ pub struct QuestionCard {
     pub accepted_answers: Vec<Vec<String>>,
     pub answer_source_kind: AnswerSourceKind,
     pub answer_basis: Option<String>,
+    #[serde(default)]
+    pub duplicate_question_id: Option<QuestionCardId>,
     pub status: CardStatus,
     pub verification: Verification,
     pub unsure_count: u32,
