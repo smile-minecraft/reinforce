@@ -31,9 +31,17 @@ pub struct QuestionWeakness {
     pub average_duration_ms: f64,
     pub score: f64,
     pub linked_card_ids: Vec<KnowledgeCardId>,
+    #[serde(default)]
+    pub common_error_tags: Vec<ErrorTagCount>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorTagCount {
+    pub tag: String,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConfusablePair {
     pub question_id: QuestionCardId,
     pub wrong_option: String,
@@ -141,6 +149,7 @@ pub fn build_report(
     let links = quiz_store::tests_links(connection, &question_ids)?;
 
     let mut question_stats: HashMap<QuestionCardId, Stats> = HashMap::new();
+    let mut question_error_tags: HashMap<QuestionCardId, HashMap<String, u32>> = HashMap::new();
     let mut knowledge_stats: HashMap<KnowledgeCardId, Stats> = HashMap::new();
     let mut pairs: HashMap<(QuestionCardId, String, String), u32> = HashMap::new();
 
@@ -156,6 +165,10 @@ pub fn build_report(
                 .entry(question_id.clone())
                 .or_default()
                 .observe(attempt);
+            let tag_counts = question_error_tags.entry(question_id.clone()).or_default();
+            for tag in &attempt.error_tags {
+                *tag_counts.entry(tag.clone()).or_insert(0) += 1;
+            }
             for card_id in links.get(&question_id).into_iter().flatten() {
                 knowledge_stats
                     .entry(card_id.clone())
@@ -209,6 +222,19 @@ pub fn build_report(
         .into_iter()
         .map(|(question_id, stats)| {
             let (error_rate, hesitant_rate, average_duration_ms, score) = stats.rates();
+            let mut common_error_tags: Vec<ErrorTagCount> = question_error_tags
+                .remove(&question_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(tag, count)| ErrorTagCount { tag, count })
+                .collect();
+            common_error_tags.sort_by(|left, right| {
+                right
+                    .count
+                    .cmp(&left.count)
+                    .then_with(|| left.tag.cmp(&right.tag))
+            });
+            common_error_tags.truncate(5);
             QuestionWeakness {
                 question_id: question_id.clone(),
                 attempts: stats.attempts,
@@ -217,6 +243,7 @@ pub fn build_report(
                 average_duration_ms,
                 score,
                 linked_card_ids: links.get(&question_id).cloned().unwrap_or_default(),
+                common_error_tags,
             }
         })
         .collect();

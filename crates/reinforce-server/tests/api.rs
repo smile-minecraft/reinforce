@@ -572,7 +572,7 @@ async fn quiz_answers_write_attempts_and_update_scheduling() {
         "submission": {"kind": "keys", "values": ["A"]},
         "confidence": "certain"
     });
-    expect_json(
+    let answered = expect_json(
         json_call(
             &app,
             Method::POST,
@@ -584,6 +584,13 @@ async fn quiz_answers_write_attempts_and_update_scheduling() {
         StatusCode::OK,
     )
     .await;
+    let revealed = &answered["revealed_question"];
+    assert_eq!(revealed["id"], QUESTION_ONE);
+    assert!(revealed.get("answer").is_some());
+    assert!(revealed.get("accepted_answers").is_some());
+    assert_eq!(revealed["answer_basis"], "原創題，依據熔化需要吸收潛熱。");
+    assert!(revealed["explanation_blocks"].is_array());
+    assert!(revealed["options"][0].get("explanation").is_some());
     let finished = expect_json(
         json_call(
             &app,
@@ -694,7 +701,7 @@ async fn quiz_answers_write_attempts_and_update_scheduling() {
     )
     .await;
     assert_eq!(score_before["graded_count"], 0);
-    expect_json(
+    let exam_answer = expect_json(
         json_call(
             &app,
             Method::POST,
@@ -709,6 +716,7 @@ async fn quiz_answers_write_attempts_and_update_scheduling() {
         StatusCode::OK,
     )
     .await;
+    assert!(exam_answer["revealed_question"].is_null());
     let score_deferred = expect_json(
         json_call(
             &app,
@@ -735,6 +743,19 @@ async fn quiz_answers_write_attempts_and_update_scheduling() {
     )
     .await;
     assert_eq!(exam_finish["attempts_written"], 1);
+    assert_eq!(exam_finish["graded"].as_array().expect("graded").len(), 1);
+    let revealed = exam_finish["revealed_questions"]
+        .as_array()
+        .expect("revealed");
+    assert_eq!(revealed.len(), 4);
+    let first = revealed
+        .iter()
+        .find(|question| question["id"] == QUESTION_ONE)
+        .expect("first exam question");
+    assert!(first.get("answer").is_some());
+    assert!(first.get("accepted_answers").is_some());
+    assert!(first.get("answer_basis").is_some());
+    assert!(first["explanation_blocks"].is_array());
 }
 
 #[tokio::test]
@@ -2010,4 +2031,145 @@ fn urlencoding(value: &str) -> String {
             other => format!("%{other:02X}"),
         })
         .collect()
+}
+
+#[tokio::test]
+async fn answer_error_tags_are_persisted_and_reported() {
+    let (app, _state, _dir) = test_state(AuthMode::Single).await;
+    let created = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({"mode": "daily_due", "options": {"question_limit": 1}})),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let session_id = created["session_id"].as_str().expect("session id");
+    expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/answers"),
+            Some(json!({
+                "submission": {"kind": "keys", "values": ["B"]},
+                "confidence": "split",
+                "error_tags": [" 概念混淆 ", "概念混淆", "計算失誤"]
+            })),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/finish"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+
+    let attempts = expect_json(
+        json_call(&app, Method::GET, "/api/study/attempts", None, None).await,
+        StatusCode::OK,
+    )
+    .await;
+    let tags = attempts[0]["error_tags"].as_array().expect("error tags");
+    let tags: Vec<&str> = tags.iter().filter_map(|tag| tag.as_str()).collect();
+    assert_eq!(tags, vec!["incorrect", "概念混淆", "計算失誤"]);
+
+    let report = expect_json(
+        json_call(&app, Method::GET, "/api/study/weakness", None, None).await,
+        StatusCode::OK,
+    )
+    .await;
+    let question = report["questions"]
+        .as_array()
+        .expect("questions")
+        .iter()
+        .find(|entry| entry["question_id"] == QUESTION_ONE)
+        .expect("question weakness");
+    let counts = question["common_error_tags"]
+        .as_array()
+        .expect("common error tags");
+    assert!(
+        counts
+            .iter()
+            .any(|entry| entry["tag"] == "概念混淆" && entry["count"] == 1)
+    );
+    assert!(
+        counts
+            .iter()
+            .any(|entry| entry["tag"] == "計算失誤" && entry["count"] == 1)
+    );
+}
+
+#[tokio::test]
+async fn answer_rejects_invalid_error_tags() {
+    let (app, _state, _dir) = test_state(AuthMode::Single).await;
+    let created = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({"mode": "daily_due", "options": {"question_limit": 2}})),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let session_id = created["session_id"].as_str().expect("session id");
+
+    for error_tags in [
+        json!([" "]),
+        json!(["x".repeat(41)]),
+        json!(
+            (1..=11)
+                .map(|index| format!("tag-{index}"))
+                .collect::<Vec<_>>()
+        ),
+    ] {
+        let response = json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/answers"),
+            Some(json!({
+                "submission": {"kind": "keys", "values": ["A"]},
+                "confidence": "certain",
+                "error_tags": error_tags
+            })),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/finish"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let attempts = expect_json(
+        json_call(&app, Method::GET, "/api/study/attempts", None, None).await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(attempts.as_array().expect("attempts").len(), 0);
 }

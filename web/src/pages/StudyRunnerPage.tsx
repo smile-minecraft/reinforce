@@ -17,7 +17,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { api, ApiError } from '../api/client'
-import { useQuestion } from '../api/hooks/useQuestions'
 import {
   useFinishSession,
   usePauseSession,
@@ -151,10 +150,7 @@ export function StudyRunnerPage() {
   const tickInFlightRef = useRef(false)
   const lastSyncRef = useRef<number>(0)
 
-  // Fetch full question details ONLY after answering (when feedback is visible) to show answer/explanations
-  const { data: revealedQuestion } = useQuestion(feedback?.question.id, Boolean(feedback))
-
-  const activeQuestion = feedback ? (revealedQuestion ?? feedback.question) : (snapshot?.question ?? null)
+  const activeQuestion = feedback ? feedback.question : (snapshot?.question ?? null)
   const sessionState = snapshot?.state
   const isPaused = sessionState?.status === 'paused' && !pausedForReview
   const isExpired = sessionState?.status === 'expired'
@@ -173,16 +169,19 @@ export function StudyRunnerPage() {
     setActionError(null)
     try {
       const result = await finishMutation.mutateAsync()
-      if (result.graded && result.graded.length > 0) {
-        setHistory((prev) =>
-          prev.map((entry) => {
-            const matched = result.graded?.find(
-              (g) => g.record.index === entry.index && g.record.question_id === entry.question.id,
-            )
-            return matched ? { ...entry, grading: matched.outcome } : entry
-          }),
-        )
-      }
+      const revealedQuestions = result.revealed_questions ?? []
+      setHistory((prev) =>
+        prev.map((entry) => {
+          const matched = result.graded?.find(
+            (graded) => graded.record.index === entry.index && graded.record.question_id === entry.question.id,
+          )
+          return {
+            ...entry,
+            question: revealedQuestions[entry.index] ?? entry.question,
+            grading: matched?.outcome ?? entry.grading,
+          }
+        }),
+      )
       setFinishResult(result)
       setFeedback(null)
     } catch (err) {
@@ -202,9 +201,10 @@ export function StudyRunnerPage() {
         const timedOutQuestion = snapshot?.question
         const refreshed = await refetchSession()
         if (timedOutQuestion) {
+          const revealedQuestion = outcome.revealed_question ?? timedOutQuestion
           const entry: SessionReviewEntry = {
             index: outcome.index,
-            question: timedOutQuestion,
+            question: revealedQuestion,
             submission: { kind: 'timed_out' },
             confidence: 'guessed',
             errorTags: ['time_pressure'],
@@ -217,7 +217,7 @@ export function StudyRunnerPage() {
             await api.pauseSession(sessionId).catch(() => {})
           }
           setFeedback({
-            question: timedOutQuestion,
+            question: revealedQuestion,
             submission: { kind: 'timed_out' },
             grading: outcome.graded.outcome,
             nextState,
@@ -408,7 +408,7 @@ export function StudyRunnerPage() {
           await api.pauseSession(sessionId).catch(() => {})
         }
         setFeedback({
-          question: currentQ,
+          question: res.revealed_question ?? currentQ,
           submission,
           grading: res.grading,
           nextState: res.state,
