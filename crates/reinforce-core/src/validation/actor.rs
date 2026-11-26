@@ -2,17 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::UserId;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Actor {
-    #[default]
     Owner,
-    Member {
-        user_id: UserId,
-    },
-    Agent {
-        name: String,
-    },
+    Member { user_id: UserId },
+    Agent { name: String },
 }
 
 impl Actor {

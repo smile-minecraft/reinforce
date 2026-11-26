@@ -1,6 +1,7 @@
 use reinforce_core::content::{
     ContentBlock, NormalizedRect, OcclusionMask, OutlineNode, QuestionOption,
 };
+use reinforce_core::content_store;
 use reinforce_core::primitives::{
     AnchorKind, AnswerSourceKind, CardStatus, EdgeType, EndpointKind, ExportPolicy, GradingMode,
     QuestionType, ResourceKind, Sensitivity, SourceKind, Verification,
@@ -584,4 +585,80 @@ fn endpoint_kind_is_reported_for_option_references() {
         key: "A".to_owned(),
     };
     assert_eq!(endpoint.kind(), EndpointKind::Option);
+}
+
+fn placeholder(set_id: &reinforce_core::ExamSetId, number: u32) -> QuestionCard {
+    let mut card = question_card();
+    card.question_type = QuestionType::ShortAnswer;
+    card.grading_mode = GradingMode::Voided;
+    card.answer.clear();
+    card.answer_source_kind = AnswerSourceKind::Unanswered;
+    card.exam_set_id = Some(set_id.clone());
+    card.question_no = Some(number);
+    card
+}
+
+fn stored_complete_exam_set(database: &Database, expected: u32) -> (ExamSet, Vec<QuestionCard>) {
+    let set = exam_set(SourceKind::PastExam, Some(expected), true);
+    content_store::insert_exam_set(database.connection(), &set).unwrap();
+    let cards: Vec<QuestionCard> = (1..=expected)
+        .map(|number| placeholder(&set.id, number))
+        .collect();
+    for card in &cards {
+        content_store::insert_question_card(database.connection(), card).unwrap();
+    }
+    (set, cards)
+}
+
+#[test]
+fn count_conservation_covers_stored_sets_that_a_batch_adds_questions_to() {
+    let database = Database::open_in_memory().unwrap();
+    let (set, _) = stored_complete_exam_set(&database, 2);
+
+    let mut snapshot = Snapshot::new(Actor::Owner);
+    snapshot.push_question_card(stage(0, placeholder(&set.id, 3)));
+
+    let report = validate_snapshot(&snapshot, database.connection()).unwrap();
+    let fields = field_paths(&report.errors, ValidationRule::CountConservation);
+    assert!(
+        fields.iter().any(|field| field == "expected_questions"),
+        "adding a third question to a complete two-question set must fail: {fields:?}"
+    );
+    assert!(
+        report.errors.iter().all(|error| error.op_index == Some(0)),
+        "errors point at the staged card"
+    );
+}
+
+#[test]
+fn count_conservation_covers_questions_moved_out_of_a_stored_set() {
+    let database = Database::open_in_memory().unwrap();
+    let (_, cards) = stored_complete_exam_set(&database, 2);
+
+    let mut moved = cards[1].clone();
+    moved.exam_set_id = None;
+    moved.question_no = None;
+    let mut snapshot = Snapshot::new(Actor::Owner);
+    snapshot.push_question_card(stage(0, moved));
+
+    let report = validate_snapshot(&snapshot, database.connection()).unwrap();
+    let fields = field_paths(&report.errors, ValidationRule::CountConservation);
+    assert!(
+        fields.iter().any(|field| field == "expected_questions"),
+        "moving a question out of a complete set must fail: {fields:?}"
+    );
+}
+
+#[test]
+fn replacing_a_question_inside_a_stored_set_keeps_the_count() {
+    let database = Database::open_in_memory().unwrap();
+    let (_, cards) = stored_complete_exam_set(&database, 2);
+
+    let mut revised = cards[0].clone();
+    revised.subject = "revised".to_owned();
+    let mut snapshot = Snapshot::new(Actor::Owner);
+    snapshot.push_question_card(stage(0, revised));
+
+    let report = validate_snapshot(&snapshot, database.connection()).unwrap();
+    assert!(report.is_ok(), "unexpected errors: {:?}", report.errors);
 }

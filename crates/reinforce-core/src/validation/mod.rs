@@ -319,6 +319,8 @@ pub(crate) fn merged_question_cards_for_exam_set(
     for entry in &snapshot.question_cards {
         if entry.value.exam_set_id.as_ref() == Some(id) {
             cards.insert(entry.value.id.as_str(), entry.value.clone());
+        } else {
+            cards.remove(&entry.value.id.as_str());
         }
     }
     Ok(cards.into_values().collect())

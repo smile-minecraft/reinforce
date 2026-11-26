@@ -94,11 +94,15 @@ pub fn submit_batch(
     actor: crate::validation::Actor,
     operations: Vec<batch::BatchOperation>,
 ) -> Result<SubmitOutcome> {
-    let prepared = match batch::prepare(connection, actor.clone(), operations)? {
+    // Validation reads and the proposal write share one transaction so the
+    // store cannot change between the check and the insert.
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let prepared = match batch::prepare(&transaction, actor.clone(), operations)? {
         batch::Preparation::Ready(prepared) => *prepared,
         batch::Preparation::Invalid(errors) => return Ok(SubmitOutcome::Rejected { errors }),
     };
-    let errors = validate_snapshot(&prepared.snapshot, connection)?;
+    let errors = validate_snapshot(&prepared.snapshot, &*transaction)?;
     if !errors.is_ok() {
         return Ok(SubmitOutcome::Rejected { errors });
     }
@@ -113,9 +117,8 @@ pub fn submit_batch(
         review_note: None,
         created_at: now,
         updated_at: now,
-        sync_cursor: next_sync_cursor(connection)?,
+        sync_cursor: next_sync_cursor(&transaction)?,
     };
-    let transaction = connection.transaction()?;
     store::insert_proposal(&transaction, &proposal)?;
     transaction.commit()?;
     Ok(SubmitOutcome::Accepted { proposal })
@@ -128,7 +131,11 @@ pub fn approve_batch(
     proposal_id: &ProposalId,
     options: ApprovalOptions,
 ) -> Result<ApprovalOutcome> {
-    let proposal = store::get_proposal(connection, proposal_id)?
+    // Re-validation and the apply share one transaction so a concurrent writer
+    // cannot invalidate the snapshot between the check and the write.
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let proposal = store::get_proposal(&transaction, proposal_id)?
         .ok_or_else(|| Error::InvalidValue("proposal", "proposal does not exist".to_owned()))?;
     if proposal.status != ProposalStatus::Pending {
         return Err(Error::InvalidValue(
@@ -150,7 +157,7 @@ pub fn approve_batch(
         promote_verification(&mut snapshot);
     }
 
-    let errors = validate_snapshot(&snapshot, connection)?;
+    let errors = validate_snapshot(&snapshot, &*transaction)?;
     if !errors.is_ok() {
         return Ok(ApprovalOutcome::Rejected { proposal, errors });
     }
@@ -158,7 +165,6 @@ pub fn approve_batch(
     let mut approved = proposal;
     approved.status = ProposalStatus::Approved;
     approved.updated_at = Timestamp::now();
-    let transaction = connection.transaction()?;
     let applied = apply_snapshot(&transaction, &snapshot)?;
     store::update_proposal(&transaction, &approved)?;
     transaction.commit()?;
