@@ -13,6 +13,7 @@ and human review before it is published.
 | Path | Purpose |
 | --- | --- |
 | `crates/reinforce-core` | Pure domain layer: SQLite storage, models, validator, FSRS, quiz engine |
+| `crates/reinforce-ffi` | Synchronous UniFFI bindings for offline Swift and Kotlin clients |
 | `crates/reinforce-export` | Embedded Typst PDF engine and lossless Markdown export |
 | `crates/reinforce-server` | HTTP/WS API, embedded WebApp, MCP server and the `reinforce` CLI |
 | `web/` | Touch-first WebApp (React, TypeScript, Vite, Tailwind CSS, i18n) |
@@ -37,6 +38,22 @@ cargo run -p reinforce-server -- serve --demo   # http://127.0.0.1:3000 with sam
 `web/dist` is not committed. Without it the server shows a placeholder page;
 run `pnpm build` in `web/` and reload. Use `pnpm dev` in `web/` for frontend
 work with hot reload.
+
+### Mobile bindings
+
+`crates/reinforce-ffi` exposes a synchronous UniFFI API over `reinforce-core`.
+Bindings are generated in library mode from the built `cdylib`; generated files
+are written to `bindings/` and are not committed:
+
+```sh
+./scripts/generate-bindings.sh            # defaults to bindings/
+./scripts/generate-bindings.sh /tmp/reinforce-bindings
+```
+
+The script builds `reinforce-ffi --release`, generates Swift and Kotlin sources
+with `uniffi-bindgen`, and type-checks the Swift source with `swiftc` when
+available. On macOS the library is `target/release/libreinforce_ffi.dylib`;
+on Linux it is `target/release/libreinforce_ffi.so`.
 
 The workspace version in the root `Cargo.toml` is the single source of truth
 for every crate, the WebApp package and all documentation.

@@ -37,6 +37,7 @@ typst-as-lib = { version = "0.18", default-features = false }
 typst-layout = { version = "0.15", default-features = false }
 typst-pdf = { version = "0.15", default-features = false }
 ttf-parser = "0.25"
+uniffi = "0.33"
 uuid = { version = "1", features = ["serde", "v7"] }
 
 [workspace.lints.rust]
