@@ -356,6 +356,81 @@ fn markdown_round_trip_preserves_all_data() {
     assert_eq!(fixture.input, imported);
 }
 
+fn math_input(latex: &str) -> ExportInput {
+    let mut input = fixture().input;
+    input.notes.clear();
+    input.questions.clear();
+    if let Some(card) = input.cards.first_mut() {
+        card.blocks = vec![ContentBlock::Math {
+            latex: latex.to_owned(),
+            display: true,
+        }];
+    }
+    input
+}
+
+#[test]
+fn native_math_renders_supported_latex_and_chemistry() {
+    let fonts = fonts();
+    let mut input = math_input(r"\frac{a+b}{c}");
+    if let Some(card) = input.cards.first_mut() {
+        card.blocks.extend([
+            ContentBlock::Math {
+                latex: r"\sum_{i=1}^n i".to_owned(),
+                display: false,
+            },
+            ContentBlock::Math {
+                latex: r"\begin{pmatrix}a & b \\ c & d\end{pmatrix}".to_owned(),
+                display: true,
+            },
+            ContentBlock::Math {
+                latex: r"\sqrt{x} + \int_0^1 \frac{1}{x} dx + \sin(\theta) \leq \infty".to_owned(),
+                display: false,
+            },
+            ContentBlock::Math {
+                latex: r"\ce{H+ + OH- <=> H2O}".to_owned(),
+                display: true,
+            },
+            ContentBlock::Math {
+                latex: r"\ce{2H2 + O2 -> 2H2O}".to_owned(),
+                display: true,
+            },
+            ContentBlock::Math {
+                latex: r#"\text{#panic("x")}"#.to_owned(),
+                display: false,
+            },
+        ]);
+    }
+
+    let source =
+        render_typst_source(&input, &options(PdfPreset::Standard, fonts.path(), true)).unwrap();
+    assert!(source.source.contains("$frac(a + b, c)$"));
+    assert!(source.source.contains("$sum_(i = 1)^(n) i$"));
+    assert!(source.source.contains("$sqrt(x) + integral_(0)^(1)"));
+    assert!(source.source.contains("arrow.l.r"));
+    assert!(source.source.contains("$mat(delim: \"(\", a, b; c, d)$"));
+    assert!(source.source.contains("arrow.r"));
+    assert!(source.source.contains(r##"$"#panic(\"x\")"$"##));
+    assert!(!source.source.contains("#panic(\"x\")"));
+
+    let bytes = render_pdf(&input, &options(PdfPreset::Standard, fonts.path(), true))
+        .expect("native math must compile into a PDF");
+    assert_valid_pdf(&bytes, 1);
+}
+
+#[test]
+fn unsupported_math_falls_back_to_raw_source_pdf() {
+    let fonts = fonts();
+    let input = math_input(r"\frac{1");
+    let source =
+        render_typst_source(&input, &options(PdfPreset::Standard, fonts.path(), true)).unwrap();
+    assert!(source.source.contains(r#"raw("\\frac{1", lang: "latex")"#));
+
+    let bytes = render_pdf(&input, &options(PdfPreset::Standard, fonts.path(), true))
+        .expect("unsupported formula must not fail the whole PDF");
+    assert_valid_pdf(&bytes, 1);
+}
+
 #[test]
 fn fonts_in_nested_folders_are_found() {
     let root = TempDir::new().expect("temp dir");
