@@ -141,4 +141,4 @@ metadata only. The same layout is used by `reinforce serve` uploads.
 `schema/bundle-line.schema.json` (JSON Schema 2020-12) validates one line. It is
 intentionally strict about operation shapes and permissive about extra entity
 fields so importers can evolve independently of the core. A complete working
-example is in `fixtures/demo/batch.jsonl`.
+example is in `fixtures/demo/bundle.jsonl`.

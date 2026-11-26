@@ -2,7 +2,7 @@ use jsonschema::validator_for;
 use serde_json::{Value, json};
 
 const SCHEMA: &str = include_str!("../schema/bundle-line.schema.json");
-const BATCH: &str = include_str!("../../../fixtures/demo/batch.jsonl");
+const BATCH: &str = include_str!("../../../fixtures/demo/bundle.jsonl");
 
 fn validator() -> jsonschema::Validator {
     let schema = serde_json::from_str(SCHEMA).expect("schema is valid JSON");

@@ -838,18 +838,10 @@ fn cli_exports_pdf_and_round_trip_markdown_from_demo_bundle() {
     let dir = TestDir::new();
     let fonts_dir = fonts(&dir.0);
     let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo");
-    let bundle_dir = dir.0.join("bundle");
-    std::fs::create_dir_all(bundle_dir.join("assets")).expect("bundle dir");
-    std::fs::copy(bundle.join("batch.jsonl"), bundle_dir.join("bundle.jsonl"))
-        .expect("copy bundle");
-    for asset in ["phase-diagram.svg", "phase-labels.svg"] {
-        std::fs::copy(bundle.join(asset), bundle_dir.join("assets").join(asset))
-            .expect("copy asset");
-    }
     let db = dir.0.join("demo.db");
     let blobs = dir.0.join("blobs");
     let import = Command::new(env!("CARGO_BIN_EXE_reinforce"))
-        .args(["import", bundle_dir.to_str().unwrap(), "--mode", "owner"])
+        .args(["import", bundle.to_str().unwrap(), "--mode", "owner"])
         .args(["--db", db.to_str().unwrap()])
         .args(["--blobs", blobs.to_str().unwrap()])
         .output()
@@ -859,10 +851,13 @@ fn cli_exports_pdf_and_round_trip_markdown_from_demo_bundle() {
         "{}",
         String::from_utf8_lossy(&import.stderr)
     );
+    let import_report: Value =
+        serde_json::from_slice(&import.stdout).expect("import JSON report");
+    assert_eq!(import_report["blobs_written"], 2);
 
     let pdf = dir.0.join("out.pdf");
     let export_pdf = Command::new(env!("CARGO_BIN_EXE_reinforce"))
-        .args(["export", "--format", "pdf", "--preset", "worksheet"])
+        .args(["export", "--format", "pdf", "--preset", "goodnotes"])
         .args(["--subject", "physics", "--out", pdf.to_str().unwrap()])
         .args(["--db", db.to_str().unwrap()])
         .args(["--blobs", blobs.to_str().unwrap()])

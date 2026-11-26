@@ -8,15 +8,15 @@ use reinforce_core::validation::Actor;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
-const BATCH: &str = include_str!("../../../fixtures/demo/batch.jsonl");
+const BATCH: &str = include_str!("../../../fixtures/demo/bundle.jsonl");
 const ASSETS: &[(&str, &[u8])] = &[
     (
         "phase-diagram.svg",
-        include_bytes!("../../../fixtures/demo/phase-diagram.svg"),
+        include_bytes!("../../../fixtures/demo/assets/phase-diagram.svg"),
     ),
     (
         "phase-labels.svg",
-        include_bytes!("../../../fixtures/demo/phase-labels.svg"),
+        include_bytes!("../../../fixtures/demo/assets/phase-labels.svg"),
     ),
 ];
 
