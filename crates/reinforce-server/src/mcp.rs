@@ -461,9 +461,14 @@ pub fn http_router(state: AppState) -> axum::Router<AppState> {
         "127.0.0.1".to_owned(),
         "::1".to_owned(),
     ];
-    let config = StreamableHttpServerConfig::default()
-        .with_allowed_hosts(allowed_hosts)
-        .with_json_response(true);
+    let config = StreamableHttpServerConfig::default().with_json_response(true);
+    // Single mode has no login, so DNS-rebinding protection stays on. Invite
+    // mode authorizes every call with a bearer token and is usually served
+    // behind a reverse proxy under a public hostname, so the Host check is off.
+    let config = match state.auth_mode {
+        AuthMode::Single => config.with_allowed_hosts(allowed_hosts),
+        AuthMode::Invite => config.disable_allowed_hosts(),
+    };
     let service = StreamableHttpService::new(
         move || Ok(server.clone()),
         Arc::new(LocalSessionManager::default()),

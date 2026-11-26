@@ -224,6 +224,14 @@ async fn mcp_post(
 }
 
 async fn tools_list(app: &Router<()>, token: Option<&str>) -> axum::response::Response {
+    tools_list_at(app, token, "127.0.0.1").await
+}
+
+async fn tools_list_at(
+    app: &Router<()>,
+    token: Option<&str>,
+    host: &str,
+) -> axum::response::Response {
     let init = mcp_post(
         app,
         json!({
@@ -238,7 +246,7 @@ async fn tools_list(app: &Router<()>, token: Option<&str>) -> axum::response::Re
         }),
         token,
         None,
-        "127.0.0.1",
+        host,
     )
     .await;
     assert_eq!(init.status(), StatusCode::OK, "initialize failed");
@@ -253,7 +261,7 @@ async fn tools_list(app: &Router<()>, token: Option<&str>) -> axum::response::Re
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
         token,
         Some(&session),
-        "127.0.0.1",
+        host,
     )
     .await
 }
@@ -500,4 +508,33 @@ async fn mcp_batch_proposal_flow_is_validated_approved_and_checks_clean() {
     cli::check(CheckArgs { db: dir.db() })
         .await
         .expect("domain validation of the published store");
+}
+
+#[tokio::test]
+async fn invite_mode_mcp_accepts_public_hostnames_behind_a_proxy() {
+    let dir = TestDir::new();
+    let (app, state) = test_state(AuthMode::Invite, "127.0.0.1", &dir).await;
+    let owner_cookie = setup_owner(&app, &state).await;
+    let created = expect_json(
+        request(
+            &app,
+            Method::POST,
+            "/api/auth/agent-tokens",
+            json!({}),
+            &[(header::COOKIE.as_str(), owner_cookie)],
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let token = created["token"].as_str().expect("agent token").to_owned();
+
+    // A reverse proxy forwards the public hostname; the bearer token, not the
+    // Host header, is what authorizes invite-mode agents.
+    let listed = expect_json(
+        tools_list_at(&app, Some(&token), "reinforce.example.org").await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(listed["result"]["tools"].as_array().map(Vec::len), Some(8));
 }
