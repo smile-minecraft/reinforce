@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reinforce.dev/schema/bundle-line.schema.json",
+  "title": "Reinforce bundle line",
+  "description": "One operation in a reinforce bundle.jsonl file. Each non-empty line must validate against this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["op", "data"],
+  "properties": {
+    "op": {
+      "type": "string",
+      "enum": [
+        "resource",
+        "anchor",
+        "knowledge_card",
+        "note",
+        "exam_set",
+        "question_group",
+        "question_card",
+        "edge"
+      ]
+    },
+    "temp_ref": {
+      "type": "string",
+      "pattern": "^\\$[A-Za-z0-9_-]+$"
+    },
+    "data": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/idRef" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "op": { "const": "resource" } }, "required": ["op"] },
+      "then": {
+        "properties": {
+          "data": {
+            "required": ["id", "kind", "title", "sha256", "byte_size", "sensitivity", "export_policy", "created_at"],
+            "properties": {
+              "kind": { "$ref": "#/$defs/resourceKind" },
+              "title": { "type": "string", "minLength": 1 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "byte_size": { "type": "integer", "minimum": 0 },
+              "page_count": { "type": ["integer", "null"], "minimum": 0 },
+              "width": { "type": ["integer", "null"], "minimum": 1 },
+              "height": { "type": ["integer", "null"], "minimum": 1 },
+              "sensitivity": { "enum": ["normal", "restricted"] },
+              "export_policy": { "enum": ["allow", "redact", "owner_only"] },
+              "created_at": { "$ref": "#/$defs/timestamp" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "anchor" } }, "required": ["op"] },
+      "then": {
+        "properties": {
+          "data": {
+            "required": ["id", "resource_id", "anchor_kind"],
+            "properties": {
+              "resource_id": { "$ref": "#/$defs/uuid" },
+              "anchor_kind": { "enum": ["pdf_page", "rect", "media_span"] },
+              "pdf_page": { "type": ["integer", "null"], "minimum": 1 },
+              "printed_page": { "type": ["integer", "null"] },
+              "legend_pdf_page": { "type": ["integer", "null"], "minimum": 1 },
+              "rect": { "$ref": "#/$defs/rectOrNull" },
+              "media_span": {
+                "type": ["object", "null"],
+                "properties": {
+                  "start_ms": { "type": "integer", "minimum": 0 },
+                  "end_ms": { "type": "integer", "minimum": 0 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "knowledge_card" } }, "required": ["op"] },
+      "then": {
+        "properties": {
+          "data": {
+            "required": ["id", "subject", "title", "topics", "blocks", "anchor_ids", "status", "verification", "created_at", "updated_at"],
+            "properties": {
+              "subject": { "type": "string", "minLength": 1 },
+              "title": { "type": "string", "minLength": 1 },
+              "topics": { "type": "array", "items": { "type": "string" } },
+              "blocks": { "$ref": "#/$defs/blocks" },
+              "anchor_ids": { "type": "array", "items": { "$ref": "#/$defs/uuid" } },
+              "status": { "$ref": "#/$defs/cardStatus" },
+              "verification": { "enum": ["unchecked", "verified"] },
+              "unsure_count": { "type": "integer", "minimum": 0 },
+              "created_at": { "$ref": "#/$defs/timestamp" },
+              "updated_at": { "$ref": "#/$defs/timestamp" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "note" } }, "required": ["op"] },
+      "then": {
+        "properties": {
+          "data": {
+            "required": ["id", "subject", "title", "outline", "status", "created_at", "updated_at"],
+            "properties": {
+              "subject": { "type": "string", "minLength": 1 },
+              "title": { "type": "string", "minLength": 1 },
+              "outline": { "type": "array" },
+              "status": { "$ref": "#/$defs/cardStatus" },
+              "created_at": { "$ref": "#/$defs/timestamp" },
+              "updated_at": { "$ref": "#/$defs/timestamp" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "exam_set" } }, "required": ["op"] },
+      "then": {
+        "properties": {
+          "data": {
+            "required": ["id", "subject", "title", "source_kind", "expected_questions", "is_complete"],
+            "properties": {
+              "subject": { "type": "string", "minLength": 1 },
+              "title": { "type": "string", "minLength": 1 },
+              "source_kind": { "enum": ["past_exam", "question_bank", "original", "custom"] },
+              "exam_year": { "type": ["integer", "null"] },
+              "source_resource_id": { "type": ["string", "null"], "pattern": "^(\\$[A-Za-z0-9_-]+|[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12})$" },
+              "expected_questions": { "type": ["integer", "null"], "minimum": 0 },
+              "is_complete": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "question_group" } }, "required": ["op"] },
+      "then": {
+        "properties": {
+          "data": {
+            "required": ["id", "shared_stem_blocks"],
+            "properties": {
+              "exam_set_id": { "type": ["string", "null"] },
+              "title": { "type": ["string", "null"] },
+              "shared_stem_blocks": { "$ref": "#/$defs/blocks" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "question_card" } }, "required": ["op"] },
+      "then": {
+        "properties": {
+          "data": {
+            "required": ["id", "subject", "stem_blocks", "explanation_blocks", "anchor_ids", "question_type", "grading_mode", "options", "answer", "accepted_answers", "answer_source_kind", "status", "verification", "created_at", "updated_at"],
+            "properties": {
+              "subject": { "type": "string", "minLength": 1 },
+              "topics": { "type": "array", "items": { "type": "string" } },
+              "stem_blocks": { "$ref": "#/$defs/blocks" },
+              "explanation_blocks": { "$ref": "#/$defs/blocks" },
+              "anchor_ids": { "type": "array", "items": { "$ref": "#/$defs/uuid" } },
+              "question_type": {
+                "enum": ["single_choice", "multiple_choice", "short_answer", "vocab", "image_qa", "image_occlusion", "pin_identify", "pin_locate"]
+              },
+              "grading_mode": { "enum": ["exact", "any_accepted", "voided"] },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["key", "content", "linked_card_ids"],
+                  "properties": {
+                    "key": { "type": "string", "minLength": 1 },
+                    "content": { "type": "string" },
+                    "explanation": { "type": ["string", "null"] },
+                    "linked_card_ids": { "type": "array", "items": { "$ref": "#/$defs/uuid" } }
+                  }
+                }
+              },
+              "answer": { "type": "array", "items": { "type": "string" } },
+              "accepted_answers": {
+                "type": "array",
+                "items": { "type": "array", "items": { "type": "string" } }
+              },
+              "answer_source_kind": {
+                "enum": ["official", "peer_note", "duplicate_question", "inferred", "original_authored", "unanswered"]
+              },
+              "status": { "$ref": "#/$defs/cardStatus" },
+              "verification": { "enum": ["unchecked", "verified"] },
+              "created_at": { "$ref": "#/$defs/timestamp" },
+              "updated_at": { "$ref": "#/$defs/timestamp" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "edge" } }, "required": ["op"] },
+      "then": {
+        "properties": {
+          "data": {
+            "required": ["id", "edge_type", "from", "to", "created_at"],
+            "properties": {
+              "edge_type": { "enum": ["tests", "confusable_with", "prerequisite", "variant_of"] },
+              "from": { "$ref": "#/$defs/endpoint" },
+              "to": { "$ref": "#/$defs/endpoint" },
+              "created_at": { "$ref": "#/$defs/timestamp" }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "idRef": {
+      "type": "string",
+      "pattern": "^(\\$[A-Za-z0-9_-]+|[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": { "type": "string", "minLength": 1 },
+    "cardStatus": { "enum": ["draft", "staging", "published", "archived"] },
+    "resourceKind": { "enum": ["pdf", "image", "audio", "video", "transcript", "web"] },
+    "rectOrNull": {
+      "type": ["object", "null"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "w": { "type": "number", "minimum": 0, "maximum": 1 },
+        "h": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "blocks": { "type": "array", "items": { "type": "object", "required": ["type"] } },
+    "endpoint": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["card", "question", "option"] },
+        "id": { "$ref": "#/$defs/uuid" },
+        "key": { "type": "string" }
+      }
+    }
+  }
+}

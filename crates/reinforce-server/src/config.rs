@@ -29,6 +29,32 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Serve(ServeArgs),
+    Check(CheckArgs),
+    Import(ImportArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct CheckArgs {
+    #[arg(long, default_value = "./reinforce.db")]
+    pub db: std::path::PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ImportMode {
+    Staging,
+    Owner,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ImportArgs {
+    /// A bundle.jsonl file or a directory containing bundle.jsonl and assets/.
+    pub bundle: std::path::PathBuf,
+    #[arg(long, default_value = "./reinforce.db")]
+    pub db: std::path::PathBuf,
+    #[arg(long, default_value = "./blobs")]
+    pub blobs: std::path::PathBuf,
+    #[arg(long, value_enum, default_value_t = ImportMode::Staging)]
+    pub mode: ImportMode,
 }
 
 #[derive(Debug, Clone, Args)]

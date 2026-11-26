@@ -1,4 +1,6 @@
 pub mod auth;
+pub mod bundle;
+pub mod cli;
 pub mod config;
 pub mod demo;
 pub mod embed;
@@ -25,14 +27,24 @@ pub fn app(state: AppState) -> Router {
 
 pub async fn run() -> ApiResult<()> {
     let cli = Cli::parse();
+    init_tracing();
+    match cli.command {
+        config::Command::Serve(config) => serve(config).await,
+        config::Command::Check(args) => cli::check(args).await,
+        config::Command::Import(args) => cli::import(args).await,
+    }
+}
+
+fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+}
 
-    let config::Command::Serve(config) = cli.command;
+async fn serve(config: config::ServeArgs) -> ApiResult<()> {
     let host = config.validate()?;
     let state = AppState::open(&config).await?;
     if config.demo {
