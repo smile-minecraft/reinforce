@@ -23,7 +23,9 @@ clap.workspace = true
 futures-util.workspace = true
 rand.workspace = true
 reinforce-core.workspace = true
+rmcp = { version = "3.11", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
 rust-embed.workspace = true
+schemars = "1"
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -35,6 +37,9 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+jsonschema = { version = "0.63", default-features = false }
 
 [lints]
 workspace = true
