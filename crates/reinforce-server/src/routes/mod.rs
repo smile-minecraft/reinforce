@@ -1,6 +1,6 @@
 use axum::Json;
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use serde_json::json;
 use tower_http::trace::TraceLayer;
 
@@ -29,7 +29,9 @@ pub fn router() -> Router<AppState> {
         .layer(TraceLayer::new_for_http())
 }
 
-async fn meta(axum::extract::State(state): axum::extract::State<AppState>) -> Json<serde_json::Value> {
+async fn meta(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Json<serde_json::Value> {
     let mode: AuthMode = state.auth_mode;
     Json(json!({
         "version": reinforce_core::VERSION,

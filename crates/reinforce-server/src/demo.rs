@@ -1,9 +1,9 @@
+use reinforce_core::ContentHash;
 use reinforce_core::auth::{get_setting, set_setting};
 use reinforce_core::proposal::{
     ApprovalOutcome, BatchOperation, SubmitOutcome, approve_batch, submit_batch,
 };
 use reinforce_core::validation::Actor;
-use reinforce_core::ContentHash;
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -52,7 +52,8 @@ pub async fn seed(state: &AppState) -> ApiResult<()> {
 
     state
         .with_db(move |database| {
-            let proposal = match submit_batch(database.connection_mut(), Actor::Owner, operations)? {
+            let proposal = match submit_batch(database.connection_mut(), Actor::Owner, operations)?
+            {
                 SubmitOutcome::Accepted { proposal } => proposal,
                 SubmitOutcome::Rejected { errors } => return Err(ApiError::validation(errors)),
             };

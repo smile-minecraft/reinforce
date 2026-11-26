@@ -25,9 +25,7 @@ pub async fn run() -> ApiResult<()> {
         )
         .init();
 
-    let config = match cli.command {
-        config::Command::Serve(args) => args,
-    };
+    let config::Command::Serve(config) = cli.command;
     let host = config.validate()?;
     let state = AppState::open(&config).await?;
     if config.demo {

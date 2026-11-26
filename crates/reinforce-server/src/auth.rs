@@ -1,9 +1,9 @@
+use argon2::Argon2;
+use argon2::password_hash::phc::PasswordHash;
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use axum::extract::FromRequestParts;
 use axum::http::header::COOKIE;
 use axum::http::request::Parts;
-use argon2::password_hash::phc::PasswordHash;
-use argon2::password_hash::{PasswordHasher, PasswordVerifier};
-use argon2::Argon2;
 use reinforce_core::auth::{Role, SessionAuth, session_by_token_hash};
 use reinforce_core::{ContentHash, Timestamp, UserId};
 
@@ -44,7 +44,10 @@ impl FromRequestParts<AppState> for OptionalPrincipal {
 impl FromRequestParts<AppState> for Principal {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         if state.auth_mode == AuthMode::Single {
             return Ok(Self {
                 user_id: state.owner_id.clone(),
@@ -73,7 +76,9 @@ impl FromRequestParts<AppState> for Principal {
 }
 
 pub fn hash_token(value: &str) -> String {
-    ContentHash::from_bytes(value.as_bytes()).as_str().to_owned()
+    ContentHash::from_bytes(value.as_bytes())
+        .as_str()
+        .to_owned()
 }
 
 pub fn random_token(byte_count: usize) -> String {

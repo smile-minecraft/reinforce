@@ -1,13 +1,12 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
+use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
-use axum::Router;
 use reinforce_core::auth::set_setting;
 use reinforce_core::content_store;
 use reinforce_core::primitives::{CardStatus, Verification};
-use reinforce_core::{Database, KnowledgeCard, Timestamp};
+use reinforce_core::{KnowledgeCard, Timestamp};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -49,7 +48,11 @@ async fn test_state(mode: AuthMode) -> (TestApp, AppState, TestDir) {
     };
     let state = AppState::open(&config).await.expect("open test state");
     demo::seed(&state).await.expect("seed demo data");
-    (reinforce_server::app().with_state(state.clone()), state, TestDir(directory))
+    (
+        reinforce_server::app().with_state(state.clone()),
+        state,
+        TestDir(directory),
+    )
 }
 
 type TestApp = Router<()>;
@@ -60,7 +63,7 @@ async fn call(
     uri: &str,
     content_type: Option<&str>,
     body: Vec<u8>,
-    cookie: Option<&str>
+    cookie: Option<&str>,
 ) -> axum::response::Response {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(value) = content_type {
@@ -78,7 +81,7 @@ async fn json_call(
     method: Method,
     uri: &str,
     body: Option<Value>,
-    cookie: Option<&str>
+    cookie: Option<&str>,
 ) -> axum::response::Response {
     let (content_type, bytes) = match body {
         Some(value) => (
@@ -97,7 +100,8 @@ async fn response_json(response: axum::response::Response) -> Value {
     if bytes.is_empty() {
         return Value::Null;
     }
-    serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
 async fn expect_json(response: axum::response::Response, status: StatusCode) -> Value {
@@ -319,7 +323,9 @@ async fn single_mode_serves_demo_content_and_ranges() {
         response.headers().get(header::CONTENT_RANGE).unwrap(),
         "bytes 10-19/983"
     );
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
     assert_eq!(bytes.len(), 10);
 
     let fallback = json_call(&app, Method::GET, "/some/spa/route", None, None).await;
@@ -347,9 +353,15 @@ async fn invite_mode_enforces_owner_boundaries_and_resource_policy() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     assert_eq!(
-        json_call(&app, Method::GET, "/api/proposals", None, Some(&member_cookie))
-            .await
-            .status(),
+        json_call(
+            &app,
+            Method::GET,
+            "/api/proposals",
+            None,
+            Some(&member_cookie)
+        )
+        .await
+        .status(),
         StatusCode::FORBIDDEN
     );
     let forged = json!({
@@ -823,5 +835,3 @@ async fn api_errors_use_the_shared_json_shape() {
     assert_eq!(body["error"]["code"], "not_found");
     assert!(body["error"]["message"].is_string());
 }
-
-#[allow(dead_code)]

@@ -3,16 +3,16 @@ use axum::extract::State;
 use axum::http::{HeaderMap, header};
 use axum::routing::{get, post};
 use axum::{Router, response::IntoResponse};
+use reinforce_core::Timestamp;
 use reinforce_core::auth::{
     credential_by_username, delete_session, get_setting, insert_credential, insert_invite,
     insert_session, owner_exists, register_with_invite,
 };
-use reinforce_core::Timestamp;
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth::{
-    OptionalPrincipal, SESSION_COOKIE, Principal, expired_cookie, hash_password, hash_token,
+    OptionalPrincipal, Principal, SESSION_COOKIE, expired_cookie, hash_password, hash_token,
     random_token, session_cookie, session_ttl, verify_password,
 };
 use crate::config::AuthMode;
@@ -112,8 +112,8 @@ async fn setup_owner(
             if owner_exists(connection)? {
                 return Err(ApiError::conflict("owner is already configured"));
             }
-            let expected = get_setting(connection, SETUP_TOKEN_SETTING)?
-                .ok_or_else(ApiError::unauthorized)?;
+            let expected =
+                get_setting(connection, SETUP_TOKEN_SETTING)?.ok_or_else(ApiError::unauthorized)?;
             if expected != submitted_hash {
                 return Err(ApiError::unauthorized());
             }
@@ -140,9 +140,7 @@ async fn create_invite(
     JsonBody(request): JsonBody<CreateInvite>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_owner(&principal)?;
-    let seconds = request
-        .expires_in_secs
-        .unwrap_or(DEFAULT_INVITE_SECONDS);
+    let seconds = request.expires_in_secs.unwrap_or(DEFAULT_INVITE_SECONDS);
     if !(60..=MAX_INVITE_SECONDS).contains(&seconds) {
         return Err(ApiError::bad_request(
             "expires_in_secs",
@@ -210,9 +208,7 @@ async fn login(
     }
     let username = request.username.clone();
     let credential = state
-        .with_db(move |database| {
-            Ok(credential_by_username(database.connection(), &username)?)
-        })
+        .with_db(move |database| Ok(credential_by_username(database.connection(), &username)?))
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     if !verify_password(&request.password, &credential.password_hash) {
@@ -241,10 +237,7 @@ async fn login(
     ))
 }
 
-async fn logout(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> ApiResult<impl IntoResponse> {
+async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<impl IntoResponse> {
     if let Some(token) = cookie_from_headers(&headers) {
         let token_hash = hash_token(&token);
         state
@@ -270,9 +263,9 @@ fn require_owner(principal: &Principal) -> ApiResult<()> {
 
 fn validate_credentials(username: &str, password: &str) -> ApiResult<()> {
     if !(3..=64).contains(&username.len())
-        || !username
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
+        || !username.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '-'
+        })
     {
         return Err(ApiError::bad_request(
             "username",

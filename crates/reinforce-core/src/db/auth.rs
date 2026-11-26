@@ -120,7 +120,10 @@ pub fn insert_credential(
     Ok(())
 }
 
-pub fn credential_by_username(connection: &Connection, username: &str) -> Result<Option<Credential>> {
+pub fn credential_by_username(
+    connection: &Connection,
+    username: &str,
+) -> Result<Option<Credential>> {
     connection
         .query_row(
             "SELECT user_id, username, password_hash, role FROM credentials WHERE username = ?1",
@@ -130,8 +133,13 @@ pub fn credential_by_username(connection: &Connection, username: &str) -> Result
                     user_id: row.get(0)?,
                     username: row.get(1)?,
                     password_hash: row.get(2)?,
-                    role: Role::from_str(&row.get::<_, String>(3)?)
-                        .map_err(|error| rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(error)))?,
+                    role: Role::from_str(&row.get::<_, String>(3)?).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?,
                 })
             },
         )
@@ -195,7 +203,10 @@ pub fn session_by_token_hash(
 }
 
 pub fn delete_session(connection: &Connection, token_hash: &str) -> Result<()> {
-    connection.execute("DELETE FROM sessions WHERE token_hash = ?1", params![token_hash])?;
+    connection.execute(
+        "DELETE FROM sessions WHERE token_hash = ?1",
+        params![token_hash],
+    )?;
     Ok(())
 }
 
@@ -234,7 +245,10 @@ pub fn consume_invite(
         )
         .optional()?;
     if let Some(created_by) = created_by {
-        transaction.execute("DELETE FROM invites WHERE code_hash = ?1", params![code_hash])?;
+        transaction.execute(
+            "DELETE FROM invites WHERE code_hash = ?1",
+            params![code_hash],
+        )?;
         transaction.commit()?;
         Ok(Some(created_by))
     } else {
@@ -275,7 +289,10 @@ pub fn register_with_invite(
         Role::Member,
         now,
     )?;
-    transaction.execute("DELETE FROM invites WHERE code_hash = ?1", params![code_hash])?;
+    transaction.execute(
+        "DELETE FROM invites WHERE code_hash = ?1",
+        params![code_hash],
+    )?;
     transaction.commit()?;
     Ok(Some(user_id))
 }
@@ -291,6 +308,7 @@ mod tests {
         let connection = database.connection_mut();
         let now = Timestamp::now();
         let owner = create_user(connection, "owner", now).unwrap();
+        insert_credential(connection, &owner, "owner", "hash", Role::Owner, now).unwrap();
         insert_invite(connection, "hash", &owner, now, now.plus_days(1.0)).unwrap();
         assert_eq!(
             consume_invite(connection, "hash", now).unwrap(),
@@ -299,12 +317,16 @@ mod tests {
         assert_eq!(consume_invite(connection, "hash", now).unwrap(), None);
 
         insert_session(connection, "session", &owner, now, now.plus_days(1.0)).unwrap();
-        assert!(session_by_token_hash(connection, "session", now)
-            .unwrap()
-            .is_some());
+        assert!(
+            session_by_token_hash(connection, "session", now)
+                .unwrap()
+                .is_some()
+        );
         delete_expired_sessions(connection, now.plus_days(2.0)).unwrap();
-        assert!(session_by_token_hash(connection, "session", now.plus_days(2.0))
-            .unwrap()
-            .is_none());
+        assert!(
+            session_by_token_hash(connection, "session", now.plus_days(2.0))
+                .unwrap()
+                .is_none()
+        );
     }
 }

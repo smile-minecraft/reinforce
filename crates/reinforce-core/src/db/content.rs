@@ -855,3 +855,17 @@ pub fn update_proposal(connection: &Connection, proposal: &Proposal) -> Result<(
     )?;
     Ok(())
 }
+
+/// Replaces a pending proposal's payload after a reviewer calibrates it.
+pub fn update_proposal_payload(
+    connection: &Connection,
+    id: &ProposalId,
+    payload: &serde_json::Value,
+    updated_at: Timestamp,
+) -> Result<()> {
+    connection.execute(
+        "UPDATE proposals SET payload_json = ?2, updated_at = ?3 WHERE id = ?1",
+        params![id, to_json(payload)?, updated_at],
+    )?;
+    Ok(())
+}

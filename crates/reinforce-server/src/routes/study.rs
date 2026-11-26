@@ -2,9 +2,9 @@ use std::sync::MutexGuard;
 use std::time::Instant;
 
 use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::routing::{get, post};
-use axum::Router;
 use reinforce_core::db::{content as content_store, quiz as quiz_store, study as study_store};
 use reinforce_core::primitives::{AttemptDirection, CardId, SessionMode};
 use reinforce_core::quiz::{
@@ -26,14 +26,14 @@ use crate::state::{AppState, SessionSlot};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/study/sessions", post(create_session))
-        .route("/study/sessions/:id", get(get_session))
-        .route("/study/sessions/:id/start", post(start_session))
-        .route("/study/sessions/:id/pause", post(pause_session))
-        .route("/study/sessions/:id/resume", post(resume_session))
-        .route("/study/sessions/:id/tick", post(tick_session))
-        .route("/study/sessions/:id/answers", post(submit_answer))
-        .route("/study/sessions/:id/finish", post(finish_session))
-        .route("/study/sessions/:id/score", get(get_score))
+        .route("/study/sessions/{id}", get(get_session))
+        .route("/study/sessions/{id}/start", post(start_session))
+        .route("/study/sessions/{id}/pause", post(pause_session))
+        .route("/study/sessions/{id}/resume", post(resume_session))
+        .route("/study/sessions/{id}/tick", post(tick_session))
+        .route("/study/sessions/{id}/answers", post(submit_answer))
+        .route("/study/sessions/{id}/finish", post(finish_session))
+        .route("/study/sessions/{id}/score", get(get_score))
         .route("/study/attempts", get(list_attempts))
         .route("/study/scheduling", get(get_scheduling))
         .route("/study/weakness", get(weakness_report))
@@ -105,7 +105,10 @@ fn session_options(request: &CreateSessionRequest) -> ApiResult<BuildOptions> {
     }
     if let Some(radius) = request.options.pin_radius {
         if !radius.is_finite() || !(0.0..=1.0).contains(&radius) {
-            return Err(ApiError::bad_request("pin_radius", "must be between 0 and 1"));
+            return Err(ApiError::bad_request(
+                "pin_radius",
+                "must be between 0 and 1",
+            ));
         }
         options.pin_radius = radius;
     }
@@ -148,11 +151,13 @@ fn candidate_ids(
                 request.question_ids.clone()
             }
         }
-        SessionMode::WeaknessDrill => weakness::build_report(connection, user_id, options.question_limit)?
-            .questions
-            .into_iter()
-            .map(|entry| entry.question_id)
-            .collect(),
+        SessionMode::WeaknessDrill => {
+            weakness::build_report(connection, user_id, options.question_limit)?
+                .questions
+                .into_iter()
+                .map(|entry| entry.question_id)
+                .collect()
+        }
     };
     Ok(ids)
 }
@@ -164,7 +169,11 @@ fn pin_aspect_ratio(connection: &Connection, ids: &[QuestionCardId]) -> ApiResul
         let Some(card) = content_store::get_question_card(connection, id)? else {
             continue;
         };
-        for block in card.stem_blocks.iter().chain(card.explanation_blocks.iter()) {
+        for block in card
+            .stem_blocks
+            .iter()
+            .chain(card.explanation_blocks.iter())
+        {
             let resource_id = match block {
                 ContentBlock::InteractivePins { resource_id, .. }
                 | ContentBlock::ImageOcclusion { resource_id, .. } => Some(resource_id),
@@ -213,7 +222,9 @@ fn build_session(
     Ok(session)
 }
 
-fn sessions(state: &AppState) -> ApiResult<MutexGuard<'_, std::collections::HashMap<String, SessionSlot>>> {
+fn sessions(
+    state: &AppState,
+) -> ApiResult<MutexGuard<'_, std::collections::HashMap<String, SessionSlot>>> {
     state
         .sessions
         .lock()
@@ -229,7 +240,9 @@ fn slot<'a>(
         .get_mut(id)
         .ok_or_else(|| ApiError::not_found("quiz session"))?;
     if slot.user_id != *user_id {
-        return Err(ApiError::forbidden("this quiz session belongs to another user"));
+        return Err(ApiError::forbidden(
+            "this quiz session belongs to another user",
+        ));
     }
     slot.touched = Instant::now();
     Ok(slot)
@@ -275,7 +288,9 @@ async fn create_session(
     let user_id = principal.user_id.clone();
     let now = Timestamp::now();
     let mut session = state
-        .with_db(move |database| build_session(database.connection(), &request, &user_id, now, options))
+        .with_db(move |database| {
+            build_session(database.connection(), &request, &user_id, now, options)
+        })
         .await?;
     session.start(now);
     let id = AppState::new_session_id();
@@ -442,13 +457,10 @@ async fn list_attempts(
         .with_db(move |database| {
             let connection = database.connection();
             match (query.card_id, query.direction) {
-                (Some(card_id), Some(direction)) => study_store::list_attempts(
-                    connection,
-                    &user_id,
-                    &card_id,
-                    direction,
-                )
-                .map_err(Into::into),
+                (Some(card_id), Some(direction)) => {
+                    study_store::list_attempts(connection, &user_id, &card_id, direction)
+                        .map_err(Into::into)
+                }
                 (Some(card_id), None) => study_store::list_attempts(
                     connection,
                     &user_id,

@@ -1,9 +1,9 @@
 use std::str::FromStr;
 
 use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::routing::{get, patch, post};
-use axum::Router;
 use reinforce_core::content_store;
 use reinforce_core::primitives::{ProposalId, ProposalStatus};
 use reinforce_core::proposal::batch::snapshot_from_payload;
@@ -23,10 +23,10 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/proposals", get(list_proposals).post(submit))
-        .route("/proposals/:id", get(get_proposal))
-        .route("/proposals/:id/approve", post(approve))
-        .route("/proposals/:id/reject", post(reject))
-        .route("/proposals/:id/pins", patch(adjust_pins))
+        .route("/proposals/{id}", get(get_proposal))
+        .route("/proposals/{id}/approve", post(approve))
+        .route("/proposals/{id}/reject", post(reject))
+        .route("/proposals/{id}/pins", patch(adjust_pins))
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -87,7 +87,12 @@ async fn list_proposals(
             .map_err(|error| ApiError::bad_request("status", error.to_string()))?,
     };
     let proposals = state
-        .with_db(move |database| Ok(content_store::list_proposals(database.connection(), status)?))
+        .with_db(move |database| {
+            Ok(content_store::list_proposals(
+                database.connection(),
+                status,
+            )?)
+        })
         .await?;
     Ok(Json(proposals))
 }
@@ -161,7 +166,11 @@ async fn reject(
     }
     let proposal = state
         .with_db(move |database| {
-            Ok(reject_batch(database.connection(), &id, &request.review_note)?)
+            Ok(reject_batch(
+                database.connection(),
+                &id,
+                &request.review_note,
+            )?)
         })
         .await?;
     Ok(Json(proposal))
@@ -179,7 +188,9 @@ async fn adjust_pins(
             let mut proposal = content_store::get_proposal(database.connection(), &id)?
                 .ok_or_else(|| ApiError::not_found("proposal"))?;
             if proposal.status != ProposalStatus::Pending {
-                return Err(ApiError::conflict("only a pending proposal can be adjusted"));
+                return Err(ApiError::conflict(
+                    "only a pending proposal can be adjusted",
+                ));
             }
             let mut payload = batch_from_proposal(&proposal)?;
             let adjusted = apply_adjustments(&mut payload, &request)?;
@@ -190,7 +201,12 @@ async fn adjust_pins(
             }
             proposal.payload = serde_json::to_value(&payload)?;
             proposal.updated_at = Timestamp::now();
-            content_store::update_proposal(database.connection(), &proposal)?;
+            content_store::update_proposal_payload(
+                database.connection(),
+                &id,
+                &proposal.payload,
+                proposal.updated_at,
+            )?;
             Ok(json!({ "id": proposal.id, "adjusted": adjusted }))
         })
         .await?;
@@ -199,13 +215,18 @@ async fn adjust_pins(
 
 fn apply_adjustments(payload: &mut BatchPayload, request: &AdjustPinsRequest) -> ApiResult<usize> {
     if request.pins.is_empty() {
-        return Err(ApiError::bad_request("pins", "at least one pin is required"));
+        return Err(ApiError::bad_request(
+            "pins",
+            "at least one pin is required",
+        ));
     }
     let mut adjusted = 0;
     for operation in &mut payload.operations {
         let keys: &[&str] = match operation.op {
             reinforce_core::OperationKind::KnowledgeCard => &["blocks"],
-            reinforce_core::OperationKind::QuestionCard => &["blocks", "stem_blocks", "explanation_blocks"],
+            reinforce_core::OperationKind::QuestionCard => {
+                &["blocks", "stem_blocks", "explanation_blocks"]
+            }
             _ => &[],
         };
         for key in keys {
@@ -248,7 +269,10 @@ fn apply_to_block(block: &mut Value, adjustment: &PinAdjustment) -> ApiResult<us
         ("label_y", adjustment.label_y),
     ] {
         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-            return Err(ApiError::bad_request(field, "must be a finite value in 0..=1"));
+            return Err(ApiError::bad_request(
+                field,
+                "must be a finite value in 0..=1",
+            ));
         }
     }
     if adjustment.no.is_none() && adjustment.index.is_none() {
@@ -263,9 +287,7 @@ fn apply_to_block(block: &mut Value, adjustment: &PinAdjustment) -> ApiResult<us
     let mut changed = 0;
     for (position, pin) in pins.iter_mut().enumerate() {
         let matches = match (adjustment.no, adjustment.index) {
-            (Some(number), _) => {
-                pin.get("no").and_then(Value::as_u64) == Some(u64::from(number))
-            }
+            (Some(number), _) => pin.get("no").and_then(Value::as_u64) == Some(u64::from(number)),
             (None, Some(index)) => index == position,
             _ => false,
         };

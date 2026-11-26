@@ -35,19 +35,19 @@ const MAX_UPLOAD_BYTES: u64 = 64 * 1024 * 1024;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/notes", get(list_notes))
-        .route("/notes/:id", get(get_note))
+        .route("/notes/{id}", get(get_note))
         .route("/knowledge_cards", get(list_knowledge_cards))
-        .route("/knowledge_cards/:id", get(get_knowledge_card))
+        .route("/knowledge_cards/{id}", get(get_knowledge_card))
         .route("/questions", get(list_questions))
-        .route("/questions/:id", get(get_question))
+        .route("/questions/{id}", get(get_question))
         .route("/exam_sets", get(list_exam_sets))
-        .route("/exam_sets/:id", get(get_exam_set))
+        .route("/exam_sets/{id}", get(get_exam_set))
         .route("/search", get(search_content))
-        .route("/graph/:kind/:id/neighbors", get(graph_neighbors))
-        .route("/resources/:id", get(get_resource))
-        .route("/resources/:id/blob", get(stream_blob))
+        .route("/graph/{kind}/{id}/neighbors", get(graph_neighbors))
+        .route("/resources/{id}", get(get_resource))
+        .route("/resources/{id}/blob", get(stream_blob))
         .route("/resources/upload", axum::routing::post(upload_resource))
-        .route("/anchors/:id", get(get_anchor))
+        .route("/anchors/{id}", get(get_anchor))
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -101,10 +101,11 @@ fn requested_status(query: &ListQuery, principal: &Principal) -> ApiResult<Optio
         Some(_) if !principal.is_owner() => Err(ApiError::forbidden(
             "learners can only read published content",
         )),
-        Some(value) => Ok(Some(
-            CardStatus::from_str(value)
-                .map_err(|error| ApiError::bad_request("status", error.to_string()))?,
-        )),
+        Some(value) => {
+            Ok(Some(CardStatus::from_str(value).map_err(|error| {
+                ApiError::bad_request("status", error.to_string())
+            })?))
+        }
     }
 }
 
@@ -153,16 +154,26 @@ async fn list_notes(
     let subject = query.subject.clone();
     let status = requested_status(&query, &principal)?;
     let owner = principal.is_owner();
-    let effective = if owner { status } else { Some(CardStatus::Published) };
+    let effective = if owner {
+        status
+    } else {
+        Some(CardStatus::Published)
+    };
     let notes = state
         .with_db(move |database| {
             let connection = database.connection();
-            select_ids::<NoteId>(connection, "notes", subject.as_deref(), effective, limit_of(query.limit))?
-                .into_iter()
-                .map(|id| content_store::get_note(connection, &id))
-                .collect::<reinforce_core::Result<Vec<_>>>()
-                .map(|items| items.into_iter().flatten().collect())
-                .map_err(Into::into)
+            select_ids::<NoteId>(
+                connection,
+                "notes",
+                subject.as_deref(),
+                effective,
+                limit_of(query.limit),
+            )?
+            .into_iter()
+            .map(|id| content_store::get_note(connection, &id))
+            .collect::<reinforce_core::Result<Vec<_>>>()
+            .map(|items| items.into_iter().flatten().collect())
+            .map_err(Into::into)
         })
         .await?;
     Ok(Json(notes))
@@ -219,7 +230,12 @@ async fn get_knowledge_card(
     principal: Principal,
 ) -> ApiResult<Json<KnowledgeCard>> {
     let card = state
-        .with_db(move |database| Ok(content_store::get_knowledge_card(database.connection(), &id)?))
+        .with_db(move |database| {
+            Ok(content_store::get_knowledge_card(
+                database.connection(),
+                &id,
+            )?)
+        })
         .await?
         .ok_or_else(|| ApiError::not_found("knowledge card"))?;
     ensure_visible(card.status, &principal)?;
@@ -264,7 +280,12 @@ async fn get_question(
     principal: Principal,
 ) -> ApiResult<Json<QuestionCard>> {
     let card = state
-        .with_db(move |database| Ok(content_store::get_question_card(database.connection(), &id)?))
+        .with_db(move |database| {
+            Ok(content_store::get_question_card(
+                database.connection(),
+                &id,
+            )?)
+        })
         .await?
         .ok_or_else(|| ApiError::not_found("question card"))?;
     ensure_visible(card.status, &principal)?;
@@ -285,11 +306,15 @@ async fn list_exam_sets(
                 values.push(SqlValue::Text(subject.to_owned()));
                 sql.push_str(&format!(" AND subject = ?{}", values.len()));
             }
-            values.push(SqlValue::Integer(i64::try_from(limit_of(query.limit)).unwrap_or(50)));
+            values.push(SqlValue::Integer(
+                i64::try_from(limit_of(query.limit)).unwrap_or(50),
+            ));
             sql.push_str(&format!(" ORDER BY id LIMIT ?{}", values.len()));
             let mut statement = connection.prepare(&sql)?;
             let ids = statement
-                .query_map(params_from_iter(values.iter()), |row| row.get::<_, ExamSetId>(0))?
+                .query_map(params_from_iter(values.iter()), |row| {
+                    row.get::<_, ExamSetId>(0)
+                })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             ids.into_iter()
                 .map(|id| content_store::get_exam_set(connection, &id))
@@ -392,7 +417,12 @@ async fn graph_neighbors(
             id: path.id.parse()?,
             key: String::new(),
         },
-        other => return Err(ApiError::bad_request("kind", format!("unknown endpoint kind {other}"))),
+        other => {
+            return Err(ApiError::bad_request(
+                "kind",
+                format!("unknown endpoint kind {other}"),
+            ));
+        }
     };
     let owner = principal.is_owner();
     let nodes = state
@@ -447,7 +477,12 @@ async fn get_anchor(
         .ok_or_else(|| ApiError::not_found("anchor"))?;
     let resource_id = anchor.resource_id.clone();
     let resource = state
-        .with_db(move |database| Ok(content_store::get_resource(database.connection(), &resource_id)?))
+        .with_db(move |database| {
+            Ok(content_store::get_resource(
+                database.connection(),
+                &resource_id,
+            )?)
+        })
         .await?
         .ok_or_else(|| ApiError::not_found("resource"))?;
     if !principal.is_owner() && resource.export_policy == ExportPolicy::OwnerOnly {
@@ -473,13 +508,16 @@ async fn upload_resource(
     {
         let name = field.name().unwrap_or_default().to_owned();
         if name == "file" {
-            let temp = state.blobs.join(format!(".upload-{}", AppState::new_session_id()));
+            let temp = state
+                .blobs
+                .join(format!(".upload-{}", AppState::new_session_id()));
             let mut file = File::create(&temp).await?;
             let mut hasher = Sha256::new();
             let mut size = 0_u64;
             let mut field = field;
             while let Some(chunk) = field.next().await {
-                let chunk = chunk.map_err(|error| ApiError::bad_request("file", error.to_string()))?;
+                let chunk =
+                    chunk.map_err(|error| ApiError::bad_request("file", error.to_string()))?;
                 if size + chunk.len() as u64 > MAX_UPLOAD_BYTES {
                     drop(file);
                     let _ = tokio::fs::remove_file(&temp).await;
@@ -492,7 +530,10 @@ async fn upload_resource(
             file.flush().await?;
             drop(file);
             let digest = hasher.finalize();
-            let hash = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+            let hash = digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
             uploaded = Some((hash, temp, size));
         } else {
             let text = field
@@ -536,18 +577,31 @@ async fn upload_resource(
 
     let kind = ResourceKind::from_str(fields.kind.as_deref().unwrap_or("image"))
         .map_err(|error| ApiError::bad_request("kind", error.to_string()))?;
-    let sensitivity = fields.sensitivity.as_deref().unwrap_or("normal").parse()
-        .map_err(|error: reinforce_core::Error| ApiError::bad_request("sensitivity", error.to_string()))?;
-    let export_policy = fields.export_policy.as_deref().unwrap_or("allow").parse()
-        .map_err(|error: reinforce_core::Error| ApiError::bad_request("export_policy", error.to_string()))?;
+    let sensitivity = fields
+        .sensitivity
+        .as_deref()
+        .unwrap_or("normal")
+        .parse()
+        .map_err(|error: reinforce_core::Error| {
+            ApiError::bad_request("sensitivity", error.to_string())
+        })?;
+    let export_policy = fields
+        .export_policy
+        .as_deref()
+        .unwrap_or("allow")
+        .parse()
+        .map_err(|error: reinforce_core::Error| {
+            ApiError::bad_request("export_policy", error.to_string())
+        })?;
     let resource = Resource {
         id: ResourceId::generate(),
         kind,
-        title: fields.title.filter(|value| !value.trim().is_empty())
+        title: fields
+            .title
+            .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| ApiError::bad_request("title", "cannot be empty"))?,
         sha256,
-        byte_size: i64::try_from(size)
-            .map_err(|_| ApiError::bad_request("file", "too large"))?,
+        byte_size: i64::try_from(size).map_err(|_| ApiError::bad_request("file", "too large"))?,
         page_count: parse_optional_i64(fields.page_count.as_deref(), "page_count")?,
         width: parse_optional_i64(fields.width.as_deref(), "width")?,
         height: parse_optional_i64(fields.height.as_deref(), "height")?,
@@ -614,12 +668,13 @@ async fn stream_blob(
     let content_type = content_type_for(&resource);
     let (start, end, partial) = match range {
         None => (0_u64, size.saturating_sub(1), false),
-        Some(header) => parse_range(&header, size)
-            .ok_or_else(|| ApiError::new(
+        Some(header) => parse_range(&header, size).ok_or_else(|| {
+            ApiError::new(
                 StatusCode::from_u16(416).unwrap_or(StatusCode::BAD_REQUEST),
                 "invalid_range",
                 "requested range is not satisfiable",
-            ))?,
+            )
+        })?,
     };
     let length = if size == 0 { 0 } else { end - start + 1 };
     let mut file = File::open(&path).await?;
@@ -636,10 +691,7 @@ async fn stream_blob(
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_LENGTH, length.to_string());
     if partial {
-        builder = builder.header(
-            header::CONTENT_RANGE,
-            format!("bytes {start}-{end}/{size}"),
-        );
+        builder = builder.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"));
     }
     builder
         .body(Body::from_stream(stream))

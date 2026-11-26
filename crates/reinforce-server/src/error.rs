@@ -1,10 +1,10 @@
-use axum::extract::{FromRequest, FromRequestParts, Request};
-use axum::http::request::Parts;
+use axum::Json;
 use axum::extract::multipart::MultipartRejection;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
+use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::StatusCode;
+use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use reinforce_core::{Error as CoreError, ValidationReport};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -71,11 +71,7 @@ impl ApiError {
     }
 
     pub fn internal(message: impl Into<String>) -> Self {
-        Self::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            message,
-        )
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", message)
     }
 }
 

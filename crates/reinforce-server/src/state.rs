@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use reinforce_core::auth::{create_user, delete_setting, get_setting, owner_exists, set_setting, user_by_id};
+use reinforce_core::auth::{
+    create_user, delete_setting, get_setting, owner_exists, set_setting, user_by_id,
+};
 use reinforce_core::{Database, QuizSession, Timestamp, UserId};
 use tokio::task::spawn_blocking;
 use uuid::Uuid;
@@ -36,15 +38,14 @@ impl Store {
         T: Send + 'static,
     {
         let database = Arc::clone(&self.database);
-        let result = spawn_blocking(move || {
+        spawn_blocking(move || {
             let mut guard = database
                 .lock()
                 .map_err(|_| ApiError::internal("database lock is poisoned"))?;
             operation(&mut guard)
         })
         .await
-        .map_err(|error| ApiError::internal(format!("blocking task failed: {error}")))?;
-        result
+        .map_err(|error| ApiError::internal(format!("blocking task failed: {error}")))?
     }
 }
 

@@ -25,7 +25,10 @@ pub fn serve_spa(path: &str) -> Response {
     let Some(file) = file else {
         return (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"))],
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            )],
             FALLBACK_HTML,
         )
             .into_response();
