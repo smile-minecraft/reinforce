@@ -134,6 +134,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS edges_identity ON edges (
     edge_type, from_key, to_key
 );
 
+CREATE INDEX IF NOT EXISTS edges_from_key ON edges (from_key);
+CREATE INDEX IF NOT EXISTS edges_to_key ON edges (to_key);
+
 CREATE TABLE IF NOT EXISTS proposals (
     id TEXT PRIMARY KEY,
     target_kind TEXT NOT NULL CHECK (target_kind IN (
