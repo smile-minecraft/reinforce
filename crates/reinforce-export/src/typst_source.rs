@@ -5,6 +5,7 @@ use reinforce_core::content::{ContentBlock, DiagramNodeBinding, OcclusionMask, O
 use reinforce_core::primitives::ResourceKind;
 use reinforce_core::{KnowledgeCard, KnowledgeCardId, Note, QuestionCard, Resource, ResourceId};
 
+use crate::math::latex_to_typst;
 use crate::model::{
     ResourceTreatment, Result, asset_extension, resource_treatment, visible_blocks,
 };
@@ -496,17 +497,27 @@ fn render_blocks(
         match block {
             ContentBlock::Markdown { text } => output.push_str(&markdown_to_typst(text)),
             ContentBlock::Math { latex, display } => {
-                if *display {
-                    output.push_str("#align(center, ");
+                if let Some(expression) = latex_to_typst(latex) {
+                    let equation = format!("${expression}$");
+                    if *display {
+                        output.push_str(&format!("#align(center, [{equation}])\n\n"));
+                    } else {
+                        output.push_str(&equation);
+                        output.push_str("\n\n");
+                    }
+                } else {
+                    if *display {
+                        output.push_str("#align(center, ");
+                    }
+                    output.push_str(&format!(
+                        "block(width: 100%, fill: rgb(250, 250, 250), inset: 4pt, raw({}, lang: \"latex\"))",
+                        escape_typst_string(latex)
+                    ));
+                    if *display {
+                        output.push(')');
+                    }
+                    output.push_str("\n\n");
                 }
-                output.push_str(&format!(
-                    "block(width: 100%, fill: rgb(250, 250, 250), inset: 4pt, raw({}, lang: \"latex\"))",
-                    escape_typst_string(latex)
-                ));
-                if *display {
-                    output.push(')');
-                }
-                output.push_str("\n\n");
             }
             ContentBlock::Diagram {
                 source,
