@@ -5,11 +5,13 @@
 //! caller's directory at render time and are never embedded in the crate.
 
 pub mod markdown;
+pub mod math;
 pub mod model;
 pub mod pdf;
 pub mod typst_source;
 
 pub use markdown::{export_markdown, import_markdown};
+pub use math::latex_to_typst;
 pub use model::{Error, ExportInput, MarkdownOptions, PdfOptions, PdfPreset, ResourceBlob, Result};
 pub use pdf::render_pdf;
 pub use typst_source::{
