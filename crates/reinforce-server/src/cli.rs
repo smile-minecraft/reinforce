@@ -1,0 +1,270 @@
+//! Offline commands: whole-store validation and standard bundle imports.
+
+use std::path::{Path, PathBuf};
+
+use reinforce_core::content_store;
+use reinforce_core::proposal::{Preparation, prepare};
+use reinforce_core::validation::{Actor, Snapshot, Staged, ValidationReport, validate_snapshot};
+use reinforce_core::{
+    AnchorId, ApprovalOptions, ApprovalOutcome, Database, EdgeId, ExamSetId, KnowledgeCardId,
+    NoteId, QuestionCardId, QuestionGroupId, ResourceId, SubmitOutcome, approve_batch,
+    submit_batch,
+};
+use rusqlite::Connection;
+use serde_json::json;
+
+use crate::bundle::{self, AssetFile};
+use crate::config::{CheckArgs, ImportArgs, ImportMode};
+use crate::error::{ApiError, ApiResult};
+
+const IMPORT_AGENT: &str = "cli-import";
+
+fn print_report(report: &ValidationReport, message: &str) -> ApiResult<()> {
+    eprintln!("{message}: {} error(s)", report.errors.len());
+    for error in &report.errors {
+        let line = serde_json::to_string(error).map_err(ApiError::from)?;
+        eprintln!("{line}");
+    }
+    Ok(())
+}
+
+fn validation_error(report: ValidationReport, message: &'static str) -> ApiError {
+    let error = ApiError::new(
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "validation_failed",
+        message,
+    );
+    ApiError {
+        details: serde_json::to_value(report).ok(),
+        ..error
+    }
+}
+
+pub(crate) fn ids<T: rusqlite::types::FromSql>(
+    connection: &Connection,
+    table: &str,
+) -> ApiResult<Vec<T>> {
+    // `table` is a fixed internal constant at every call site, never user input.
+    let mut statement = connection.prepare(&format!("SELECT id FROM {table} ORDER BY id"))?;
+    let ids = statement
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+/// Loads the published content store as one snapshot so the same hard gates
+/// used for proposals also guard an existing database.
+fn store_snapshot(connection: &Connection) -> ApiResult<Snapshot> {
+    let mut snapshot = Snapshot::new(Actor::Owner);
+    let mut index = 0;
+    macro_rules! collect {
+        ($table:literal, $id:ty, $get:path, $push:ident) => {{
+            for id in ids::<$id>(connection, $table)? {
+                let Some(value) = $get(connection, &id)? else {
+                    continue;
+                };
+                snapshot.$push(Staged {
+                    op_index: index,
+                    temp_ref: None,
+                    value,
+                });
+                index += 1;
+            }
+        }};
+    }
+    collect!(
+        "resources",
+        ResourceId,
+        content_store::get_resource,
+        push_resource
+    );
+    collect!("anchors", AnchorId, content_store::get_anchor, push_anchor);
+    collect!(
+        "exam_sets",
+        ExamSetId,
+        content_store::get_exam_set,
+        push_exam_set
+    );
+    collect!(
+        "question_groups",
+        QuestionGroupId,
+        content_store::get_question_group,
+        push_question_group
+    );
+    collect!("notes", NoteId, content_store::get_note, push_note);
+    collect!(
+        "knowledge_cards",
+        KnowledgeCardId,
+        content_store::get_knowledge_card,
+        push_knowledge_card
+    );
+    collect!(
+        "question_cards",
+        QuestionCardId,
+        content_store::get_question_card,
+        push_question_card
+    );
+    collect!("edges", EdgeId, content_store::get_edge, push_edge);
+    let _ = index;
+    Ok(snapshot)
+}
+
+pub async fn check(args: CheckArgs) -> ApiResult<()> {
+    let result = tokio::task::spawn_blocking(move || {
+        let database = Database::open(&args.db)?;
+        let connection = database.connection();
+        let snapshot = store_snapshot(connection)?;
+        let report = validate_snapshot(&snapshot, connection)?;
+        Ok::<(usize, ValidationReport), ApiError>((snapshot_all_len(&snapshot), report))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("validation task failed: {error}")))??;
+
+    let (entities, report) = result;
+    if !report.is_ok() {
+        print_report(&report, "domain validation failed")?;
+        return Err(validation_error(
+            report,
+            "domain validation failed for the store",
+        ));
+    }
+    println!("reinforce check: ok ({entities} entities validated)");
+    Ok(())
+}
+
+fn snapshot_all_len(snapshot: &Snapshot) -> usize {
+    snapshot.resources.len()
+        + snapshot.anchors.len()
+        + snapshot.exam_sets.len()
+        + snapshot.question_groups.len()
+        + snapshot.notes.len()
+        + snapshot.knowledge_cards.len()
+        + snapshot.question_cards.len()
+        + snapshot.edges.len()
+}
+
+fn blob_path(root: &Path, hash: &str) -> PathBuf {
+    let prefix = hash.get(..2).unwrap_or("xx");
+    root.join(prefix).join(hash)
+}
+
+fn publish_assets(root: &Path, assets: Vec<AssetFile>) -> ApiResult<usize> {
+    let mut published = 0;
+    for asset in assets {
+        let target = blob_path(root, asset.hash.as_str());
+        if target.exists() {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&asset.source, &target)?;
+        published += 1;
+    }
+    Ok(published)
+}
+
+/// Import failures are either operational (IO, database) or a structured
+/// validation report that must be printed field by field.
+enum ImportFailure {
+    Api(ApiError),
+    Validation(ValidationReport),
+}
+
+impl From<ApiError> for ImportFailure {
+    fn from(value: ApiError) -> Self {
+        Self::Api(value)
+    }
+}
+
+impl From<reinforce_core::Error> for ImportFailure {
+    fn from(value: reinforce_core::Error) -> Self {
+        Self::Api(value.into())
+    }
+}
+
+impl From<ValidationReport> for ImportFailure {
+    fn from(value: ValidationReport) -> Self {
+        Self::Validation(value)
+    }
+}
+
+pub async fn import(args: ImportArgs) -> ApiResult<()> {
+    let operations = bundle::read_operations(&args.bundle)?;
+    let assets = bundle::referenced_assets(&args.bundle, &operations)?;
+    let actor = match args.mode {
+        ImportMode::Staging => Actor::Agent {
+            name: IMPORT_AGENT.to_owned(),
+        },
+        ImportMode::Owner => Actor::Owner,
+    };
+    let db = args.db;
+    let blobs = args.blobs;
+    let mode = args.mode;
+
+    let summary = tokio::task::spawn_blocking(
+        move || -> Result<(reinforce_core::ProposalId, usize, usize), ImportFailure> {
+            let mut database = Database::open(&db)?;
+            // Preflight before touching the blob directory or inserting a proposal.
+            // `submit_batch` repeats validation in its own transaction.
+            let report = match prepare(database.connection(), actor.clone(), operations.clone())? {
+                Preparation::Invalid(report) => report,
+                Preparation::Ready(batch) => {
+                    validate_snapshot(&batch.snapshot, database.connection())?
+                }
+            };
+            if !report.is_ok() {
+                return Err(ImportFailure::Validation(report));
+            }
+            let blobs_written = publish_assets(&blobs, assets)?;
+            let outcome = submit_batch(database.connection_mut(), actor.clone(), operations)?;
+            let proposal = match outcome {
+                SubmitOutcome::Accepted { proposal } => proposal,
+                SubmitOutcome::Rejected { errors } => {
+                    return Err(ImportFailure::Validation(errors));
+                }
+            };
+            if mode == ImportMode::Owner {
+                match approve_batch(
+                    database.connection_mut(),
+                    &proposal.id,
+                    ApprovalOptions {
+                        reviewer: Actor::Owner,
+                        promote_verified: false,
+                    },
+                )? {
+                    ApprovalOutcome::Applied { applied, .. } => {
+                        Ok((proposal.id, applied, blobs_written))
+                    }
+                    ApprovalOutcome::Rejected { errors, .. } => {
+                        Err(ImportFailure::Validation(errors))
+                    }
+                }
+            } else {
+                Ok((proposal.id, 0, blobs_written))
+            }
+        },
+    )
+    .await
+    .map_err(|error| ApiError::internal(format!("import task failed: {error}")))?;
+
+    let summary = match summary {
+        Ok(summary) => summary,
+        Err(ImportFailure::Validation(report)) => {
+            print_report(&report, "bundle validation failed")?;
+            return Err(validation_error(report, "bundle validation failed"));
+        }
+        Err(ImportFailure::Api(error)) => return Err(error),
+    };
+    let (proposal_id, applied, blobs_written) = summary;
+    println!(
+        "{}",
+        json!({
+            "proposal": proposal_id,
+            "mode": match mode { ImportMode::Staging => "staging", ImportMode::Owner => "owner" },
+            "applied": applied,
+            "blobs_written": blobs_written,
+        })
+    );
+    Ok(())
+}

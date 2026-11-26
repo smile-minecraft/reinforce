@@ -1,4 +1,6 @@
 import type {
+  AdjustPinsRequest,
+  AdjustPinsResponse,
   Anchor,
   ApiMeta,
   AttemptDirection,
@@ -9,10 +11,14 @@ import type {
   CreateSessionRequest,
   CreateSessionResponse,
   ExamSet,
+  ExportRequest,
+  ExportResult,
   FinishSessionResponse,
   GraphNode,
   KnowledgeCard,
   Note,
+  Proposal,
+  ProposalStatus,
   QuestionCard,
   QuizAnswer,
   RawSessionState,
@@ -24,10 +30,12 @@ import type {
   SessionState,
   SubmitAnswerResponse,
   TickOutcome,
+  UpdateOperationRequest,
+  ValidationErrorItem,
+  ValidationReport,
   WeaknessReport,
 } from './types'
 import { parseSessionState, parseTickOutcome } from './types'
-import { MOCK_BLOB_URLS } from './mock/data'
 
 export class ApiError extends Error {
   status: number
@@ -42,6 +50,24 @@ export class ApiError extends Error {
     this.details = details
   }
 }
+
+export function extractValidationReport(error: unknown): ValidationReport | null {
+  if (!(error instanceof ApiError) || error.status !== 422) return null
+  const details = error.details
+  if (typeof details !== 'object' || details === null || !('errors' in details)) return null
+  const rawErrors = (details as { errors?: unknown }).errors
+  if (!Array.isArray(rawErrors)) return null
+  const errors: ValidationErrorItem[] = rawErrors.filter(
+    (item): item is ValidationErrorItem =>
+      typeof item === 'object' &&
+      item !== null &&
+      typeof (item as ValidationErrorItem).field_path === 'string' &&
+      typeof (item as ValidationErrorItem).message === 'string',
+  )
+  return errors.length > 0 ? { errors } : null
+}
+
+let mockBlobUrlsCache: Record<string, string> | null = null
 
 export function isMockMode(): boolean {
   if (!import.meta.env.DEV) return false
@@ -58,9 +84,15 @@ export function isMockMode(): boolean {
   return window.sessionStorage.getItem('reinforce:mock') === '1'
 }
 
+if (import.meta.env.DEV && isMockMode()) {
+  void import('./mock/data').then((mod) => {
+    mockBlobUrlsCache = mod.MOCK_BLOB_URLS
+  })
+}
+
 export function resourceBlobUrl(resourceId: string): string {
-  if (isMockMode() && MOCK_BLOB_URLS[resourceId]) {
-    return MOCK_BLOB_URLS[resourceId]
+  if (import.meta.env.DEV && isMockMode() && mockBlobUrlsCache?.[resourceId]) {
+    return mockBlobUrlsCache[resourceId]
   }
   return `/api/resources/${encodeURIComponent(resourceId)}/blob`
 }
@@ -73,9 +105,30 @@ interface ErrorEnvelope {
   }
 }
 
+async function parseErrorResponse(response: Response): Promise<ApiError> {
+  let code = `http_${response.status}`
+  let message = response.statusText || 'Request failed'
+  let details: unknown
+  try {
+    const parsed = (await response.json()) as ErrorEnvelope
+    if (parsed?.error) {
+      code = parsed.error.code ?? code
+      message = parsed.error.message ?? message
+      details = parsed.error.details
+    }
+  } catch {
+    // Fall back to HTTP status text when response is not JSON.
+  }
+  return new ApiError(response.status, code, message, details)
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (import.meta.env.DEV && isMockMode()) {
-    const { handleMockRequest } = await import('./mock/handler')
+    const [{ handleMockRequest }, { MOCK_BLOB_URLS }] = await Promise.all([
+      import('./mock/handler'),
+      import('./mock/data'),
+    ])
+    mockBlobUrlsCache = MOCK_BLOB_URLS
     const mockRes = await handleMockRequest(path, init)
     if (mockRes.status >= 400) {
       const env = mockRes.body as ErrorEnvelope
@@ -101,26 +154,79 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    let code = `http_${response.status}`
-    let message = response.statusText || 'Request failed'
-    let details: unknown
-    try {
-      const parsed = (await response.json()) as ErrorEnvelope
-      if (parsed?.error) {
-        code = parsed.error.code ?? code
-        message = parsed.error.message ?? message
-        details = parsed.error.details
-      }
-    } catch {
-      // Fall back to HTTP status text when response is not JSON.
-    }
-    throw new ApiError(response.status, code, message, details)
+    throw await parseErrorResponse(response)
   }
 
   if (response.status === 204) {
     return undefined as T
   }
   return (await response.json()) as T
+}
+
+function parseFilenameFromHeader(headerValue: string | null, fallback: string): string {
+  if (!headerValue) return fallback
+  const utf8Match = headerValue.match(/filename\*=UTF-8''([^;\s]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1])
+    } catch {
+      return utf8Match[1]
+    }
+  }
+  const plainMatch = headerValue.match(/filename="?([^";\n]+)"?/i)
+  return plainMatch?.[1]?.trim() || fallback
+}
+
+async function apiFetchBlob(
+  path: string,
+  init: RequestInit | undefined,
+  fallbackFilename: string,
+): Promise<ExportResult> {
+  if (import.meta.env.DEV && isMockMode()) {
+    const [{ handleMockBlobRequest }, { MOCK_BLOB_URLS }] = await Promise.all([
+      import('./mock/handler'),
+      import('./mock/data'),
+    ])
+    mockBlobUrlsCache = MOCK_BLOB_URLS
+    const mockRes = await handleMockBlobRequest(path, init)
+    if (mockRes.status >= 400) {
+      const env = mockRes.errorBody as ErrorEnvelope
+      throw new ApiError(
+        mockRes.status,
+        env?.error?.code ?? 'mock_error',
+        env?.error?.message ?? 'Mock export failed',
+        env?.error?.details,
+      )
+    }
+    return {
+      blob: mockRes.blob!,
+      filename: mockRes.filename ?? fallbackFilename,
+      contentType: mockRes.contentType ?? mockRes.blob!.type,
+    }
+  }
+
+  const headers = new Headers(init?.headers)
+  if (init?.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  const response = await fetch(path, {
+    ...init,
+    headers,
+    credentials: 'same-origin',
+  })
+
+  if (!response.ok) {
+    throw await parseErrorResponse(response)
+  }
+
+  const blob = await response.blob()
+  const contentType = response.headers.get('Content-Type') ?? blob.type
+  const filename = parseFilenameFromHeader(
+    response.headers.get('Content-Disposition'),
+    fallbackFilename,
+  )
+  return { blob, filename, contentType }
 }
 
 function buildQuery(params: Record<string, string | number | undefined>): string {
@@ -177,6 +283,54 @@ export const api = {
 
   getResource: (id: string) => apiFetch<Resource>(`/api/resources/${encodeURIComponent(id)}`),
   getAnchor: (id: string) => apiFetch<Anchor>(`/api/anchors/${encodeURIComponent(id)}`),
+
+  // Proposals & Triage
+  listProposals: (status?: ProposalStatus) =>
+    apiFetch<Proposal[]>(`/api/proposals${buildQuery({ status })}`),
+  getProposal: (id: string) => apiFetch<Proposal>(`/api/proposals/${encodeURIComponent(id)}`),
+  approveProposal: (id: string, body: { promote_verified: boolean }) =>
+    apiFetch<Proposal>(`/api/proposals/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  rejectProposal: (id: string, body: { review_note: string }) =>
+    apiFetch<Proposal>(`/api/proposals/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  adjustProposalPins: (id: string, body: AdjustPinsRequest) =>
+    apiFetch<AdjustPinsResponse>(`/api/proposals/${encodeURIComponent(id)}/pins`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  updateProposalOperation: (id: string, index: number, body: UpdateOperationRequest) =>
+    apiFetch<Proposal>(
+      `/api/proposals/${encodeURIComponent(id)}/operations/${encodeURIComponent(String(index))}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      },
+    ),
+
+  // Export
+  exportContent: (body: ExportRequest) => {
+    const ext = body.format === 'pdf' ? 'pdf' : 'zip'
+    const scopeTag =
+      body.scope.kind === 'note'
+        ? 'note'
+        : body.scope.kind === 'subject'
+          ? body.scope.subject
+          : 'weakness'
+    const fallback = `reinforce-${scopeTag}-${body.preset ?? body.format}.${ext}`
+    return apiFetchBlob(
+      '/api/export',
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+      fallback,
+    )
+  },
 
   // Study
   createSession: async (request: CreateSessionRequest): Promise<CreateSessionResponse> => {
