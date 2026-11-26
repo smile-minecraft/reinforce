@@ -14,8 +14,15 @@ use rusqlite::Connection;
 use serde_json::json;
 
 use crate::bundle::{self, AssetFile};
-use crate::config::{CheckArgs, ImportArgs, ImportMode};
+use crate::config::{
+    CheckArgs, ExportArgs, ExportFormat, ExportPreset, ImportArgs, ImportMode, ServeArgs,
+};
 use crate::error::{ApiError, ApiResult};
+use crate::export::{
+    ExportJob, empty_export, has_content, render_blocking, write_markdown_directory,
+};
+use crate::export_scope::ExportScope;
+use crate::state::AppState;
 
 const IMPORT_AGENT: &str = "cli-import";
 
@@ -265,6 +272,139 @@ pub async fn import(args: ImportArgs) -> ApiResult<()> {
             "applied": applied,
             "blobs_written": blobs_written,
         })
+    );
+    Ok(())
+}
+
+fn export_preset(preset: ExportPreset) -> reinforce_export::PdfPreset {
+    match preset {
+        ExportPreset::Standard => reinforce_export::PdfPreset::Standard,
+        ExportPreset::GoodNotes => reinforce_export::PdfPreset::GoodNotes,
+        ExportPreset::Worksheet => reinforce_export::PdfPreset::Worksheet,
+    }
+}
+
+fn validate_web_base_url(value: Option<&str>) -> ApiResult<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.starts_with("https://") || value.starts_with("http://") {
+        Ok(Some(value.to_owned()))
+    } else {
+        Err(ApiError::bad_request(
+            "web_base_url",
+            "must be an http or https URL",
+        ))
+    }
+}
+
+fn export_scope(args: &ExportArgs) -> ApiResult<ExportScope> {
+    if let Some(note) = &args.note {
+        let note_id = note
+            .parse()
+            .map_err(|_| ApiError::bad_request("note", "invalid note id"))?;
+        return Ok(ExportScope::Note { note_id });
+    }
+    if let Some(subject) = &args.subject {
+        if subject.trim().is_empty() {
+            return Err(ApiError::bad_request("subject", "cannot be empty"));
+        }
+        return Ok(ExportScope::Subject {
+            subject: subject.clone(),
+        });
+    }
+    let threshold = args
+        .weakness_threshold
+        .ok_or_else(|| ApiError::bad_request("scope", "exactly one scope is required"))?;
+    if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+        return Err(ApiError::bad_request(
+            "weakness_threshold",
+            "must be between 0 and 1",
+        ));
+    }
+    Ok(ExportScope::Weakness {
+        threshold,
+        user_id: reinforce_core::UserId::generate(),
+    })
+}
+
+pub async fn export(mut args: ExportArgs) -> ApiResult<()> {
+    let scope = export_scope(&args)?;
+    let web_base_url = validate_web_base_url(args.web_base_url.as_deref())?;
+    let preset = match (args.format, args.preset) {
+        (ExportFormat::Pdf, None) => {
+            return Err(ApiError::bad_request("preset", "required for pdf exports"));
+        }
+        (_, Some(preset)) => Some(export_preset(preset)),
+        (ExportFormat::Markdown, None) => None,
+    };
+
+    let config = ServeArgs {
+        host: "127.0.0.1".to_owned(),
+        port: 0,
+        db: std::mem::take(&mut args.db),
+        blobs: std::mem::take(&mut args.blobs),
+        fonts: std::mem::take(&mut args.fonts),
+        auth: crate::config::AuthMode::Single,
+        demo: false,
+    };
+    let state = AppState::open(&config).await?;
+    let scope = match scope {
+        ExportScope::Weakness { threshold, .. } => ExportScope::Weakness {
+            threshold,
+            user_id: state.owner_id.clone(),
+        },
+        other => other,
+    };
+    let blobs = state.blobs.clone();
+    let input = state
+        .with_db(move |database| {
+            crate::export_scope::select(database.connection(), &scope, true, &blobs)
+        })
+        .await?;
+    if !has_content(&input) {
+        return Err(empty_export());
+    }
+
+    let job = match args.format {
+        ExportFormat::Pdf => ExportJob::Pdf {
+            preset: preset.expect("pdf preset was validated"),
+            fonts_dir: config.fonts.clone(),
+            web_base_url,
+            viewer_is_owner: true,
+        },
+        ExportFormat::Markdown => ExportJob::Markdown {
+            viewer_is_owner: true,
+        },
+    };
+    let out = args.out;
+    if matches!(args.format, ExportFormat::Markdown)
+        && out.extension().and_then(|value| value.to_str()) != Some("zip")
+    {
+        if let Some(parent) = out.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        write_markdown_directory(&input, true, &out)?;
+        println!(
+            "reinforce export: wrote markdown bundle to {}",
+            out.display()
+        );
+        return Ok(());
+    }
+
+    let bytes = render_blocking(&input, job)?;
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(&out, &bytes)?;
+    println!(
+        "reinforce export: wrote {} bytes to {}",
+        bytes.len(),
+        out.display()
     );
     Ok(())
 }

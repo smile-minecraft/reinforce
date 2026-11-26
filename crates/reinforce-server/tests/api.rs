@@ -47,6 +47,7 @@ async fn test_state_with_host(mode: AuthMode, host: &str) -> (TestApp, AppState,
         port: 0,
         db: directory.join("test.db"),
         blobs: directory.join("blobs"),
+        fonts: directory.join("fonts"),
         auth: mode,
         demo: true,
     };

@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::error::{ApiError, ApiResult};
 
@@ -32,6 +32,49 @@ pub enum Command {
     Mcp(McpArgs),
     Check(CheckArgs),
     Import(ImportArgs),
+    Export(ExportArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ExportFormat {
+    Pdf,
+    Markdown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ExportPreset {
+    Standard,
+    GoodNotes,
+    Worksheet,
+}
+
+#[derive(Debug, Clone, Args)]
+#[command(group(
+    ArgGroup::new("scope")
+        .required(true)
+        .args(["note", "subject", "weakness_threshold"]),
+))]
+pub struct ExportArgs {
+    #[arg(long, value_enum)]
+    pub format: ExportFormat,
+    #[arg(long, value_enum)]
+    pub preset: Option<ExportPreset>,
+    #[arg(long)]
+    pub out: std::path::PathBuf,
+    #[arg(long, group = "scope")]
+    pub note: Option<String>,
+    #[arg(long, group = "scope")]
+    pub subject: Option<String>,
+    #[arg(long, group = "scope")]
+    pub weakness_threshold: Option<f64>,
+    #[arg(long, default_value = "./reinforce.db")]
+    pub db: std::path::PathBuf,
+    #[arg(long, default_value = "./blobs")]
+    pub blobs: std::path::PathBuf,
+    #[arg(long, default_value = "./fonts")]
+    pub fonts: std::path::PathBuf,
+    #[arg(long)]
+    pub web_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -78,6 +121,8 @@ pub struct ServeArgs {
     pub db: std::path::PathBuf,
     #[arg(long, default_value = "./blobs")]
     pub blobs: std::path::PathBuf,
+    #[arg(long, default_value = "./fonts")]
+    pub fonts: std::path::PathBuf,
     #[arg(long, value_enum, default_value_t = AuthMode::Single)]
     pub auth: AuthMode,
     #[arg(long)]

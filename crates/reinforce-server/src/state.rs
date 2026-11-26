@@ -63,6 +63,7 @@ pub struct SessionSlot {
 pub struct AppState {
     pub store: Store,
     pub blobs: PathBuf,
+    pub fonts: PathBuf,
     pub auth_mode: AuthMode,
     /// The `--host` value, accepted as a `Host` header in single-auth mode.
     pub bind_host: String,
@@ -111,6 +112,7 @@ impl AppState {
         Ok(Self {
             store,
             blobs: config.blobs.clone(),
+            fonts: config.fonts.clone(),
             auth_mode,
             bind_host: config.host.clone(),
             owner_id,

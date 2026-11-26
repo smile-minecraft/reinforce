@@ -38,6 +38,7 @@ async fn test_state(mode: AuthMode) -> (TestApp, AppState, TestDir) {
         port: 0,
         db: directory.join("test.db"),
         blobs: directory.join("blobs"),
+        fonts: directory.join("fonts"),
         auth: mode,
         demo: true,
     };

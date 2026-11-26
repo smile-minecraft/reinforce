@@ -11,6 +11,7 @@ use crate::state::AppState;
 
 mod auth;
 mod content;
+mod export;
 mod proposals;
 mod study;
 
@@ -19,6 +20,7 @@ pub fn router() -> Router<AppState> {
         .route("/meta", get(meta))
         .merge(auth::router())
         .merge(content::router())
+        .merge(export::router())
         .merge(proposals::router())
         .merge(study::router())
         .fallback(api_not_found);
