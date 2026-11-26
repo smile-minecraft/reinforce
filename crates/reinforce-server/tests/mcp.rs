@@ -89,7 +89,7 @@ async fn json_body(response: axum::response::Response) -> Value {
     if let Some(data) = text
         .lines()
         .filter_map(|line| line.strip_prefix("data: "))
-        .last()
+        .next_back()
         && let Ok(value) = serde_json::from_str(data)
     {
         return value;
