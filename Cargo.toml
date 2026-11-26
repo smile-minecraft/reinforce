@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/smile-minecraft/reinforce"
+authors = ["The Reinforce Contributors"]
+
+[workspace.dependencies]
+reinforce-core = { path = "crates/reinforce-core", version = "0.1.0" }
+reinforce-export = { path = "crates/reinforce-export", version = "0.1.0" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

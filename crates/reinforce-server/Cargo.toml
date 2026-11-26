@@ -1,0 +1,20 @@
+[package]
+name = "reinforce-server"
+description = "Reinforce server, CLI and MCP entrypoint."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "reinforce"
+path = "src/main.rs"
+
+[dependencies]
+reinforce-core.workspace = true
+reinforce-export.workspace = true
+
+[lints]
+workspace = true
