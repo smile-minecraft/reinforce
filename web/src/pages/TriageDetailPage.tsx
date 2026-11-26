@@ -32,6 +32,8 @@ import {
 import type { ValidationReport } from '../api/types'
 import { AnchorSourceViewer } from '../components/AnchorSourceViewer'
 import { OperationPreviewCard } from '../triage/OperationPreviewCard'
+import { OperationTextEditor } from '../triage/OperationTextEditor'
+import { PinCalibrationBlock } from '../triage/PinCalibrationBlock'
 import {
   extractProposalAnchors,
   formatShortTimestamp,
@@ -85,7 +87,7 @@ function TriageDetailWorkspace({
   const [rejectOpen, setRejectOpen] = useState(false)
   const [validationReport, setValidationReport] = useState<ValidationReport | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [editingOpIndex] = useState<number | null>(null)
+  const [editingOpIndex, setEditingOpIndex] = useState<number | null>(null)
 
   const [swipeDx, setSwipeDx] = useState(0)
   const swipeRef = useRef<{
@@ -503,20 +505,51 @@ function TriageDetailWorkspace({
               </div>
             )}
 
-            {operations.map((op, index) => (
-              <OperationPreviewCard
-                key={`${op.op}-${op.id ?? index}`}
-                op={op}
-                index={index}
-                opErrors={getOperationValidationErrors(validationReport, index, op.temp_ref)}
-                canEdit={false}
-                isEditing={editingOpIndex === index}
-                onSelectAnchor={(aid) => {
-                  setSelectedAnchorId(aid)
-                  setMobileSourceOpen(true)
-                }}
-              />
-            ))}
+            {operations.map((op, index) => {
+              const opErrors = getOperationValidationErrors(validationReport, index, op.temp_ref)
+              return (
+                <OperationPreviewCard
+                  key={`${op.op}-${op.id ?? index}`}
+                  op={op}
+                  index={index}
+                  opErrors={opErrors}
+                  canEdit={isPendingProposal}
+                  isEditing={editingOpIndex === index}
+                  onToggleEdit={() =>
+                    setEditingOpIndex((prev) => (prev === index ? null : index))
+                  }
+                  onSelectAnchor={(aid) => {
+                    setSelectedAnchorId(aid)
+                    setMobileSourceOpen(true)
+                  }}
+                  renderInteractivePins={(block) => (
+                    <PinCalibrationBlock
+                      proposalId={proposal.id}
+                      resourceId={block.resource_id}
+                      overlayResourceId={block.overlay_resource_id}
+                      pins={block.pins}
+                      readOnly={!isPendingProposal}
+                      onValidationError={(report) => setValidationReport(report)}
+                    />
+                  )}
+                  editorNode={
+                    <OperationTextEditor
+                      proposalId={proposal.id}
+                      op={op}
+                      opIndex={index}
+                      opErrors={opErrors}
+                      onSaved={() => {
+                        setEditingOpIndex(null)
+                        setValidationReport(null)
+                        onToast(t('triage.saved'))
+                      }}
+                      onCancel={() => setEditingOpIndex(null)}
+                      onValidationError={(report) => setValidationReport(report)}
+                    />
+                  }
+                />
+              )
+            })}
           </div>
 
           {/* Sticky Decision Bar */}
