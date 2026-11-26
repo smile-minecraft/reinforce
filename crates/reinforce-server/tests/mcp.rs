@@ -540,3 +540,82 @@ async fn invite_mode_mcp_accepts_public_hostnames_behind_a_proxy() {
     .await;
     assert_eq!(listed["result"]["tools"].as_array().map(Vec::len), Some(8));
 }
+
+#[test]
+fn stdio_binary_writes_only_json_rpc_to_stdout() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    let dir = TestDir::new();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_reinforce"))
+        .arg("mcp")
+        .arg("--db")
+        .arg(dir.db())
+        .arg("--blobs")
+        .arg(dir.0.join("blobs"))
+        .env("RUST_LOG", "debug")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn reinforce mcp");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+    let mut read_message = || {
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("read stdout line");
+        serde_json::from_str::<Value>(&line)
+            .unwrap_or_else(|error| panic!("stdout line is not JSON-RPC ({error}): {line:?}"))
+    };
+
+    let send = |stdin: &mut std::process::ChildStdin, message: Value| {
+        writeln!(stdin, "{message}").expect("write stdin");
+        stdin.flush().expect("flush stdin");
+    };
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "stdio-test", "version": "0"}
+            }
+        }),
+    );
+    let init = read_message();
+    assert_eq!(init["id"], 1);
+    assert_eq!(init["result"]["serverInfo"]["name"], "reinforce");
+    assert_eq!(
+        init["result"]["serverInfo"]["version"],
+        reinforce_core::VERSION
+    );
+
+    send(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    );
+    send(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+    );
+    let tools = read_message();
+    assert_eq!(tools["id"], 2);
+    assert!(
+        tools["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty())
+    );
+
+    drop(stdin);
+    let status = child.wait().expect("wait for reinforce mcp");
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut stdout, &mut rest).expect("drain stdout");
+    for line in rest.lines().filter(|line| !line.trim().is_empty()) {
+        serde_json::from_str::<Value>(line)
+            .unwrap_or_else(|error| panic!("stdout line is not JSON-RPC ({error}): {line:?}"));
+    }
+    assert!(status.success(), "reinforce mcp exited with {status}");
+}

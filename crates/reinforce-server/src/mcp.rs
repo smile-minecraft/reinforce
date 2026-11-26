@@ -28,7 +28,7 @@ use rmcp::service::ServiceExt;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
-use rmcp::{ErrorData, tool, tool_router};
+use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -176,7 +176,7 @@ fn batch_lines_to_operations(lines: Vec<BatchLine>) -> Result<Vec<BatchOperation
         .collect()
 }
 
-#[tool_router(server_handler)]
+#[tool_router]
 impl McpServer {
     #[tool(description = "List stored resources with optional kind filter and result limit.")]
     pub async fn resource_list(
@@ -430,6 +430,9 @@ impl McpServer {
         success(result)
     }
 }
+
+#[tool_handler(router = Self::tool_router(), name = "reinforce")]
+impl ServerHandler for McpServer {}
 
 pub async fn run_stdio(args: McpArgs) -> ApiResult<()> {
     let config = ServeArgs {
