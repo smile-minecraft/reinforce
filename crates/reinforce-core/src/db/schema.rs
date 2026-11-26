@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS knowledge_cards (
     topics_json TEXT NOT NULL DEFAULT '[]',
     title TEXT NOT NULL,
     blocks_json TEXT NOT NULL DEFAULT '[]',
+    search_text TEXT NOT NULL DEFAULT '',
     anchor_ids_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL CHECK (status IN ('draft','staging','published','archived')),
     verification TEXT NOT NULL CHECK (verification IN ('unchecked','verified')),
@@ -91,6 +92,7 @@ CREATE TABLE IF NOT EXISTS question_cards (
     topics_json TEXT NOT NULL DEFAULT '[]',
     stem_blocks_json TEXT NOT NULL DEFAULT '[]',
     explanation_blocks_json TEXT NOT NULL DEFAULT '[]',
+    search_text TEXT NOT NULL DEFAULT '',
     anchor_ids_json TEXT NOT NULL DEFAULT '[]',
     question_type TEXT NOT NULL CHECK (question_type IN (
         'single_choice','multiple_choice','short_answer','vocab','image_qa',
@@ -212,47 +214,48 @@ CREATE TABLE IF NOT EXISTS user_card_meta (
 );
 
 -- External-content FTS5 with the trigram tokenizer so CJK substring queries work.
+-- Only readable text is indexed; topics are flattened by the writer.
 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_cards_fts USING fts5(
-    title, subject, topics_json, blocks_json,
+    title, subject, search_text,
     content='knowledge_cards', content_rowid='rowid', tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS knowledge_cards_fts_insert AFTER INSERT ON knowledge_cards BEGIN
-    INSERT INTO knowledge_cards_fts(rowid, title, subject, topics_json, blocks_json)
-    VALUES (new.rowid, new.title, new.subject, new.topics_json, new.blocks_json);
+    INSERT INTO knowledge_cards_fts(rowid, title, subject, search_text)
+    VALUES (new.rowid, new.title, new.subject, new.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS knowledge_cards_fts_delete AFTER DELETE ON knowledge_cards BEGIN
-    INSERT INTO knowledge_cards_fts(knowledge_cards_fts, rowid, title, subject, topics_json, blocks_json)
-    VALUES ('delete', old.rowid, old.title, old.subject, old.topics_json, old.blocks_json);
+    INSERT INTO knowledge_cards_fts(knowledge_cards_fts, rowid, title, subject, search_text)
+    VALUES ('delete', old.rowid, old.title, old.subject, old.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS knowledge_cards_fts_update AFTER UPDATE ON knowledge_cards BEGIN
-    INSERT INTO knowledge_cards_fts(knowledge_cards_fts, rowid, title, subject, topics_json, blocks_json)
-    VALUES ('delete', old.rowid, old.title, old.subject, old.topics_json, old.blocks_json);
-    INSERT INTO knowledge_cards_fts(rowid, title, subject, topics_json, blocks_json)
-    VALUES (new.rowid, new.title, new.subject, new.topics_json, new.blocks_json);
+    INSERT INTO knowledge_cards_fts(knowledge_cards_fts, rowid, title, subject, search_text)
+    VALUES ('delete', old.rowid, old.title, old.subject, old.search_text);
+    INSERT INTO knowledge_cards_fts(rowid, title, subject, search_text)
+    VALUES (new.rowid, new.title, new.subject, new.search_text);
 END;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS question_cards_fts USING fts5(
-    subject, topics_json, stem_blocks_json, explanation_blocks_json,
+    subject, search_text,
     content='question_cards', content_rowid='rowid', tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS question_cards_fts_insert AFTER INSERT ON question_cards BEGIN
-    INSERT INTO question_cards_fts(rowid, subject, topics_json, stem_blocks_json, explanation_blocks_json)
-    VALUES (new.rowid, new.subject, new.topics_json, new.stem_blocks_json, new.explanation_blocks_json);
+    INSERT INTO question_cards_fts(rowid, subject, search_text)
+    VALUES (new.rowid, new.subject, new.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS question_cards_fts_delete AFTER DELETE ON question_cards BEGIN
-    INSERT INTO question_cards_fts(question_cards_fts, rowid, subject, topics_json, stem_blocks_json, explanation_blocks_json)
-    VALUES ('delete', old.rowid, old.subject, old.topics_json, old.stem_blocks_json, old.explanation_blocks_json);
+    INSERT INTO question_cards_fts(question_cards_fts, rowid, subject, search_text)
+    VALUES ('delete', old.rowid, old.subject, old.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS question_cards_fts_update AFTER UPDATE ON question_cards BEGIN
-    INSERT INTO question_cards_fts(question_cards_fts, rowid, subject, topics_json, stem_blocks_json, explanation_blocks_json)
-    VALUES ('delete', old.rowid, old.subject, old.topics_json, old.stem_blocks_json, old.explanation_blocks_json);
-    INSERT INTO question_cards_fts(rowid, subject, topics_json, stem_blocks_json, explanation_blocks_json)
-    VALUES (new.rowid, new.subject, new.topics_json, new.stem_blocks_json, new.explanation_blocks_json);
+    INSERT INTO question_cards_fts(question_cards_fts, rowid, subject, search_text)
+    VALUES ('delete', old.rowid, old.subject, old.search_text);
+    INSERT INTO question_cards_fts(rowid, subject, search_text)
+    VALUES (new.rowid, new.subject, new.search_text);
 END;
 "#;

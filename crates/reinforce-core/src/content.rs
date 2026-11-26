@@ -201,6 +201,60 @@ pub struct QuestionCard {
     pub updated_at: Timestamp,
 }
 
+/// Joins searchable values with single spaces so JSON punctuation is never indexed.
+fn join_search_text(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Extracts readable content from typed blocks, never serde tags or field names.
+pub fn search_text_for_blocks(blocks: &[ContentBlock]) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for block in blocks {
+        match block {
+            ContentBlock::Markdown { text } => parts.push(text),
+            ContentBlock::Math { latex, .. } => parts.push(latex),
+            ContentBlock::Diagram { source, .. } => parts.push(source),
+            ContentBlock::ImageOcclusion { masks, .. } => {
+                parts.extend(masks.iter().map(|mask| mask.group_id.as_str()));
+            }
+            ContentBlock::InteractivePins { pins, .. } => {
+                for pin in pins {
+                    parts.push(&pin.term_primary);
+                    parts.extend(pin.term_secondary.as_deref());
+                    parts.extend(pin.detail.as_deref());
+                    parts.extend(pin.hint.as_deref());
+                }
+            }
+        }
+    }
+    join_search_text(&parts)
+}
+
+pub fn search_text_for_knowledge_card(card: &KnowledgeCard) -> String {
+    let block_text = search_text_for_blocks(&card.blocks);
+    let mut parts: Vec<&str> = card.topics.iter().map(String::as_str).collect();
+    parts.push(&block_text);
+    join_search_text(&parts)
+}
+
+pub fn search_text_for_question_card(card: &QuestionCard) -> String {
+    let stem_text = search_text_for_blocks(&card.stem_blocks);
+    let explanation_text = search_text_for_blocks(&card.explanation_blocks);
+    let mut parts: Vec<&str> = card.topics.iter().map(String::as_str).collect();
+    parts.push(&stem_text);
+    parts.push(&explanation_text);
+    for option in &card.options {
+        parts.push(&option.content);
+        parts.extend(option.explanation.as_deref());
+    }
+    join_search_text(&parts)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalTarget {
@@ -323,4 +377,86 @@ pub struct Edge {
 pub struct GraphNode {
     pub endpoint: EdgeEndpoint,
     pub depth: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::DiagramSyntax;
+
+    #[test]
+    fn block_search_text_excludes_json_keys_and_type_names() {
+        let blocks = vec![
+            ContentBlock::Markdown {
+                text: "粒線體運輸 mechanism".to_owned(),
+            },
+            ContentBlock::Math {
+                latex: "\\alpha + \\beta".to_owned(),
+                display: false,
+            },
+            ContentBlock::Diagram {
+                source: "A --> B".to_owned(),
+                syntax: DiagramSyntax::Mermaid,
+                svg_cache: None,
+                node_bindings: Vec::new(),
+            },
+            ContentBlock::ImageOcclusion {
+                resource_id: ResourceId::generate(),
+                masks: vec![OcclusionMask {
+                    group_id: "外膜".to_owned(),
+                    rect: NormalizedRect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 0.1,
+                        h: 0.1,
+                    },
+                }],
+            },
+            ContentBlock::InteractivePins {
+                resource_id: ResourceId::generate(),
+                overlay_resource_id: None,
+                pins: vec![Pin {
+                    no: 1,
+                    x: 0.2,
+                    y: 0.3,
+                    label_x: 0.4,
+                    label_y: 0.5,
+                    term_primary: "鈉幫浦".to_owned(),
+                    term_secondary: Some("Na/K ATPase".to_owned()),
+                    detail: Some("消耗 ATP".to_owned()),
+                    hint: Some("位於膜上".to_owned()),
+                    linked_card_id: None,
+                }],
+            },
+        ];
+
+        let text = search_text_for_blocks(&blocks);
+        for needle in [
+            "粒線體運輸",
+            "\\alpha",
+            "A --> B",
+            "外膜",
+            "鈉幫浦",
+            "Na/K ATPase",
+            "消耗 ATP",
+            "位於膜上",
+        ] {
+            assert!(text.contains(needle), "missing {needle} in {text}");
+        }
+        for absent in [
+            "markdown",
+            "math",
+            "diagram",
+            "image_occlusion",
+            "interactive_pins",
+            "resource_id",
+            "svg_cache",
+            "type",
+        ] {
+            assert!(
+                !text.contains(absent),
+                "unexpected JSON token {absent} in {text}"
+            );
+        }
+    }
 }

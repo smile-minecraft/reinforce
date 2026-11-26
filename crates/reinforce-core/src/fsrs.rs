@@ -81,8 +81,7 @@ pub fn recompute_scheduling(
     let mut ordered: Vec<&AttemptLog> = attempts.iter().collect();
     ordered.sort_by(|left, right| {
         left.created_at
-            .as_str()
-            .cmp(&right.created_at.as_str())
+            .cmp(&right.created_at)
             .then_with(|| left.id.as_str().cmp(&right.id.as_str()))
     });
 

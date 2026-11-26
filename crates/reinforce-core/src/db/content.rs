@@ -4,7 +4,8 @@ use serde::de::DeserializeOwned;
 
 use crate::content::{
     Anchor, Edge, EdgeEndpoint, ExamSet, KnowledgeCard, Note, Proposal, ProposalTarget,
-    QuestionCard, QuestionGroup, Resource,
+    QuestionCard, QuestionGroup, Resource, search_text_for_knowledge_card,
+    search_text_for_question_card,
 };
 use crate::hash::ContentHash;
 use crate::primitives::{
@@ -164,15 +165,16 @@ pub fn get_anchor(connection: &Connection, id: &AnchorId) -> Result<Option<Ancho
 pub fn insert_knowledge_card(connection: &Connection, card: &KnowledgeCard) -> Result<()> {
     connection.execute(
         "INSERT INTO knowledge_cards (
-            id, subject, topics_json, title, blocks_json, anchor_ids_json, status,
+            id, subject, topics_json, title, blocks_json, search_text, anchor_ids_json, status,
             verification, unsure_count, metadata_json, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             card.id,
             card.subject,
             to_json(&card.topics)?,
             card.title,
             to_json(&card.blocks)?,
+            search_text_for_knowledge_card(card),
             to_json(&card.anchor_ids)?,
             card.status,
             card.verification,
@@ -343,10 +345,10 @@ pub fn insert_question_card(connection: &Connection, card: &QuestionCard) -> Res
     connection.execute(
         "INSERT INTO question_cards (
             id, exam_set_id, question_group_id, question_no, subject, topics_json,
-            stem_blocks_json, explanation_blocks_json, anchor_ids_json, question_type,
+            stem_blocks_json, explanation_blocks_json, search_text, anchor_ids_json, question_type,
             grading_mode, options_json, answer_json, accepted_answers_json, answer_source_kind,
             answer_basis, status, verification, unsure_count, metadata_json, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
         params![
             card.id,
             card.exam_set_id,
@@ -356,6 +358,7 @@ pub fn insert_question_card(connection: &Connection, card: &QuestionCard) -> Res
             to_json(&card.topics)?,
             to_json(&card.stem_blocks)?,
             to_json(&card.explanation_blocks)?,
+            search_text_for_question_card(card),
             to_json(&card.anchor_ids)?,
             card.question_type,
             card.grading_mode,

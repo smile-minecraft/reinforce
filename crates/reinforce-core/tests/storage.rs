@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
 use reinforce_core::content::{ContentBlock, OutlineNode, QuestionOption};
 use reinforce_core::db::{content as store, search, study as study_store};
 use reinforce_core::fsrs::recompute_scheduling;
@@ -74,6 +77,29 @@ fn edge(edge_type: EdgeType, from: EdgeEndpoint, to: EdgeEndpoint) -> Edge {
         from,
         to,
         created_at: Timestamp::now(),
+    }
+}
+
+fn attempt_at(
+    user_id: &UserId,
+    card_id: &CardId,
+    timestamp: &str,
+    is_correct: bool,
+    confidence: Confidence,
+) -> AttemptLog {
+    AttemptLog {
+        id: AttemptId::generate(),
+        user_id: user_id.clone(),
+        card_id: card_id.clone(),
+        direction: AttemptDirection::Default,
+        session_mode: SessionMode::DailyDue,
+        submitted_payload: json!({}),
+        is_correct,
+        duration_ms: 1_000,
+        confidence,
+        error_tags: vec![],
+        created_at: timestamp.parse().unwrap(),
+        sync_cursor: 1,
     }
 }
 
@@ -506,4 +532,204 @@ fn invalid_enum_values_are_rejected() {
             [now],
         )
         .is_err());
+}
+
+#[test]
+fn timestamp_text_order_matches_chronological_order_in_sql_and_rust() {
+    let database = Database::open_in_memory().unwrap();
+    let connection = database.connection();
+    let user = User {
+        id: UserId::generate(),
+        display_name: "learner".to_owned(),
+        created_at: Timestamp::now(),
+    };
+    study_store::insert_user(connection, &user).unwrap();
+    let card_id = CardId::from(knowledge_card("ordered").id);
+    let logs = [
+        attempt_at(
+            &user.id,
+            &card_id,
+            "2026-11-26T15:19:13.25+08:00",
+            true,
+            Confidence::Certain,
+        ),
+        attempt_at(
+            &user.id,
+            &card_id,
+            "2026-11-26T07:19:13.5Z",
+            false,
+            Confidence::Certain,
+        ),
+        attempt_at(
+            &user.id,
+            &card_id,
+            "2026-11-26T07:19:14Z",
+            true,
+            Confidence::Split,
+        ),
+    ];
+    let expected: Vec<AttemptId> = logs.iter().map(|log| log.id.clone()).collect();
+
+    for index in [2, 0, 1] {
+        study_store::append_attempt(connection, &logs[index]).unwrap();
+    }
+    let listed =
+        study_store::list_attempts(connection, &user.id, &card_id, AttemptDirection::Default)
+            .unwrap();
+    let sql_order: Vec<AttemptId> = listed.iter().map(|log| log.id.clone()).collect();
+    assert_eq!(
+        sql_order, expected,
+        "SQL ORDER BY created_at must follow time"
+    );
+
+    let mut rust_order = listed.clone();
+    rust_order.reverse();
+    rust_order.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.as_str().cmp(&right.id.as_str()))
+    });
+    let rust_ids: Vec<AttemptId> = rust_order.iter().map(|log| log.id.clone()).collect();
+    assert_eq!(rust_ids, expected, "Rust ordering must follow time");
+}
+
+#[test]
+fn fsrs_replay_ignores_input_order_with_fractional_timestamps() {
+    let user_id = UserId::generate();
+    let card_id = CardId::from(knowledge_card("fractional replay").id);
+    let logs = vec![
+        attempt_at(
+            &user_id,
+            &card_id,
+            "2026-11-26T07:19:13Z",
+            true,
+            Confidence::Certain,
+        ),
+        attempt_at(
+            &user_id,
+            &card_id,
+            "2026-11-26T07:19:13.5Z",
+            true,
+            Confidence::Split,
+        ),
+        attempt_at(
+            &user_id,
+            &card_id,
+            "2026-11-26T07:19:14.000001Z",
+            false,
+            Confidence::Certain,
+        ),
+    ];
+
+    let baseline = recompute_scheduling(
+        user_id.clone(),
+        card_id.clone(),
+        AttemptDirection::Default,
+        &logs,
+        0.9,
+    )
+    .unwrap();
+    let shuffled = vec![logs[2].clone(), logs[0].clone(), logs[1].clone()];
+    let replayed =
+        recompute_scheduling(user_id, card_id, AttemptDirection::Default, &shuffled, 0.9).unwrap();
+
+    assert_eq!(replayed, baseline);
+    assert_eq!(baseline.last_review_at, Some(logs[2].created_at));
+}
+
+#[test]
+fn dense_graph_bfs_finishes_bounded_and_visits_each_node_once() {
+    let database = Database::open_in_memory().unwrap();
+    let connection = database.connection();
+    let cards: Vec<_> = (0..30)
+        .map(|index| knowledge_card(&format!("dense {index}")))
+        .collect();
+    for card in &cards {
+        store::insert_knowledge_card(connection, card).unwrap();
+    }
+    let endpoint = |card: &KnowledgeCard| EdgeEndpoint::Card {
+        id: card.id.clone(),
+    };
+    for first in 0..cards.len() {
+        for second in (first + 1)..cards.len() {
+            store::insert_edge(
+                connection,
+                &edge(
+                    EdgeType::ConfusableWith,
+                    endpoint(&cards[first]),
+                    endpoint(&cards[second]),
+                ),
+            )
+            .unwrap();
+        }
+    }
+
+    let started = Instant::now();
+    let neighbors = search::graph_neighbors(connection, &endpoint(&cards[0]), 8).unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "BFS on 30 fully connected nodes took {elapsed:?}"
+    );
+    assert_eq!(neighbors.len(), cards.len() - 1);
+    let unique: HashSet<String> = neighbors.iter().map(|node| node.endpoint.id()).collect();
+    assert_eq!(unique.len(), cards.len() - 1);
+    assert!(neighbors.iter().all(|node| node.depth == 1));
+    assert!(!unique.contains(&cards[0].id.as_str()));
+}
+
+#[test]
+fn fts_indexes_readable_text_not_json_keys() {
+    let database = Database::open_in_memory().unwrap();
+    let connection = database.connection();
+    let mut card = knowledge_card("過氧化氫酶");
+    card.title = "過氧化氫酶".to_owned();
+    card.blocks = vec![ContentBlock::Markdown {
+        text: "分解活性氧的酵素".to_owned(),
+    }];
+    store::insert_knowledge_card(connection, &card).unwrap();
+
+    assert!(
+        search::search_knowledge_cards(connection, "markdown", 10)
+            .unwrap()
+            .is_empty(),
+        "the JSON type tag must not be searchable"
+    );
+    assert!(
+        search::search_knowledge_cards(connection, "活性氧", 10)
+            .unwrap()
+            .contains(&card.id)
+    );
+
+    let search_text: String = connection
+        .query_row(
+            "SELECT search_text FROM knowledge_cards WHERE id = ?1",
+            [&card.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(search_text.contains("transport"));
+    assert!(!search_text.contains('['));
+    assert!(!search_text.contains('"'));
+}
+
+#[test]
+fn question_search_includes_option_and_explanation_text() {
+    let database = Database::open_in_memory().unwrap();
+    let connection = database.connection();
+    let mut question = question_card("選出正確位置");
+    question.options[0].content = "線粒體內膜".to_owned();
+    question.options[0].explanation = Some("電子傳遞鏈位於此處".to_owned());
+    store::insert_question_card(connection, &question).unwrap();
+
+    assert!(
+        search::search_question_cards(connection, "線粒體內膜", 10)
+            .unwrap()
+            .contains(&question.id)
+    );
+    assert!(
+        search::search_question_cards(connection, "電子傳遞鏈", 10)
+            .unwrap()
+            .contains(&question.id)
+    );
 }

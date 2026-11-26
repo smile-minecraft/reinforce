@@ -1,4 +1,6 @@
-use rusqlite::{Connection, named_params};
+use std::collections::HashSet;
+
+use rusqlite::{Connection, named_params, params_from_iter};
 
 use crate::content::{EdgeEndpoint, GraphNode};
 use crate::primitives::{EndpointKind, Error, Result};
@@ -44,7 +46,7 @@ pub fn search_knowledge_cards(
     } else {
         "SELECT id FROM knowledge_cards
          WHERE title LIKE :query ESCAPE '\\' OR subject LIKE :query ESCAPE '\\'
-            OR topics_json LIKE :query ESCAPE '\\' OR blocks_json LIKE :query ESCAPE '\\'
+            OR search_text LIKE :query ESCAPE '\\'
          ORDER BY id LIMIT :limit"
     };
     let parameter = if query.chars().count() >= 3 {
@@ -74,9 +76,8 @@ pub fn search_question_cards(
          ORDER BY question_cards_fts.rank LIMIT :limit"
     } else {
         "SELECT id FROM question_cards
-         WHERE subject LIKE :query ESCAPE '\\' OR topics_json LIKE :query ESCAPE '\\'
-            OR stem_blocks_json LIKE :query ESCAPE '\\'
-            OR explanation_blocks_json LIKE :query ESCAPE '\\'
+         WHERE subject LIKE :query ESCAPE '\\'
+            OR search_text LIKE :query ESCAPE '\\'
          ORDER BY id LIMIT :limit"
     };
     let parameter = if query.chars().count() >= 3 {
@@ -107,9 +108,9 @@ pub fn search_cards(connection: &Connection, query: &str, limit: usize) -> Resul
     Ok(hits)
 }
 
-/// Walks typed edges in both directions. The recursive CTE keeps a visited
-/// path and `max_depth` bounds expansion, so cycles terminate and the result
-/// cannot grow without limit.
+/// Walks typed edges in both directions, one breadth-first SQL query per depth.
+/// Visited keys are tracked in Rust so each node is returned once at its
+/// shortest depth, without enumerating every simple path in a dense graph.
 pub fn graph_neighbors(
     connection: &Connection,
     from: &EdgeEndpoint,
@@ -119,43 +120,64 @@ pub fn graph_neighbors(
         return Err(Error::GraphDepthTooLarge(max_depth, MAX_GRAPH_DEPTH));
     }
 
-    let sql = r#"
-        WITH RECURSIVE walk(node_key, next_kind, next_id, next_option_key, depth, path) AS (
-            SELECT :start_key, NULL, NULL, NULL, 0, '|' || :start_key || '|'
-            UNION ALL
-            SELECT
-                CASE WHEN e.from_key = w.node_key THEN e.to_key ELSE e.from_key END,
-                CASE WHEN e.from_key = w.node_key THEN e.to_kind ELSE e.from_kind END,
-                CASE WHEN e.from_key = w.node_key THEN e.to_id ELSE e.from_id END,
-                CASE WHEN e.from_key = w.node_key THEN e.to_option_key ELSE e.from_option_key END,
-                w.depth + 1,
-                w.path || CASE WHEN e.from_key = w.node_key THEN e.to_key ELSE e.from_key END || '|'
-            FROM walk w
-            JOIN edges e ON e.from_key = w.node_key OR e.to_key = w.node_key
-            WHERE w.depth < :max_depth
-              AND instr(w.path, '|' ||
-                  CASE WHEN e.from_key = w.node_key THEN e.to_key ELSE e.from_key END || '|') = 0
-        )
-        SELECT node_key, next_kind, next_id, next_option_key, MIN(depth) AS depth
-        FROM walk
-        WHERE depth > 0
-        GROUP BY node_key, next_kind, next_id, next_option_key
-        ORDER BY depth, node_key
-    "#;
+    let start_key = from.key();
+    let mut visited: HashSet<String> = HashSet::from([start_key.clone()]);
+    let mut frontier = vec![start_key];
+    let mut nodes: Vec<GraphNode> = Vec::new();
 
-    let mut statement = connection.prepare(sql)?;
-    let rows = statement.query_map(
-        named_params! { ":start_key": from.key(), ":max_depth": max_depth },
-        |row| {
-            let kind: EndpointKind = row.get(1)?;
-            let id: String = row.get(2)?;
-            let option_key: Option<String> = row.get(3)?;
-            Ok(GraphNode {
-                endpoint: EdgeEndpoint::from_db_parts(kind, &id, option_key.as_deref())?,
-                depth: row.get::<_, i64>(4)? as u32,
-            })
-        },
-    )?;
-    rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
-        .map_err(Into::into)
+    for depth in 1..=max_depth {
+        if frontier.is_empty() {
+            break;
+        }
+        let placeholders = frontier
+            .iter()
+            .map(|_| "(?)")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH frontier(key) AS (VALUES {placeholders})
+             SELECT DISTINCT
+                 CASE WHEN e.from_key = f.key THEN e.to_key ELSE e.from_key END,
+                 CASE WHEN e.from_key = f.key THEN e.to_kind ELSE e.from_kind END,
+                 CASE WHEN e.from_key = f.key THEN e.to_id ELSE e.from_id END,
+                 CASE WHEN e.from_key = f.key THEN e.to_option_key ELSE e.from_option_key END
+             FROM edges e
+             JOIN frontier f ON e.from_key = f.key OR e.to_key = f.key"
+        );
+
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(
+            params_from_iter(frontier.iter().map(String::as_str)),
+            |row| {
+                let key: String = row.get(0)?;
+                let kind: EndpointKind = row.get(1)?;
+                let id: String = row.get(2)?;
+                let option_key: Option<String> = row.get(3)?;
+                Ok((
+                    key,
+                    GraphNode {
+                        endpoint: EdgeEndpoint::from_db_parts(kind, &id, option_key.as_deref())?,
+                        depth,
+                    },
+                ))
+            },
+        )?;
+        let discovered = rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()?;
+
+        let mut next_frontier: Vec<String> = Vec::new();
+        for (key, node) in discovered {
+            if visited.insert(key.clone()) {
+                nodes.push(node);
+                next_frontier.push(key);
+            }
+        }
+        frontier = next_frontier;
+    }
+
+    nodes.sort_by(|left, right| {
+        left.depth
+            .cmp(&right.depth)
+            .then_with(|| left.endpoint.key().cmp(&right.endpoint.key()))
+    });
+    Ok(nodes)
 }
