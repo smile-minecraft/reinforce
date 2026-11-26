@@ -363,6 +363,10 @@ async fn seed_content(state: &AppState) -> ContentFixture {
                     ContentBlock::Markdown {
                         text: "PUBLISHED_VISIBLE".to_owned(),
                     },
+                    ContentBlock::Math {
+                        latex: "\\frac{1}{2}".to_owned(),
+                        display: true,
+                    },
                     ContentBlock::InteractivePins {
                         resource_id: allow.id.clone(),
                         overlay_resource_id: None,
@@ -754,6 +758,53 @@ async fn api_pdf_export_is_inline_and_valid() {
     let bytes = response_bytes(response).await;
     assert!(bytes.starts_with(b"%PDF-"));
     assert!(bytes.len() > 1000);
+}
+
+#[tokio::test]
+async fn api_and_cli_report_missing_math_font() {
+    let dir = TestDir::new();
+    let fonts_dir = dir.0.join("fonts");
+    std::fs::create_dir_all(&fonts_dir).expect("fonts dir");
+    let text_font = typst_assets::fonts()
+        .next()
+        .expect("bundled text font");
+    std::fs::write(fonts_dir.join("text-only.otf"), text_font).expect("font file");
+
+    let state = state(&dir.0, AuthMode::Invite, &fonts_dir).await;
+    let app = reinforce_server::app(state.clone());
+    let owner = setup_owner(&app, &state).await;
+    seed_content(&state).await;
+
+    let response = call(
+        &app,
+        Method::POST,
+        "/api/export",
+        Some(subject_request("pdf", Some("standard"))),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["code"], "fonts_missing");
+    let message = body["error"]["message"].as_str().expect("message");
+    assert!(message.contains("New Computer Modern Math"));
+    assert!(message.contains("CJK"));
+    assert!(!message.contains(dir.0.to_str().unwrap()));
+
+    let db = dir.0.join("test.db");
+    let output = Command::new(env!("CARGO_BIN_EXE_reinforce"))
+        .args(["export", "--format", "pdf", "--preset", "standard"])
+        .args(["--subject", SUBJECT])
+        .args(["--db", db.to_str().unwrap()])
+        .args(["--blobs", dir.0.join("blobs").to_str().unwrap()])
+        .args(["--fonts", fonts_dir.to_str().unwrap()])
+        .args(["--out", dir.0.join("missing-math.pdf").to_str().unwrap()])
+        .output()
+        .expect("run cli export");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("MATH table"), "{stderr}");
+    assert!(!stderr.contains("internal server error"), "{stderr}");
 }
 
 #[tokio::test]

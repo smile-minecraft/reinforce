@@ -419,6 +419,22 @@ fn native_math_renders_supported_latex_and_chemistry() {
 }
 
 #[test]
+fn math_without_a_math_font_returns_fonts_unavailable() {
+    let fonts = TempDir::new().expect("temp dir");
+    let text_font = typst_assets::fonts()
+        .next()
+        .expect("bundled text font");
+    std::fs::write(fonts.path().join("text-only.otf"), text_font).expect("font file");
+    let input = math_input(r"\frac{1}{2}");
+    let error = render_pdf(&input, &options(PdfPreset::Standard, fonts.path(), true))
+        .expect_err("a math block needs a font with a MATH table");
+    assert!(
+        matches!(error, reinforce_export::Error::FontsUnavailable(_)),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn unsupported_math_falls_back_to_raw_source_pdf() {
     let fonts = fonts();
     let input = math_input(r"\frac{1");

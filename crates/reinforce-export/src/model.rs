@@ -63,6 +63,8 @@ pub enum Error {
     Typst(String),
     #[error("pdf export failed: {0}")]
     Pdf(String),
+    #[error("no usable export fonts: {0}")]
+    FontsUnavailable(String),
     #[error("no font files found in {0}")]
     NoFonts(PathBuf),
     #[error("missing blob for sha256 {0}")]

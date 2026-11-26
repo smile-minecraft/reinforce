@@ -17,6 +17,8 @@ pub struct ApiError {
     pub code: String,
     pub message: String,
     pub details: Option<Value>,
+    /// Local-only explanation for CLI output; never serialized into HTTP responses.
+    pub diagnostic: Option<String>,
 }
 
 impl ApiError {
@@ -26,6 +28,7 @@ impl ApiError {
             code: code.into(),
             message: message.into(),
             details: None,
+            diagnostic: None,
         }
     }
 
@@ -67,17 +70,20 @@ impl ApiError {
             code: "validation_failed".to_owned(),
             message: "batch validation failed".to_owned(),
             details: serde_json::to_value(report).ok(),
+            diagnostic: None,
         }
     }
 
     pub fn internal(message: impl Into<String>) -> Self {
         let message = message.into();
         tracing::error!(error = %message, "internal server error");
-        Self::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal_error",
-            "internal server error",
-        )
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "internal_error".to_owned(),
+            message: "internal server error".to_owned(),
+            details: None,
+            diagnostic: Some(message),
+        }
     }
 }
 

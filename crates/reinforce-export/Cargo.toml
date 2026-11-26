@@ -18,6 +18,7 @@ typst.workspace = true
 typst-as-lib.workspace = true
 typst-layout.workspace = true
 typst-pdf.workspace = true
+ttf-parser.workspace = true
 
 [dev-dependencies]
 lopdf = { version = "0.42", default-features = false }
