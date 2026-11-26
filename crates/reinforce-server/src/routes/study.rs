@@ -269,6 +269,35 @@ fn public_question(question: &QuestionCard) -> Value {
     value
 }
 
+fn normalize_error_tags(tags: Vec<String>) -> ApiResult<Vec<String>> {
+    if tags.len() > 10 {
+        return Err(ApiError::bad_request(
+            "error_tags",
+            "at most 10 tags are allowed",
+        ));
+    }
+    let mut normalized = Vec::new();
+    for tag in tags {
+        let tag = tag.trim();
+        if tag.is_empty() {
+            return Err(ApiError::bad_request(
+                "error_tags",
+                "each tag must contain at least one character",
+            ));
+        }
+        if tag.chars().count() > 40 {
+            return Err(ApiError::bad_request(
+                "error_tags",
+                "each tag must be at most 40 characters",
+            ));
+        }
+        if !normalized.iter().any(|existing| existing == tag) {
+            normalized.push(tag.to_owned());
+        }
+    }
+    Ok(normalized)
+}
+
 fn current_question(session: &QuizSession) -> Value {
     match session.state() {
         SessionState::InProgress { index }
@@ -394,10 +423,21 @@ async fn submit_answer(
 ) -> ApiResult<Json<Value>> {
     let mut sessions = sessions(&state)?;
     let slot = slot(&mut sessions, &id, &principal.user_id)?;
+    let mut answer = answer;
+    answer.error_tags = normalize_error_tags(answer.error_tags)?;
     let grading = slot.session.submit_answer(answer, Timestamp::now())?;
+    let answered_index = slot.session.answers().last().map(|record| record.index);
+    let revealed_question = if grading.is_some() {
+        answered_index
+            .and_then(|index| slot.session.questions().get(index))
+            .map(|question| json!(question))
+    } else {
+        None
+    };
     Ok(Json(json!({
         "state": slot.session.state(),
         "grading": grading,
+        "revealed_question": revealed_question,
     })))
 }
 
@@ -407,7 +447,7 @@ async fn finish_session(
     principal: Principal,
 ) -> ApiResult<Json<Value>> {
     let now = Timestamp::now();
-    let (user_id, session, score) = {
+    let (user_id, session, score, graded, revealed_questions) = {
         let mut sessions = sessions(&state)?;
         let slot = slot(&mut sessions, &id, &principal.user_id)?;
         if let Some(result) = slot.finish_result.clone() {
@@ -420,8 +460,16 @@ async fn finish_session(
         // Score before marking the slot persisted so a failure here leaves
         // the session retryable instead of stuck behind the 409 guard.
         let score = slot.session.score()?;
+        let graded = slot.session.graded().to_vec();
+        let revealed_questions = slot.session.questions().to_vec();
         slot.persisted = true;
-        (principal.user_id.clone(), slot.session.clone(), score)
+        (
+            principal.user_id.clone(),
+            slot.session.clone(),
+            score,
+            graded,
+            revealed_questions,
+        )
     };
     let written = state
         .with_db(move |database| {
@@ -459,6 +507,8 @@ async fn finish_session(
     let result = json!({
         "attempts_written": written,
         "score": score,
+        "graded": graded,
+        "revealed_questions": revealed_questions,
     });
     let mut sessions = sessions(&state)?;
     let slot = slot(&mut sessions, &id, &principal.user_id)?;
