@@ -496,21 +496,25 @@ pub struct ImportSummary {
     pub applied: u32,
 }
 
+// The literals mirror `reinforce_core::quiz::build::BuildOptions::default`.
+// Bare `#[uniffi(default)]` would use the field type's default (0/false) in the
+// generated Swift and Kotlin bindings, which silently disables scheduling and
+// builds invalid sessions.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct BuildOptions {
-    #[uniffi(default)]
+    #[uniffi(default = 50)]
     pub question_limit: u32,
-    #[uniffi(default)]
+    #[uniffi(default = 20)]
     pub new_card_limit: u32,
-    #[uniffi(default)]
+    #[uniffi(default = None)]
     pub total_time_secs: Option<u32>,
-    #[uniffi(default)]
+    #[uniffi(default = 30)]
     pub seconds_per_question: u32,
-    #[uniffi(default)]
+    #[uniffi(default = true)]
     pub affects_scheduling: bool,
-    #[uniffi(default)]
+    #[uniffi(default = 0.05)]
     pub pin_radius: f64,
-    #[uniffi(default)]
+    #[uniffi(default = None)]
     pub pin_aspect_ratio: Option<f64>,
 }
 
@@ -1001,4 +1005,32 @@ pub(crate) fn parse_user_id(value: &str) -> Result<UserId, FfiError> {
 
 pub(crate) fn generated_attempt_id() -> String {
     AttemptId::generate().as_str()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BuildOptions;
+    use reinforce_core::quiz::build::BuildOptions as CoreBuildOptions;
+
+    /// The `#[uniffi(default = ...)]` literals are what Swift and Kotlin see, so
+    /// they must track the core defaults instead of drifting apart.
+    #[test]
+    fn build_options_defaults_match_core() {
+        let ffi = BuildOptions::default();
+        let core = CoreBuildOptions::default();
+        assert_eq!(ffi.question_limit, core.question_limit as u32);
+        assert_eq!(ffi.new_card_limit, core.new_card_limit as u32);
+        assert_eq!(ffi.total_time_secs, core.total_time_secs);
+        assert_eq!(ffi.seconds_per_question, core.seconds_per_question as u32);
+        assert_eq!(ffi.affects_scheduling, core.affects_scheduling);
+        assert_eq!(ffi.pin_radius, core.pin_radius);
+        assert_eq!(ffi.pin_aspect_ratio, core.pin_aspect_ratio);
+
+        let converted = ffi.into_core().expect("defaults must be valid");
+        assert_eq!(converted.question_limit, core.question_limit);
+        assert_eq!(converted.new_card_limit, core.new_card_limit);
+        assert_eq!(converted.seconds_per_question, core.seconds_per_question);
+        assert_eq!(converted.affects_scheduling, core.affects_scheduling);
+        assert_eq!(converted.pin_radius, core.pin_radius);
+    }
 }
