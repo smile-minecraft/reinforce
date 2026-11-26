@@ -12,8 +12,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth::{
-    OptionalPrincipal, Principal, SESSION_COOKIE, expired_cookie, hash_password, hash_token,
-    random_token, session_cookie, session_ttl, verify_password,
+    OptionalPrincipal, Principal, SESSION_COOKIE, create_agent_token, expired_cookie,
+    hash_password, hash_token, random_token, revoke_agent_token, session_cookie, session_ttl,
+    verify_password,
 };
 use crate::config::AuthMode;
 use crate::error::{ApiError, ApiResult, JsonBody};
@@ -32,6 +33,10 @@ pub fn router() -> Router<AppState> {
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/auth/session", get(current_session))
+        .route(
+            "/auth/agent-tokens",
+            post(create_agent_token_route).delete(revoke_agent_token_route),
+        )
 }
 
 #[derive(Deserialize)]
@@ -63,6 +68,11 @@ struct Register {
 struct Login {
     username: String,
     password: String,
+}
+
+#[derive(Deserialize)]
+struct RevokeAgentToken {
+    token: String,
 }
 
 async fn status(
@@ -252,6 +262,42 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<
         [(header::SET_COOKIE, expired_cookie())],
         Json(json!({ "ok": true })),
     ))
+}
+
+async fn create_agent_token_route(
+    State(state): State<AppState>,
+    principal: Principal,
+) -> ApiResult<Json<serde_json::Value>> {
+    if state.auth_mode != AuthMode::Invite {
+        return Err(ApiError::forbidden(
+            "agent tokens are only available in invite auth mode",
+        ));
+    }
+    require_owner(&principal)?;
+    let token = state
+        .with_db(move |database| create_agent_token(database.connection()))
+        .await?;
+    Ok(Json(json!({ "token": token })))
+}
+
+async fn revoke_agent_token_route(
+    State(state): State<AppState>,
+    principal: Principal,
+    JsonBody(request): JsonBody<RevokeAgentToken>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if state.auth_mode != AuthMode::Invite {
+        return Err(ApiError::forbidden(
+            "agent tokens are only available in invite auth mode",
+        ));
+    }
+    require_owner(&principal)?;
+    state
+        .with_db(move |database| {
+            revoke_agent_token(database.connection(), &request.token)?;
+            Ok(())
+        })
+        .await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 fn require_owner(principal: &Principal) -> ApiResult<()> {

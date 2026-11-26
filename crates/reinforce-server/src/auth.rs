@@ -4,8 +4,11 @@ use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use axum::extract::FromRequestParts;
 use axum::http::header::COOKIE;
 use axum::http::request::Parts;
-use reinforce_core::auth::{Role, SessionAuth, session_by_token_hash};
+use reinforce_core::auth::{
+    Role, SessionAuth, delete_setting, get_setting, session_by_token_hash, set_setting,
+};
 use reinforce_core::{ContentHash, Timestamp, UserId};
+use rusqlite::Connection;
 use tokio::task::spawn_blocking;
 
 use crate::config::AuthMode;
@@ -14,6 +17,8 @@ use crate::state::AppState;
 
 pub const SESSION_COOKIE: &str = "reinforce_session";
 const SESSION_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
+/// Only SHA-256 hashes are persisted; the plaintext token is shown once.
+const AGENT_TOKENS_SETTING: &str = "agent_token_hashes";
 
 #[derive(Debug, Clone)]
 pub struct Principal {
@@ -90,6 +95,50 @@ pub fn random_token(byte_count: usize) -> String {
         write!(&mut text, "{byte:02x}").expect("writing to a String cannot fail");
     }
     text
+}
+
+fn stored_agent_tokens(connection: &Connection) -> ApiResult<Vec<String>> {
+    match get_setting(connection, AGENT_TOKENS_SETTING)? {
+        Some(value) => serde_json::from_str(&value)
+            .map_err(|error| ApiError::internal(format!("invalid agent token registry: {error}"))),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Creates an owner API token for remote MCP clients. Only its hash is stored.
+pub fn create_agent_token(connection: &Connection) -> ApiResult<String> {
+    let token = random_token(32);
+    let mut hashes = stored_agent_tokens(connection)?;
+    hashes.push(hash_token(&token));
+    set_setting(
+        connection,
+        AGENT_TOKENS_SETTING,
+        &serde_json::to_string(&hashes)?,
+    )?;
+    Ok(token)
+}
+
+/// Removes a token by its plaintext value. A missing or unknown token is a
+/// no-op so revocation is safe to retry.
+pub fn revoke_agent_token(connection: &Connection, token: &str) -> ApiResult<()> {
+    let hash = hash_token(token);
+    let mut hashes = stored_agent_tokens(connection)?;
+    hashes.retain(|value| value != &hash);
+    if hashes.is_empty() {
+        delete_setting(connection, AGENT_TOKENS_SETTING)?;
+    } else {
+        set_setting(
+            connection,
+            AGENT_TOKENS_SETTING,
+            &serde_json::to_string(&hashes)?,
+        )?;
+    }
+    Ok(())
+}
+
+pub fn verify_agent_token(connection: &Connection, token: &str) -> ApiResult<bool> {
+    let hash = hash_token(token);
+    Ok(stored_agent_tokens(connection)?.contains(&hash))
 }
 
 fn hash_password_sync(password: &str) -> ApiResult<String> {
