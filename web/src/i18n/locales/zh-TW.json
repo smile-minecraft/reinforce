@@ -1,6 +1,236 @@
 {
   "app": {
-    "tagline": "有出處的筆記、主動回想練習與可列印的講義。",
-    "language": "語言"
+    "name": "Reinforce",
+    "tagline": "有出處的筆記、主動回想練習與倒數跑考室。",
+    "language": "語言",
+    "theme": "外觀",
+    "themeLight": "淺色",
+    "themeDark": "深色",
+    "themeSystem": "跟隨系統",
+    "mockActive": "展示用假資料",
+    "comingSoon": "預留"
+  },
+  "nav": {
+    "reading": "閱讀室",
+    "study": "刷題室",
+    "practical": "倒數跑考",
+    "triage": "審核台",
+    "export": "匯出中心",
+    "signIn": "登入",
+    "signOut": "登出"
+  },
+  "common": {
+    "loading": "載入中…",
+    "retry": "重試",
+    "back": "返回",
+    "close": "關閉",
+    "cancel": "取消",
+    "confirm": "確認",
+    "reset": "重設",
+    "search": "搜尋筆記、知識卡、題目…",
+    "allSubjects": "全部科目",
+    "empty": "目前還沒有內容。",
+    "verified": "已核對",
+    "unchecked": "待核對",
+    "status": {
+      "draft": "草稿",
+      "staging": "待審",
+      "published": "已發布",
+      "archived": "已封存"
+    },
+    "errorGeneric": "發生錯誤，請稍後再試。"
+  },
+  "auth": {
+    "titleSignIn": "登入 Reinforce",
+    "titleRegister": "使用邀請碼註冊",
+    "subtitleInvite": "此伺服器啟用邀請制，請先登入以存取你的學習紀錄。",
+    "username": "帳號",
+    "password": "密碼",
+    "inviteCode": "邀請碼",
+    "submitSignIn": "登入",
+    "submitRegister": "建立帳號",
+    "switchToRegister": "有邀請碼？前往註冊",
+    "switchToSignIn": "已有帳號？返回登入",
+    "registeredSuccess": "帳號已建立，請以剛才的帳密登入。",
+    "needsOwnerSetup": "此伺服器尚未完成擁有者初始化設定。"
+  },
+  "reading": {
+    "title": "閱讀室",
+    "dailyDueBannerTitle": "今日到期複習",
+    "dailyDueBannerDesc": "依 FSRS 排程優先複習到期題目，再補足新卡配額。",
+    "startDailyDue": "開始今日到期",
+    "startWeakness": "弱點強化",
+    "notesHeading": "筆記列表",
+    "cardsHeading": "知識卡索引",
+    "searchResultsHeading": "搜尋結果",
+    "noNotes": "目前篩選條件下沒有筆記。",
+    "noCards": "找不到符合條件的知識卡。",
+    "noSearchResults": "找不到符合的筆記、知識卡或題目。",
+    "outline": "大綱目錄",
+    "sources": "出處來源",
+    "openSource": "檢視原檔",
+    "sourceAnchor": "原檔出處",
+    "openCard": "開啟知識卡",
+    "drillThisCard": "針對此卡刷題",
+    "relatedNodes": "關聯知識節點",
+    "noRelatedNodes": "尚未建立關聯知識卡或題目。",
+    "missingCard": "無法載入被引用的知識卡。",
+    "subjectCount": "{{count}} 筆",
+    "cardCount": "{{count}} 張卡"
+  },
+  "blocks": {
+    "mathError": "無法渲染數學公式",
+    "diagramError": "無法渲染圖表",
+    "diagramLoading": "正在繪製圖表…",
+    "diagramSource": "圖表原始碼",
+    "occlusionHint": "點擊遮罩以顯示或隱藏",
+    "revealAll": "全部顯示",
+    "hideAll": "全部遮蓋",
+    "maskGroup": "分組 {{group}}",
+    "pinsOverlayOn": "構造遮罩：開",
+    "pinsOverlayOff": "構造遮罩：關",
+    "pinsLabelsOn": "標籤：開",
+    "pinsLabelsOff": "標籤：關",
+    "pinSelected": "圖釘 #{{no}}",
+    "pinHint": "記憶提示",
+    "pinDetail": "詳細說明",
+    "pinLinkedCard": "關聯知識卡",
+    "pinTapPrompt": "點擊任一編號圖釘查看名詞與說明。"
+  },
+  "anchor": {
+    "title": "原檔檢視",
+    "pdfPage": "PDF 第 {{page}} 頁",
+    "printedPage": "書頁 p. {{page}}",
+    "legendPage": "圖例第 {{page}} 頁",
+    "regionHighlight": "標註區域",
+    "mediaSpan": "{{start}} – {{end}}",
+    "openPdfTab": "在新分頁開啟 PDF",
+    "restrictedNotice": "受限素材（{{policy}}）",
+    "attribution": "來源出處",
+    "license": "授權"
+  },
+  "study": {
+    "title": "刷題與跑考室",
+    "subtitle": "選擇組卷模式，立即進入作答。",
+    "modes": {
+      "daily_due": {
+        "name": "今日到期（FSRS）",
+        "desc": "依到期時間優先複習逾期卡片，並補上每日新卡上限。"
+      },
+      "full_exam": {
+        "name": "整卷模擬考",
+        "desc": "依題號順序作答，可設總計時，交卷前延後判分。"
+      },
+      "topic_drill": {
+        "name": "主題／知識卡特訓",
+        "desc": "透過 tests 關聯邊抽出指定知識卡對應的考題。"
+      },
+      "practical_exam": {
+        "name": "圖像／大體倒數跑考",
+        "desc": "單題 1–300 秒倒數（預設 30 秒），支援雙指縮放、圖釘辨識與定位。"
+      },
+      "weakness_drill": {
+        "name": "弱點與低信心強化",
+        "desc": "鎖定高錯題率、猶豫猜題與作答偏慢的題目集中複習。"
+      }
+    },
+    "options": {
+      "questionLimit": "題數上限",
+      "newCardLimit": "新卡上限",
+      "selectExamSet": "選擇試卷",
+      "noExamSets": "目前沒有可用試卷。",
+      "totalTimeMins": "總作答時間（分鐘，選填）",
+      "noTimeLimit": "不限時",
+      "selectCards": "選擇要練習的知識卡",
+      "selectedCardsCount": "已選 {{count}} 張",
+      "secondsPerQuestion": "每題倒數秒數（1–300）",
+      "pinRadius": "圖釘命中半徑",
+      "affectsScheduling": "計入 FSRS 複習排程",
+      "startSession": "開始作答",
+      "starting": "建立場次中…",
+      "emptySessionError": "此模式下目前沒有符合條件的題目。"
+    },
+    "weaknessPreview": {
+      "heading": "目前弱點熱區",
+      "empty": "尚無作答紀錄。完成一次刷題後就會自動分析弱點。",
+      "errorRate": "錯題率 {{pct}}%",
+      "hesitantRate": "猶豫率 {{pct}}%",
+      "avgDuration": "均時 {{secs}}s",
+      "attempts": "{{count}} 次作答"
+    },
+    "runner": {
+      "progress": "第 {{current}} / {{total}} 題",
+      "pause": "暫停",
+      "resume": "繼續",
+      "finish": "交卷計分",
+      "exit": "離開",
+      "pausedTitle": "計時已暫停",
+      "pausedVisibility": "偵測到頁面切換至背景，已自動暫停倒數保護作答時間。",
+      "pausedManual": "目前已暫停計時，準備好後點選繼續。",
+      "expiredTitle": "時間已到",
+      "expiredDesc": "本場倒數計時已結束，請點選交卷結算成績。",
+      "deferredBanner": "整卷模擬模式：延後判分，交卷後統一揭曉對錯與詳解。",
+      "recorded": "已記錄作答",
+      "submitAnswer": "送出答案",
+      "nextQuestion": "下一題",
+      "viewSummary": "查看總結",
+      "typeAnswer": "請輸入答案…",
+      "pinIdentifyPrompt": "請辨識標記的圖釘構造名稱",
+      "pinLocatePrompt": "請在圖上點擊標記圖釘 #{{no}} 的位置",
+      "pinLocateAllPlaced": "已完成所有圖釘標記，可重新點擊微調或送出。",
+      "pinLocateTarget": "目標圖釘 #{{no}}",
+      "pinClear": "清除標記",
+      "zoomIn": "放大",
+      "zoomOut": "縮小",
+      "zoomReset": "一鍵復原",
+      "zoomHint": "雙指縮放 · 放大後單指拖曳",
+      "confidence": "作答信心",
+      "confidenceLevels": {
+        "certain": "確定",
+        "split": "二選一猶豫",
+        "guessed": "純猜"
+      },
+      "errorTags": "錯因標記（選填）",
+      "errorTagLabels": {
+        "concept_gap": "觀念缺口",
+        "misread": "看錯題幹",
+        "confused_term": "名詞混淆",
+        "careless": "粗心失誤",
+        "time_pressure": "時間不足"
+      },
+      "questionTypes": {
+        "single_choice": "單選題",
+        "multiple_choice": "複選題",
+        "short_answer": "簡答題",
+        "vocab": "詞彙題",
+        "image_qa": "圖像問答",
+        "image_occlusion": "圖片遮罩",
+        "pin_identify": "圖釘辨識",
+        "pin_locate": "圖釘定位"
+      },
+      "grading": {
+        "correct": "答對",
+        "incorrect": "答錯",
+        "anyAccepted": "申覆多解（任一可接受解）",
+        "voided": "本題送分（不計入分母與 FSRS）",
+        "timedOut": "逾時未作答",
+        "answerBasis": "答案依據",
+        "explanation": "解析",
+        "linkedCards": "關聯知識卡（{{count}}）",
+        "hideLinkedCards": "收合知識卡",
+        "officialAnswer": "參考答案"
+      },
+      "summary": {
+        "title": "作答完成",
+        "score": "成績",
+        "correctOf": "答對 {{correct}} / 有效題數 {{scoreable}}",
+        "voidedCount": "含 {{count}} 題送分（已自有效分母扣除）",
+        "attemptsSaved": "已寫入 {{count}} 筆學習紀錄",
+        "reviewHeading": "逐題檢討",
+        "backToStudy": "返回刷題室",
+        "backToReading": "返回閱讀室",
+        "yourAnswer": "你的作答"
+      }
+    }
   }
 }

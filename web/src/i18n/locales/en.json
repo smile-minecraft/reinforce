@@ -1,6 +1,236 @@
 {
   "app": {
-    "tagline": "Source-grounded notes, active recall and print-ready study sheets.",
-    "language": "Language"
+    "name": "Reinforce",
+    "tagline": "Source-grounded notes, active recall and practical exams.",
+    "language": "Language",
+    "theme": "Theme",
+    "themeLight": "Light",
+    "themeDark": "Dark",
+    "themeSystem": "System",
+    "mockActive": "Demo mock data",
+    "comingSoon": "Soon"
+  },
+  "nav": {
+    "reading": "Reading Room",
+    "study": "Study & Quiz",
+    "practical": "Practical Exam",
+    "triage": "Triage Workbench",
+    "export": "Export Center",
+    "signIn": "Sign in",
+    "signOut": "Sign out"
+  },
+  "common": {
+    "loading": "Loading…",
+    "retry": "Retry",
+    "back": "Back",
+    "close": "Close",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "reset": "Reset",
+    "search": "Search notes, cards, questions…",
+    "allSubjects": "All subjects",
+    "empty": "Nothing here yet.",
+    "verified": "Verified",
+    "unchecked": "Unchecked",
+    "status": {
+      "draft": "Draft",
+      "staging": "Staging",
+      "published": "Published",
+      "archived": "Archived"
+    },
+    "errorGeneric": "Something went wrong. Please try again."
+  },
+  "auth": {
+    "titleSignIn": "Sign in to Reinforce",
+    "titleRegister": "Register with invite code",
+    "subtitleInvite": "This workspace runs in invite mode. Sign in to access your study progress.",
+    "username": "Username",
+    "password": "Password",
+    "inviteCode": "Invite code",
+    "submitSignIn": "Sign in",
+    "submitRegister": "Create account",
+    "switchToRegister": "Have an invite code? Register",
+    "switchToSignIn": "Already have an account? Sign in",
+    "registeredSuccess": "Account created. Sign in with your credentials.",
+    "needsOwnerSetup": "Owner setup has not been completed on this server yet."
+  },
+  "reading": {
+    "title": "Reading Room",
+    "dailyDueBannerTitle": "Daily recall queue",
+    "dailyDueBannerDesc": "Review due cards and new items scheduled by FSRS.",
+    "startDailyDue": "Start daily due",
+    "startWeakness": "Weakness drill",
+    "notesHeading": "Notes",
+    "cardsHeading": "Knowledge cards",
+    "searchResultsHeading": "Search results",
+    "noNotes": "No notes match the current filter.",
+    "noCards": "No knowledge cards found.",
+    "noSearchResults": "No matching notes, cards, or questions.",
+    "outline": "Outline",
+    "sources": "Sources",
+    "openSource": "View source",
+    "sourceAnchor": "Source anchor",
+    "openCard": "Open card",
+    "drillThisCard": "Drill this card",
+    "relatedNodes": "Related knowledge",
+    "noRelatedNodes": "No linked cards or questions yet.",
+    "missingCard": "Referenced card could not be loaded.",
+    "subjectCount": "{{count}} items",
+    "cardCount": "{{count}} cards"
+  },
+  "blocks": {
+    "mathError": "Could not render formula",
+    "diagramError": "Could not render diagram",
+    "diagramLoading": "Rendering diagram…",
+    "diagramSource": "Diagram source",
+    "occlusionHint": "Tap masks to reveal or hide",
+    "revealAll": "Reveal all",
+    "hideAll": "Hide all",
+    "maskGroup": "Group {{group}}",
+    "pinsOverlayOn": "Overlay on",
+    "pinsOverlayOff": "Overlay off",
+    "pinsLabelsOn": "Labels on",
+    "pinsLabelsOff": "Labels off",
+    "pinSelected": "Pin #{{no}}",
+    "pinHint": "Hint",
+    "pinDetail": "Detail",
+    "pinLinkedCard": "Linked card",
+    "pinTapPrompt": "Tap a numbered pin to inspect its term and notes."
+  },
+  "anchor": {
+    "title": "Source viewer",
+    "pdfPage": "PDF p. {{page}}",
+    "printedPage": "Printed p. {{page}}",
+    "legendPage": "Legend p. {{page}}",
+    "regionHighlight": "Highlighted region",
+    "mediaSpan": "{{start}} – {{end}}",
+    "openPdfTab": "Open PDF in new tab",
+    "restrictedNotice": "Restricted resource ({{policy}})",
+    "attribution": "Attribution",
+    "license": "License"
+  },
+  "study": {
+    "title": "Study & Quiz",
+    "subtitle": "Choose a study mode to launch a live session.",
+    "modes": {
+      "daily_due": {
+        "name": "FSRS Daily Due",
+        "desc": "Overdue reviews first, followed by new cards within your daily cap."
+      },
+      "full_exam": {
+        "name": "Full Exam Simulation",
+        "desc": "Ordered exam set with optional total countdown and deferred grading until finish."
+      },
+      "topic_drill": {
+        "name": "Topic / Card Drill",
+        "desc": "Target specific knowledge cards via their linked test questions."
+      },
+      "practical_exam": {
+        "name": "Practical / Specimen Exam",
+        "desc": "Timed per-question image & pin identification or location with pinch-to-zoom."
+      },
+      "weakness_drill": {
+        "name": "Weakness & Low-Confidence Drill",
+        "desc": "Prioritizes high-error, hesitant, and slow questions from your attempt history."
+      }
+    },
+    "options": {
+      "questionLimit": "Question limit",
+      "newCardLimit": "New card limit",
+      "selectExamSet": "Exam set",
+      "noExamSets": "No exam sets available.",
+      "totalTimeMins": "Total time (minutes, optional)",
+      "noTimeLimit": "Untimed",
+      "selectCards": "Knowledge cards to drill",
+      "selectedCardsCount": "{{count}} selected",
+      "secondsPerQuestion": "Seconds per question (1–300)",
+      "pinRadius": "Pin hit tolerance",
+      "affectsScheduling": "Update FSRS scheduling",
+      "startSession": "Start session",
+      "starting": "Starting…",
+      "emptySessionError": "No eligible questions found for this mode."
+    },
+    "weaknessPreview": {
+      "heading": "Current weakness hotspots",
+      "empty": "No attempt history yet. Complete a session to build your weakness profile.",
+      "errorRate": "Error {{pct}}%",
+      "hesitantRate": "Hesitant {{pct}}%",
+      "avgDuration": "Avg {{secs}}s",
+      "attempts": "{{count}} attempts"
+    },
+    "runner": {
+      "progress": "Question {{current}} of {{total}}",
+      "pause": "Pause",
+      "resume": "Resume",
+      "finish": "Finish & grade",
+      "exit": "Exit",
+      "pausedTitle": "Session paused",
+      "pausedVisibility": "Timer paused automatically while the tab was in the background.",
+      "pausedManual": "Timer is paused. Resume when you are ready to continue.",
+      "expiredTitle": "Time expired",
+      "expiredDesc": "The session timer reached zero. Finish now to calculate your score.",
+      "deferredBanner": "Full exam mode: grading is deferred until you submit the exam.",
+      "recorded": "Answer recorded",
+      "submitAnswer": "Submit answer",
+      "nextQuestion": "Next question",
+      "viewSummary": "View summary",
+      "typeAnswer": "Type your answer…",
+      "pinIdentifyPrompt": "Identify the marked pin structure(s)",
+      "pinLocatePrompt": "Tap on the image to place pin #{{no}}",
+      "pinLocateAllPlaced": "All required pins placed. Tap again to adjust or submit.",
+      "pinLocateTarget": "Target pin #{{no}}",
+      "pinClear": "Clear pins",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "zoomReset": "Reset zoom",
+      "zoomHint": "Pinch to zoom · drag to pan",
+      "confidence": "Confidence",
+      "confidenceLevels": {
+        "certain": "Certain",
+        "split": "Split",
+        "guessed": "Guessed"
+      },
+      "errorTags": "Error tags (optional)",
+      "errorTagLabels": {
+        "concept_gap": "Concept gap",
+        "misread": "Misread stem",
+        "confused_term": "Confused term",
+        "careless": "Careless",
+        "time_pressure": "Time pressure"
+      },
+      "questionTypes": {
+        "single_choice": "Single choice",
+        "multiple_choice": "Multiple choice",
+        "short_answer": "Short answer",
+        "vocab": "Vocabulary",
+        "image_qa": "Image Q&A",
+        "image_occlusion": "Image occlusion",
+        "pin_identify": "Pin identify",
+        "pin_locate": "Pin locate"
+      },
+      "grading": {
+        "correct": "Correct",
+        "incorrect": "Incorrect",
+        "anyAccepted": "Multi-key accepted (Disputed)",
+        "voided": "Voided — full credit (excluded from FSRS)",
+        "timedOut": "Time expired",
+        "answerBasis": "Answer basis",
+        "explanation": "Explanation",
+        "linkedCards": "Linked knowledge cards ({{count}})",
+        "hideLinkedCards": "Hide linked cards",
+        "officialAnswer": "Answer"
+      },
+      "summary": {
+        "title": "Session complete",
+        "score": "Score",
+        "correctOf": "{{correct}} / {{scoreable}} scoreable",
+        "voidedCount": "{{count}} voided (excluded from denominator)",
+        "attemptsSaved": "{{count}} attempt(s) recorded",
+        "reviewHeading": "Question review",
+        "backToStudy": "Back to Study Hub",
+        "backToReading": "Back to Reading Room",
+        "yourAnswer": "Your answer"
+      }
+    }
   }
 }
