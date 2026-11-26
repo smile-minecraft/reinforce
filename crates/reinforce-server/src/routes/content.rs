@@ -21,7 +21,7 @@ use rusqlite::{Connection, params_from_iter};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio_util::io::ReaderStream;
@@ -318,9 +318,8 @@ fn public_exam_set(connection: &Connection, set: ExamSet, owner: bool) -> ApiRes
         }
         let mut set = set;
         if let Some(id) = set.source_resource_id.clone() {
-            let hidden = content_store::get_resource(connection, &id)?.map_or(true, |resource| {
-                resource.export_policy == ExportPolicy::OwnerOnly
-            });
+            let hidden = content_store::get_resource(connection, &id)?
+                .is_none_or(|resource| resource.export_policy == ExportPolicy::OwnerOnly);
             if hidden {
                 set.source_resource_id = None;
             }
@@ -572,13 +571,13 @@ async fn get_anchor(
 struct TempUpload(Option<PathBuf>);
 
 impl TempUpload {
-    fn new(root: &PathBuf) -> Self {
+    fn new(root: &Path) -> Self {
         Self(Some(
             root.join(format!(".upload-{}", AppState::new_session_id())),
         ))
     }
 
-    async fn publish(&mut self, target: &PathBuf) -> ApiResult<()> {
+    async fn publish(&mut self, target: &Path) -> ApiResult<()> {
         let Some(path) = self.0.clone() else {
             return Ok(());
         };
@@ -626,7 +625,7 @@ async fn upload_resource(
                     "only one file field is allowed",
                 ));
             }
-            let mut temp = TempUpload::new(&state.blobs);
+            let temp = TempUpload::new(&state.blobs);
             let path = temp
                 .0
                 .clone()
