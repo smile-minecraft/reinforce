@@ -13,6 +13,9 @@ node_modules/
 /blobs/
 /fonts/
 
+# Generated language bindings
+/bindings/
+
 # Internal development docs (specs, plans, agent instructions) stay local
 /docs/
 AGENTS.md

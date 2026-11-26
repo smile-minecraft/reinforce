@@ -1,0 +1,33 @@
+[package]
+name = "reinforce-ffi"
+description = "Synchronous Swift and Kotlin bindings for the Reinforce core library."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# UniFFI's scaffolding expands to unsafe extern "C" glue. Keep the workspace's
+# only other lint (clippy::all) and downgrade unsafe_code so hand-written code
+# is denied while the generated glue can opt out locally.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[lib]
+name = "reinforce_ffi"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+reinforce-core.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uniffi = { workspace = true, features = ["cli"] }
+uuid.workspace = true
