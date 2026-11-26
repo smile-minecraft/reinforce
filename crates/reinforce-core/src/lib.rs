@@ -8,9 +8,11 @@ pub mod db;
 pub mod fsrs;
 pub mod hash;
 pub mod primitives;
+pub mod proposal;
 pub mod quiz;
 pub mod study;
 pub mod timestamp;
+pub mod validation;
 pub mod weakness;
 
 pub use content::{
@@ -22,7 +24,15 @@ pub use primitives::{
     AnchorId, CardId, CardStatus, Confidence, EdgeId, Error, ExamSetId, KnowledgeCardId, NoteId,
     ProposalId, QuestionCardId, QuestionGroupId, ResourceId, Result, UserId, Verification,
 };
+pub use proposal::{
+    ApprovalOptions, ApprovalOutcome, BatchOperation, BatchPayload, OperationKind, SubmitOutcome,
+    approve_batch, batch_from_proposal, reject_batch, rejected_batches, submit_batch,
+};
 pub use timestamp::Timestamp;
+pub use validation::{
+    Actor, Snapshot, Staged, StoreView, ValidationError, ValidationReport, ValidationRule,
+    validate_snapshot,
+};
 
 pub use db::Database;
 pub use db::content as content_store;

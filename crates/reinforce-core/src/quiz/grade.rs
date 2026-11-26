@@ -139,6 +139,29 @@ fn grade_keys(
     }
 }
 
+/// Free-text answers compare after `normalize_term`, so case, surrounding
+/// whitespace and full-width forms do not turn a correct answer into a miss.
+fn grade_text(question: &QuestionCard, value: &str, affects: bool) -> GradingOutcome {
+    let submitted = normalize_term(value);
+    if submitted.is_empty() {
+        return outcome(false, false, affects, "no submitted values");
+    }
+    let mut accepted = vec![question.answer.clone()];
+    if question.grading_mode == GradingMode::AnyAccepted {
+        accepted.extend(question.accepted_answers.iter().cloned());
+    }
+    let matched = accepted.iter().any(|group| {
+        group
+            .iter()
+            .any(|candidate| normalize_term(candidate) == submitted)
+    });
+    if matched {
+        outcome(true, false, affects, "text answer accepted")
+    } else {
+        outcome(false, false, affects, "text answer rejected")
+    }
+}
+
 fn pins(question: &QuestionCard) -> Vec<&Pin> {
     question
         .stem_blocks
@@ -276,6 +299,11 @@ pub fn grade_question(
             grade_pin_locate(question, submission, config, affects_scheduling)
         }
         QuestionType::PinIdentify => grade_pin_identify(question, submission, affects_scheduling),
+        QuestionType::ShortAnswer | QuestionType::Vocab | QuestionType::ImageQa => match submission
+        {
+            AnswerSubmission::Text { value } => Ok(grade_text(question, value, affects_scheduling)),
+            _ => Ok(grade_keys(question, submission, affects_scheduling)),
+        },
         _ => Ok(grade_keys(question, submission, affects_scheduling)),
     }
 }

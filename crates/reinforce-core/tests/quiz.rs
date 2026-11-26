@@ -126,6 +126,7 @@ impl QuestionSpec {
             accepted_answers: self.accepted_answers,
             answer_source_kind: AnswerSourceKind::Official,
             answer_basis: None,
+            duplicate_question_id: None,
             status: CardStatus::Published,
             verification: Verification::Verified,
             unsure_count: 0,
@@ -912,4 +913,36 @@ fn weakness_report_serializes_knowledge_question_and_option_pairs() {
             .unwrap()
             .contains("confusable_pairs")
     );
+}
+
+#[test]
+fn short_answers_ignore_case_space_and_full_width_forms() {
+    let question = QuestionSpec::new(
+        "organelle",
+        QuestionType::ShortAnswer,
+        GradingMode::AnyAccepted,
+        vec!["Mitochondria".to_owned()],
+    )
+    .accepted(vec![vec!["粒線體".to_owned()]])
+    .build();
+    let config = GradingConfig::default();
+    let grade = |value: &str| {
+        grade_question(
+            &question,
+            &AnswerSubmission::Text {
+                value: value.to_owned(),
+            },
+            &config,
+            true,
+        )
+        .unwrap()
+        .is_correct
+    };
+
+    assert!(grade("mitochondria"));
+    assert!(grade("  MITOCHONDRIA "));
+    assert!(grade("ｍｉｔｏｃｈｏｎｄｒｉａ"));
+    assert!(grade("粒線體"));
+    assert!(!grade("ribosome"));
+    assert!(!grade("   "));
 }
