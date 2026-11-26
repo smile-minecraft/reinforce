@@ -11,12 +11,12 @@ use reinforce_core::auth::set_setting;
 use reinforce_core::content::{NormalizedRect, OcclusionMask, OutlineNode, Pin, QuestionOption};
 use reinforce_core::content_store;
 use reinforce_core::primitives::{
-    AnswerSourceKind, CardStatus, ExportPolicy, GradingMode, QuestionType, ResourceKind,
-    Sensitivity, Verification,
+    AnswerSourceKind, AttemptDirection, AttemptId, CardStatus, Confidence, EdgeType, ExportPolicy,
+    GradingMode, QuestionType, ResourceKind, Sensitivity, SessionMode, Verification,
 };
 use reinforce_core::{
-    ContentBlock, ContentHash, Database, KnowledgeCard, KnowledgeCardId, Note, NoteId,
-    QuestionCard, QuestionCardId, Resource, ResourceId, Timestamp,
+    CardId, ContentBlock, ContentHash, Database, Edge, EdgeEndpoint, EdgeId, KnowledgeCard,
+    KnowledgeCardId, Note, NoteId, QuestionCard, QuestionCardId, Resource, ResourceId, Timestamp,
 };
 use reinforce_export::import_markdown;
 use serde_json::{Value, json};
@@ -446,13 +446,13 @@ fn read_entity(root: &Path, kind: &str, id: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-fn id_titles(
-    input: &reinforce_export::ExportInput,
-) -> (
+type IdTitles = (
     BTreeSet<(String, String)>,
     BTreeSet<(String, String)>,
     BTreeSet<(String, String)>,
-) {
+);
+
+fn id_titles(input: &reinforce_export::ExportInput) -> IdTitles {
     (
         input
             .notes
@@ -472,13 +472,7 @@ fn id_titles(
     )
 }
 
-fn stored_titles(
-    db: &Path,
-) -> (
-    BTreeSet<(String, String)>,
-    BTreeSet<(String, String)>,
-    BTreeSet<(String, String)>,
-) {
+fn stored_titles(db: &Path) -> IdTitles {
     let database = Database::open(db).expect("database");
     let connection = database.connection();
     let mut statement = connection
@@ -760,6 +754,83 @@ async fn api_pdf_export_is_inline_and_valid() {
     let bytes = response_bytes(response).await;
     assert!(bytes.starts_with(b"%PDF-"));
     assert!(bytes.len() > 1000);
+}
+
+#[tokio::test]
+async fn api_weakness_scope_includes_tests_linked_questions() {
+    let dir = TestDir::new();
+    let fonts_dir = fonts(&dir.0);
+    let state = state(&dir.0, AuthMode::Invite, &fonts_dir).await;
+    let app = reinforce_server::app(state.clone());
+    let owner = setup_owner(&app, &state).await;
+    let fixture = seed_content(&state).await;
+    let user_id = state.owner_id.clone();
+    let card_id = fixture.published_card.clone();
+    let question_id = fixture.question.clone();
+    state
+        .with_db(move |database| {
+            let connection = database.connection_mut();
+            let edge = Edge {
+                id: EdgeId::generate(),
+                edge_type: EdgeType::Tests,
+                from: EdgeEndpoint::Question {
+                    id: question_id.clone(),
+                },
+                to: EdgeEndpoint::Card {
+                    id: card_id.clone(),
+                },
+                created_at: Timestamp::unix_epoch(),
+            };
+            reinforce_core::content_store::insert_edge(connection, &edge)?;
+            reinforce_core::db::study::append_attempt(
+                connection,
+                &reinforce_core::AttemptLog {
+                    id: AttemptId::generate(),
+                    user_id: user_id.clone(),
+                    card_id: CardId::from(question_id),
+                    direction: AttemptDirection::Default,
+                    session_mode: SessionMode::DailyDue,
+                    submitted_payload: json!({"answer": {"kind": "keys", "values": []}}),
+                    is_correct: false,
+                    duration_ms: 10_000,
+                    confidence: Confidence::Certain,
+                    error_tags: Vec::new(),
+                    created_at: Timestamp::unix_epoch(),
+                    sync_cursor: 1,
+                    affects_scheduling: true,
+                },
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed attempt");
+
+    let response = call(
+        &app,
+        Method::POST,
+        "/api/export",
+        Some(json!({
+            "format": "markdown",
+            "scope": { "kind": "weakness", "threshold": 0.5 },
+        })),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let extracted = unzip(&response_bytes(response).await);
+    let imported = import_markdown(extracted.path()).expect("weakness bundle imports");
+    let (notes, cards, questions) = id_titles(&imported);
+    assert!(notes.is_empty());
+    assert!(
+        cards
+            .iter()
+            .any(|(id, _)| id == &fixture.published_card.to_string())
+    );
+    assert!(
+        questions
+            .iter()
+            .any(|(id, _)| id == &fixture.question.to_string())
+    );
 }
 
 #[test]

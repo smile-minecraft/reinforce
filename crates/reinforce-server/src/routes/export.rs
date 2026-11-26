@@ -139,7 +139,7 @@ async fn export(
         ExportJob::Markdown { .. } => "attachment",
     };
     let filename = safe_filename(&scope_name, job.extension());
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, job.content_type())
         .header(
@@ -148,5 +148,5 @@ async fn export(
         )
         .header(header::CONTENT_LENGTH, bytes.len().to_string())
         .body(Body::from(bytes))
-        .map_err(|error| ApiError::internal(format!("cannot build export response: {error}")))?)
+        .map_err(|error| ApiError::internal(format!("cannot build export response: {error}")))
 }
