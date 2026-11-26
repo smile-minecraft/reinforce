@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use reinforce_core::content::{ContentBlock, DiagramNodeBinding, OcclusionMask, OutlineNode, Pin};
@@ -15,6 +15,13 @@ use crate::model::{
 pub struct TypstDocument {
     pub source: String,
     pub binaries: Vec<(String, Vec<u8>)>,
+}
+
+/// Files referenced by the generated source, plus bookkeeping gathered while rendering.
+#[derive(Default)]
+struct Assets {
+    files: Vec<(String, Vec<u8>)>,
+    answer_keys: usize,
 }
 
 /// Escape arbitrary user text as a Typst string literal.
@@ -286,7 +293,7 @@ pub fn markdown_to_typst(markdown: &str) -> String {
 fn resource_image(
     input: &crate::ExportInput,
     resource: &Resource,
-    binaries: &mut Vec<(String, Vec<u8>)>,
+    binaries: &mut Assets,
 ) -> Result<String> {
     if resource.kind != ResourceKind::Image {
         return Ok(String::new());
@@ -295,7 +302,7 @@ fn resource_image(
         return Err(crate::Error::MissingBlob(resource.sha256.to_string()));
     };
     let path = format!("assets/{}.{}", resource.sha256, asset_extension(&bytes));
-    binaries.push((path.clone(), bytes));
+    binaries.files.push((path.clone(), bytes));
     Ok(path)
 }
 
@@ -382,7 +389,7 @@ fn render_image_occlusion(
     resource_id: &ResourceId,
     masks: &[OcclusionMask],
     options: &crate::PdfOptions,
-    binaries: &mut Vec<(String, Vec<u8>)>,
+    binaries: &mut Assets,
     output: &mut String,
 ) -> Result<()> {
     match resource_treatment(input, resource_id, options.viewer_is_owner) {
@@ -428,7 +435,7 @@ fn render_interactive_pins(
     overlay_resource_id: Option<&ResourceId>,
     pins: &[Pin],
     options: &crate::PdfOptions,
-    binaries: &mut Vec<(String, Vec<u8>)>,
+    binaries: &mut Assets,
     output: &mut String,
 ) -> Result<()> {
     let base = match resource_treatment(input, resource_id, options.viewer_is_owner) {
@@ -470,6 +477,7 @@ fn render_interactive_pins(
         }
         output.push('\n');
         answer_table(pins, output);
+        binaries.answer_keys += 1;
     }
     Ok(())
 }
@@ -492,11 +500,11 @@ fn render_blocks(
     input: &crate::ExportInput,
     blocks: &[ContentBlock],
     options: &crate::PdfOptions,
-    binaries: &mut Vec<(String, Vec<u8>)>,
+    binaries: &mut Assets,
     output: &mut String,
 ) -> Result<()> {
     let visible = visible_blocks(input, blocks, options.viewer_is_owner);
-    for (index, block) in visible.iter().enumerate() {
+    for block in &visible {
         match block {
             ContentBlock::Markdown { text } => output.push_str(&markdown_to_typst(text)),
             ContentBlock::Math { latex, display } => {
@@ -511,6 +519,8 @@ fn render_blocks(
                 } else {
                     if *display {
                         output.push_str("#align(center, ");
+                    } else {
+                        output.push('#');
                     }
                     output.push_str(&format!(
                         "block(width: 100%, fill: rgb(250, 250, 250), inset: 4pt, raw({}, lang: \"latex\"))",
@@ -529,8 +539,8 @@ fn render_blocks(
                 node_bindings,
             } => {
                 if let Some(svg) = svg_cache {
-                    let path = format!("diagrams/{index}.svg");
-                    binaries.push((path.clone(), svg.as_bytes().to_vec()));
+                    let path = format!("diagrams/{}.svg", binaries.files.len());
+                    binaries.files.push((path.clone(), svg.as_bytes().to_vec()));
                     output.push_str(&format!(
                         "#image({}, width: 100%)\n\n",
                         escape_typst_string(&path)
@@ -592,7 +602,7 @@ fn render_note(
     note: &Note,
     cards: &HashMap<&KnowledgeCardId, &KnowledgeCard>,
     options: &crate::PdfOptions,
-    binaries: &mut Vec<(String, Vec<u8>)>,
+    binaries: &mut Assets,
     output: &mut String,
 ) -> Result<()> {
     output.push_str(&format!(
@@ -609,7 +619,7 @@ fn render_note(
         input: &crate::ExportInput,
         cards: &HashMap<&KnowledgeCardId, &KnowledgeCard>,
         options: &crate::PdfOptions,
-        binaries: &mut Vec<(String, Vec<u8>)>,
+        binaries: &mut Assets,
         output: &mut String,
     ) -> Result<()> {
         for node in nodes {
@@ -656,7 +666,7 @@ fn render_card(
     card: &KnowledgeCard,
     level: u8,
     options: &crate::PdfOptions,
-    binaries: &mut Vec<(String, Vec<u8>)>,
+    binaries: &mut Assets,
     output: &mut String,
 ) -> Result<()> {
     output.push_str(&format!(
@@ -686,7 +696,7 @@ fn render_question(
     input: &crate::ExportInput,
     question: &QuestionCard,
     options: &crate::PdfOptions,
-    binaries: &mut Vec<(String, Vec<u8>)>,
+    binaries: &mut Assets,
     output: &mut String,
 ) -> Result<()> {
     let title = question
@@ -739,7 +749,7 @@ pub fn render_typst_source(
     options: &crate::PdfOptions,
 ) -> Result<TypstDocument> {
     let mut output = String::new();
-    let mut binaries = Vec::new();
+    let mut binaries = Assets::default();
     match options.preset {
         crate::PdfPreset::Standard => {
             output.push_str("#set page(paper: \"a4\", margin: 1.8cm)\n");
@@ -761,23 +771,40 @@ pub fn render_typst_source(
     let cards: HashMap<&KnowledgeCardId, &KnowledgeCard> =
         input.cards.iter().map(|card| (&card.id, card)).collect();
 
+    let mut transcluded = HashSet::new();
     for note in &input.notes {
+        collect_card_refs(&note.outline, &mut transcluded);
         render_note(input, note, &cards, options, &mut binaries, &mut output)?;
     }
-    for card in &input.cards {
+    for card in input
+        .cards
+        .iter()
+        .filter(|card| !transcluded.contains(&card.id))
+    {
         render_card(input, card, 1, options, &mut binaries, &mut output)?;
     }
     for question in &input.questions {
         render_question(input, question, options, &mut binaries, &mut output)?;
     }
-    if options.preset == crate::PdfPreset::Worksheet {
+    if options.preset == crate::PdfPreset::Worksheet && binaries.answer_keys == 0 {
         output.push_str("#pagebreak()\n#heading(level: 1, \"Answer key\")\n#text(\"No pinned cards in this export.\")\n");
     }
 
     Ok(TypstDocument {
         source: output,
-        binaries,
+        binaries: binaries.files,
     })
+}
+
+fn collect_card_refs<'a>(nodes: &'a [OutlineNode], ids: &mut HashSet<&'a KnowledgeCardId>) {
+    for node in nodes {
+        match node {
+            OutlineNode::Section { children, .. } => collect_card_refs(children, ids),
+            OutlineNode::CardRef { card_id } => {
+                ids.insert(card_id);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

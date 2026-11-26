@@ -25,7 +25,7 @@ Requirements: a recent stable Rust toolchain, Node.js 24+ and pnpm 9+.
 # Rust workspace
 cargo check --workspace
 cargo test --workspace
-cargo run -p reinforce-server   # prints the Reinforce version
+cargo run -p reinforce-server -- serve --demo   # http://127.0.0.1:3000 with sample data
 
 # WebApp
 cd web

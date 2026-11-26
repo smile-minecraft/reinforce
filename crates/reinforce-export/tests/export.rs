@@ -504,3 +504,90 @@ fn fonts_in_nested_folders_are_found() {
     .expect("fonts below the fonts directory are loaded");
     assert_valid_pdf(&bytes, 1);
 }
+
+#[test]
+fn transcluded_cards_render_once_and_worksheet_has_no_false_empty_key() {
+    let fonts = fonts();
+    let input = fixture().input;
+    let worksheet = render_typst_source(&input, &options(PdfPreset::Worksheet, fonts.path(), true))
+        .unwrap()
+        .source;
+    assert_eq!(worksheet.matches("\"Pinned diagram\"").count(), 1);
+    assert_eq!(
+        worksheet.matches("\"Answer key\"").count(),
+        2,
+        "one key per visible pinned diagram"
+    );
+    assert!(!worksheet.contains("No pinned cards"));
+
+    let mut no_pins = fixture().input;
+    for card in &mut no_pins.cards {
+        card.blocks
+            .retain(|block| !matches!(block, ContentBlock::InteractivePins { .. }));
+    }
+    let source = render_typst_source(&no_pins, &options(PdfPreset::Worksheet, fonts.path(), true))
+        .unwrap()
+        .source;
+    assert!(source.contains("No pinned cards"));
+
+    let mut standalone = fixture().input;
+    standalone.notes.clear();
+    let source = render_typst_source(
+        &standalone,
+        &options(PdfPreset::Standard, fonts.path(), true),
+    )
+    .unwrap()
+    .source;
+    assert_eq!(source.matches("\"Pinned diagram\"").count(), 1);
+}
+
+#[test]
+fn cached_diagrams_from_different_cards_get_distinct_files() {
+    let fonts = fonts();
+    let mut input = fixture().input;
+    input.notes.clear();
+    input.questions.clear();
+    let mut second = input.cards[0].clone();
+    second.id = KnowledgeCardId::generate();
+    second.title = "Second diagram".to_owned();
+    let diagram = |label: &str| ContentBlock::Diagram {
+        source: "A --> B".to_owned(),
+        syntax: DiagramSyntax::Mermaid,
+        svg_cache: Some(svg(label)),
+        node_bindings: Vec::new(),
+    };
+    input.cards[0].blocks = vec![diagram("first")];
+    second.blocks = vec![diagram("second")];
+    input.cards.push(second);
+
+    let document =
+        render_typst_source(&input, &options(PdfPreset::Standard, fonts.path(), true)).unwrap();
+    let diagrams: Vec<_> = document
+        .binaries
+        .iter()
+        .filter(|(path, _)| path.starts_with("diagrams/"))
+        .collect();
+    assert_eq!(diagrams.len(), 2);
+    assert_ne!(diagrams[0].0, diagrams[1].0);
+    assert!(String::from_utf8_lossy(&diagrams[0].1).contains("first"));
+    assert!(String::from_utf8_lossy(&diagrams[1].1).contains("second"));
+}
+
+#[test]
+fn unsupported_inline_math_falls_back_to_code_not_text() {
+    let fonts = fonts();
+    let mut input = math_input(r"\frac{1");
+    if let Some(ContentBlock::Math { display, .. }) = input
+        .cards
+        .first_mut()
+        .and_then(|card| card.blocks.first_mut())
+    {
+        *display = false;
+    }
+    let source =
+        render_typst_source(&input, &options(PdfPreset::Standard, fonts.path(), true)).unwrap();
+    assert!(source.source.contains(r#"#block(width: 100%, fill: rgb(250, 250, 250), inset: 4pt, raw("\\frac{1", lang: "latex"))"#));
+    let bytes = render_pdf(&input, &options(PdfPreset::Standard, fonts.path(), true))
+        .expect("inline fallback must compile");
+    assert_valid_pdf(&bytes, 1);
+}

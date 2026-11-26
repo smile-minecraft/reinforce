@@ -179,7 +179,7 @@ fn select_weakness_cards(
     let ids = report
         .knowledge_cards
         .into_iter()
-        .filter(|entry| entry.error_rate >= threshold)
+        .filter(|entry| entry.score >= threshold)
         .map(|entry| entry.card_id.to_string())
         .collect::<BTreeSet<_>>();
     load_cards(connection, ids, owner)
