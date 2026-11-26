@@ -58,6 +58,37 @@ export function useAdjustProposalPins() {
     mutationFn: ({ id, body }: { id: string; body: AdjustPinsRequest }) =>
       api.adjustProposalPins(id, body),
     onSuccess: (_res, variables) => {
+      queryClient.setQueryData<Proposal>(proposalKeys.detail(variables.id), (prev) => {
+        if (!prev) return prev
+        const next = structuredClone(prev)
+        for (const op of next.payload.operations) {
+          const blockLists =
+            op.op === 'knowledge_card'
+              ? [op.data.blocks]
+              : op.op === 'question_card'
+                ? [op.data.stem_blocks, op.data.explanation_blocks ?? []]
+                : []
+          for (const blocks of blockLists) {
+            for (const block of blocks) {
+              if (block.type !== 'interactive_pins') continue
+              if (variables.body.resource_id && block.resource_id !== variables.body.resource_id) {
+                continue
+              }
+              for (const adj of variables.body.pins) {
+                block.pins.forEach((pin, idx) => {
+                  const match = adj.no !== undefined ? pin.no === adj.no : adj.index === idx
+                  if (!match) return
+                  pin.x = adj.x
+                  pin.y = adj.y
+                  pin.label_x = adj.label_x
+                  pin.label_y = adj.label_y
+                })
+              }
+            }
+          }
+        }
+        return next
+      })
       void queryClient.invalidateQueries({ queryKey: proposalKeys.detail(variables.id) })
     },
   })

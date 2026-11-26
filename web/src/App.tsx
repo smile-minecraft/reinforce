@@ -20,6 +20,9 @@ const TriageListPage = lazy(() =>
 const TriageDetailPage = lazy(() =>
   import('./pages/TriageDetailPage').then((m) => ({ default: m.TriageDetailPage })),
 )
+const ExportCenterPage = lazy(() =>
+  import('./pages/ExportCenterPage').then((m) => ({ default: m.ExportCenterPage })),
+)
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -53,6 +56,7 @@ export function App() {
                 <Route path="study/session/:id" element={<StudyRunnerPage />} />
                 <Route path="triage" element={<TriageListPage />} />
                 <Route path="triage/:id" element={<TriageDetailPage />} />
+                <Route path="export" element={<ExportCenterPage />} />
                 <Route path="login" element={<LoginPage />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
