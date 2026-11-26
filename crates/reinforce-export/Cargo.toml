@@ -9,7 +9,20 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+pulldown-cmark.workspace = true
 reinforce-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+typst.workspace = true
+typst-as-lib.workspace = true
+typst-layout.workspace = true
+typst-pdf.workspace = true
+
+[dev-dependencies]
+lopdf = { version = "0.42", default-features = false }
+tempfile = "3"
+typst-assets = { version = "0.15", features = ["fonts"] }
 
 [lints]
 workspace = true
