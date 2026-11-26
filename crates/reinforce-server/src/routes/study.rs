@@ -407,7 +407,7 @@ async fn finish_session(
     principal: Principal,
 ) -> ApiResult<Json<Value>> {
     let now = Timestamp::now();
-    let (user_id, session) = {
+    let (user_id, session, score) = {
         let mut sessions = sessions(&state)?;
         let slot = slot(&mut sessions, &id, &principal.user_id)?;
         if let Some(result) = slot.finish_result.clone() {
@@ -417,10 +417,12 @@ async fn finish_session(
             return Err(ApiError::conflict("the session is being finalized"));
         }
         slot.session.finish(now)?;
+        // Score before marking the slot persisted so a failure here leaves
+        // the session retryable instead of stuck behind the 409 guard.
+        let score = slot.session.score()?;
         slot.persisted = true;
-        (principal.user_id.clone(), slot.session.clone())
+        (principal.user_id.clone(), slot.session.clone(), score)
     };
-    let score = session.score()?;
     let written = state
         .with_db(move |database| {
             let transaction = database.transaction()?;

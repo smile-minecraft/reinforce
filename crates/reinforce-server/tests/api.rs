@@ -1007,6 +1007,7 @@ fn card_with_status(title: &str, status: CardStatus) -> reinforce_core::Knowledg
 
 fn add_edge(
     connection: &rusqlite::Connection,
+    edge_type: reinforce_core::primitives::EdgeType,
     from: reinforce_core::EdgeEndpoint,
     to: reinforce_core::EdgeEndpoint,
 ) {
@@ -1014,7 +1015,7 @@ fn add_edge(
         connection,
         &reinforce_core::Edge {
             id: uuid::Uuid::now_v7().to_string().parse().expect("edge id"),
-            edge_type: reinforce_core::primitives::EdgeType::ConfusableWith,
+            edge_type,
             from,
             to,
             created_at: Timestamp::now(),
@@ -1218,6 +1219,7 @@ async fn quiz_builders_never_include_unpublished_questions() {
             content_store::insert_knowledge_card(connection, &draft_card)?;
             add_edge(
                 connection,
+                reinforce_core::primitives::EdgeType::Tests,
                 reinforce_core::EdgeEndpoint::Question {
                     id: QUESTION_ONE.parse().expect("question id"),
                 },
@@ -1354,6 +1356,7 @@ async fn graph_neighbors_stays_inside_the_published_subgraph() {
             }
             add_edge(
                 connection,
+                reinforce_core::primitives::EdgeType::ConfusableWith,
                 reinforce_core::EdgeEndpoint::Card {
                     id: first_id_for_db,
                 },
@@ -1361,6 +1364,7 @@ async fn graph_neighbors_stays_inside_the_published_subgraph() {
             );
             add_edge(
                 connection,
+                reinforce_core::primitives::EdgeType::ConfusableWith,
                 reinforce_core::EdgeEndpoint::Card {
                     id: bridge_id_for_db,
                 },
@@ -1377,6 +1381,7 @@ async fn graph_neighbors_stays_inside_the_published_subgraph() {
             content_store::insert_question_card(connection, &question)?;
             add_edge(
                 connection,
+                reinforce_core::primitives::EdgeType::ConfusableWith,
                 reinforce_core::EdgeEndpoint::Option {
                     id: option_question_id_for_db,
                     key: "B".to_owned(),
@@ -1604,7 +1609,7 @@ fn upload_garbage_count(state: &AppState) -> usize {
 fn duplicate_file_multipart(bytes: &[u8]) -> (String, Vec<u8>) {
     let boundary = "----reinforce-duplicate-file-boundary";
     let mut body = Vec::new();
-    for name in ["first", "second"] {
+    for name in ["file", "file"] {
         body.extend_from_slice(
             format!(
                 "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"dup.svg\"\r\nContent-Type: application/octet-stream\r\n\r\n"
@@ -1905,4 +1910,104 @@ async fn bind_host_comparison_is_case_insensitive() {
         .await,
         StatusCode::FORBIDDEN
     );
+}
+
+#[tokio::test]
+async fn short_queries_and_older_drafts_do_not_crowd_out_published_hits() {
+    let (app, state, _dir) = test_state(AuthMode::Invite).await;
+    let owner_cookie = setup_invite_owner(&app, &state).await;
+    let member_cookie = register_member(&app, &owner_cookie).await;
+    // Drafts get older UUIDv7 ids so they sort first under ORDER BY id.
+    let draft_card = card_with_status("熔沸草稿", CardStatus::Draft);
+    let draft_note_id: reinforce_core::NoteId = fresh_id();
+    let published_card = card_with_status("熔沸筆記", CardStatus::Published);
+    let published_note_id: reinforce_core::NoteId = fresh_id();
+    let draft_card_id = draft_card.id.clone();
+    let published_card_id = published_card.id.clone();
+    let (draft_note_for_db, published_note_for_db) =
+        (draft_note_id.clone(), published_note_id.clone());
+    state
+        .with_db(move |database| {
+            let connection = database.connection();
+            content_store::insert_knowledge_card(connection, &draft_card)?;
+            content_store::insert_knowledge_card(connection, &published_card)?;
+            let now = Timestamp::now();
+            for (id, status) in [
+                (draft_note_for_db, CardStatus::Draft),
+                (published_note_for_db, CardStatus::Published),
+            ] {
+                content_store::insert_note(
+                    connection,
+                    &reinforce_core::Note {
+                        id,
+                        subject: "physics".to_owned(),
+                        title: "凝華昇華講義".to_owned(),
+                        outline: vec![],
+                        view_settings: json!({}),
+                        status,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                )?;
+            }
+            let core_hits = reinforce_core::search::search_knowledge_cards_visible(
+                connection, "熔沸", 10, true,
+            )?;
+            assert_eq!(
+                core_hits,
+                vec![published_card.id.clone()],
+                "a two-character query must not return draft cards when published_only is set"
+            );
+            Ok(())
+        })
+        .await
+        .expect("insert search fixtures");
+
+    for (query, expected, hidden) in [
+        ("熔沸", published_card_id.as_str(), draft_card_id.as_str()),
+        (
+            "凝華昇華",
+            published_note_id.as_str(),
+            draft_note_id.as_str(),
+        ),
+    ] {
+        let hits = expect_json(
+            json_call(
+                &app,
+                Method::GET,
+                &format!("/api/search?q={}&limit=1", urlencoding(query)),
+                None,
+                Some(&member_cookie),
+            )
+            .await,
+            StatusCode::OK,
+        )
+        .await;
+        let ids: Vec<&str> = hits
+            .as_array()
+            .expect("search hits")
+            .iter()
+            .filter_map(|hit| hit["id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&expected.as_str()),
+            "{query}: published hit missing from {ids:?}"
+        );
+        assert!(
+            !ids.contains(&hidden.as_str()),
+            "{query}: draft leaked in {ids:?}"
+        );
+    }
+}
+
+fn urlencoding(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
 }

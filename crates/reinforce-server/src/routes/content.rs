@@ -433,8 +433,8 @@ async fn search_content(
                 .replace('_', "\\_");
             let status_filter = if owner { "" } else { " AND status = 'published'" };
             let mut statement = connection.prepare(&format!(
-                "SELECT id, title FROM notes WHERE title LIKE ?1 ESCAPE '\\'
-                    OR subject LIKE ?1 ESCAPE '\\'{status_filter} ORDER BY id LIMIT ?2"
+                "SELECT id, title FROM notes WHERE (title LIKE ?1 ESCAPE '\\'
+                    OR subject LIKE ?1 ESCAPE '\\'){status_filter} ORDER BY id LIMIT ?2"
             ))?;
             let notes = statement
                 .query_map(rusqlite::params![format!("%{escaped}%"), i64::try_from(limit).unwrap_or(50)], |row| {

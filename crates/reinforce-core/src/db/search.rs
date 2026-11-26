@@ -66,8 +66,8 @@ pub fn search_knowledge_cards_visible(
     } else {
         format!(
             "SELECT id FROM knowledge_cards
-             WHERE title LIKE :query ESCAPE '\\' OR subject LIKE :query ESCAPE '\\'
-                OR search_text LIKE :query ESCAPE '\\'
+             WHERE (title LIKE :query ESCAPE '\\' OR subject LIKE :query ESCAPE '\\'
+                OR search_text LIKE :query ESCAPE '\\')
              {}
              ORDER BY id LIMIT :limit",
             status_condition(published_only)
@@ -113,8 +113,8 @@ pub fn search_question_cards_visible(
     } else {
         format!(
             "SELECT id FROM question_cards
-             WHERE subject LIKE :query ESCAPE '\\'
-                OR search_text LIKE :query ESCAPE '\\'
+             WHERE (subject LIKE :query ESCAPE '\\'
+                OR search_text LIKE :query ESCAPE '\\')
              {}
              ORDER BY id LIMIT :limit",
             status_condition(published_only)
