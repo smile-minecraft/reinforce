@@ -40,7 +40,10 @@ fn validation_error(report: ValidationReport, message: &'static str) -> ApiError
     }
 }
 
-fn ids<T: rusqlite::types::FromSql>(connection: &Connection, table: &str) -> ApiResult<Vec<T>> {
+pub(crate) fn ids<T: rusqlite::types::FromSql>(
+    connection: &Connection,
+    table: &str,
+) -> ApiResult<Vec<T>> {
     // `table` is a fixed internal constant at every call site, never user input.
     let mut statement = connection.prepare(&format!("SELECT id FROM {table} ORDER BY id"))?;
     let ids = statement

@@ -23,7 +23,9 @@ clap.workspace = true
 futures-util.workspace = true
 rand.workspace = true
 reinforce-core.workspace = true
+rmcp = { version = "3.11", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
 rust-embed.workspace = true
+schemars = "1"
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

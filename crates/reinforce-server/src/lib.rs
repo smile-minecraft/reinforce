@@ -6,6 +6,7 @@ pub mod demo;
 pub mod embed;
 pub mod error;
 pub mod guard;
+pub mod mcp;
 pub mod routes;
 pub mod state;
 
@@ -30,6 +31,7 @@ pub async fn run() -> ApiResult<()> {
     init_tracing();
     match cli.command {
         config::Command::Serve(config) => serve(config).await,
+        config::Command::Mcp(args) => mcp::run_stdio(args).await,
         config::Command::Check(args) => cli::check(args).await,
         config::Command::Import(args) => cli::import(args).await,
     }

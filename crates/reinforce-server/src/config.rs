@@ -29,8 +29,19 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Serve(ServeArgs),
+    Mcp(McpArgs),
     Check(CheckArgs),
     Import(ImportArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct McpArgs {
+    #[arg(long, default_value = "./reinforce.db")]
+    pub db: std::path::PathBuf,
+    #[arg(long, default_value = "./blobs")]
+    pub blobs: std::path::PathBuf,
+    #[arg(long, default_value = "reinforce-agent")]
+    pub agent_name: String,
 }
 
 #[derive(Debug, Clone, Args)]
