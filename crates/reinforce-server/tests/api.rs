@@ -612,7 +612,49 @@ async fn quiz_answers_write_attempts_and_update_scheduling() {
     )
     .await;
     assert!(scheduling.is_object());
-    assert!(scheduling["reps"].as_u64().unwrap_or(0) > 0);
+    let reps_after_first_finish = scheduling["reps"].as_u64().unwrap_or(0);
+    assert!(reps_after_first_finish > 0);
+    let finished_again = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/finish"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(finished_again, finished);
+    let attempts_after_second_finish = expect_json(
+        json_call(&app, Method::GET, "/api/study/attempts", None, None).await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        attempts_after_second_finish
+            .as_array()
+            .expect("attempts")
+            .len(),
+        1
+    );
+    let scheduling_after_second_finish = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/study/scheduling?card_id={QUESTION_ONE}"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        scheduling_after_second_finish["reps"].as_u64().unwrap_or(0),
+        reps_after_first_finish
+    );
     let report = expect_json(
         json_call(&app, Method::GET, "/api/study/weakness", None, None).await,
         StatusCode::OK,
@@ -1725,4 +1767,66 @@ async fn blob_responses_disable_sniffing_and_sandbox_svg() {
         "image/svg+xml"
     );
     let _ = &state;
+}
+
+#[tokio::test]
+async fn internal_errors_never_expose_storage_details() {
+    let (app, state, _dir) = test_state(AuthMode::Single).await;
+    state
+        .with_db(move |database| {
+            database.connection().execute(
+                "UPDATE resources SET width = 'bogus-width' WHERE id = ?1",
+                rusqlite::params![BASE_RESOURCE],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("corrupt stored resource kind");
+    let body = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/resources/{BASE_RESOURCE}"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .await;
+    assert_eq!(body["error"]["code"], "internal_error");
+    assert_eq!(body["error"]["message"], "internal server error");
+    assert!(
+        !serde_json::to_string(&body)
+            .expect("encode body")
+            .contains("bogus-kind")
+    );
+}
+
+#[tokio::test]
+async fn invite_owner_setup_reuses_the_existing_owner_user() {
+    let (app, state, _dir) = test_state(AuthMode::Invite).await;
+    let owner_cookie = setup_invite_owner(&app, &state).await;
+    let session = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            "/api/auth/session",
+            None,
+            Some(&owner_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(session["user_id"], state.owner_id.as_str());
+    let users: i64 = state
+        .with_db(move |database| {
+            Ok(database
+                .connection()
+                .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?)
+        })
+        .await
+        .expect("count users");
+    assert_eq!(users, 1);
 }

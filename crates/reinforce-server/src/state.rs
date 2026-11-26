@@ -7,6 +7,7 @@ use reinforce_core::auth::{
     create_user, delete_setting, get_setting, owner_exists, set_setting, user_by_id,
 };
 use reinforce_core::{Database, QuizSession, Timestamp, UserId};
+use serde_json::Value;
 use tokio::task::spawn_blocking;
 use uuid::Uuid;
 
@@ -54,6 +55,8 @@ pub struct SessionSlot {
     pub user_id: UserId,
     pub session: QuizSession,
     pub touched: Instant,
+    pub persisted: bool,
+    pub finish_result: Option<Value>,
 }
 
 #[derive(Clone)]

@@ -103,32 +103,33 @@ async fn setup_owner(
         ));
     }
     validate_credentials(&request.username, &request.password)?;
-    let stored_hash = hash_password(&request.password)?;
+    let stored_hash = hash_password(request.password.clone()).await?;
     let submitted_hash = hash_token(&request.token);
     let username = request.username;
+    let owner_id = state.owner_id.clone();
     let user_id = state
         .with_db(move |database| {
-            let connection = database.connection_mut();
-            if owner_exists(connection)? {
+            let transaction = database.transaction()?;
+            if owner_exists(&transaction)? {
                 return Err(ApiError::conflict("owner is already configured"));
             }
-            let expected =
-                get_setting(connection, SETUP_TOKEN_SETTING)?.ok_or_else(ApiError::unauthorized)?;
+            let expected = get_setting(&transaction, SETUP_TOKEN_SETTING)?
+                .ok_or_else(ApiError::unauthorized)?;
             if expected != submitted_hash {
                 return Err(ApiError::unauthorized());
             }
             let now = Timestamp::now();
-            let user_id = reinforce_core::auth::create_user(connection, &username, now)?;
             insert_credential(
-                connection,
-                &user_id,
+                &transaction,
+                &owner_id,
                 &username,
                 &stored_hash,
                 reinforce_core::auth::Role::Owner,
                 now,
             )?;
-            reinforce_core::auth::delete_setting(connection, SETUP_TOKEN_SETTING)?;
-            Ok(user_id)
+            reinforce_core::auth::delete_setting(&transaction, SETUP_TOKEN_SETTING)?;
+            transaction.commit()?;
+            Ok(owner_id)
         })
         .await?;
     Ok(Json(json!({ "user_id": user_id })))
@@ -179,7 +180,7 @@ async fn register(
     if request.invite_code.trim().is_empty() {
         return Err(ApiError::bad_request("invite_code", "cannot be empty"));
     }
-    let stored_hash = hash_password(&request.password)?;
+    let stored_hash = hash_password(request.password.clone()).await?;
     let code_hash = hash_token(&request.invite_code);
     let username = request.username;
     let user_id = state
@@ -211,7 +212,7 @@ async fn login(
         .with_db(move |database| Ok(credential_by_username(database.connection(), &username)?))
         .await?
         .ok_or_else(ApiError::unauthorized)?;
-    if !verify_password(&request.password, &credential.password_hash) {
+    if !verify_password(request.password.clone(), credential.password_hash.clone()).await {
         return Err(ApiError::unauthorized());
     }
     let token = random_token(32);

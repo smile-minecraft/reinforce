@@ -6,6 +6,7 @@ use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 use reinforce_core::auth::{Role, SessionAuth, session_by_token_hash};
 use reinforce_core::{ContentHash, Timestamp, UserId};
+use tokio::task::spawn_blocking;
 
 use crate::config::AuthMode;
 use crate::error::{ApiError, ApiResult};
@@ -91,20 +92,32 @@ pub fn random_token(byte_count: usize) -> String {
     text
 }
 
-pub fn hash_password(password: &str) -> ApiResult<String> {
+fn hash_password_sync(password: &str) -> ApiResult<String> {
     Argon2::default()
         .hash_password(password.as_bytes())
         .map(|hash| hash.to_string())
         .map_err(|error| ApiError::internal(format!("cannot hash password: {error}")))
 }
 
-pub fn verify_password(password: &str, stored: &str) -> bool {
+pub async fn hash_password(password: String) -> ApiResult<String> {
+    spawn_blocking(move || hash_password_sync(&password))
+        .await
+        .map_err(|error| ApiError::internal(format!("password hashing task failed: {error}")))?
+}
+
+fn verify_password_sync(password: &str, stored: &str) -> bool {
     let Ok(parsed) = PasswordHash::new(stored) else {
         return false;
     };
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok()
+}
+
+pub async fn verify_password(password: String, stored: String) -> bool {
+    spawn_blocking(move || verify_password_sync(&password, &stored))
+        .await
+        .unwrap_or(false)
 }
 
 pub fn session_cookie(token: &str) -> String {

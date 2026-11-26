@@ -314,6 +314,8 @@ async fn create_session(
             user_id: principal.user_id,
             session,
             touched: Instant::now(),
+            persisted: false,
+            finish_result: None,
         },
     );
     Ok(Json(json!({
@@ -404,20 +406,26 @@ async fn finish_session(
     PathParam(id): PathParam<String>,
     principal: Principal,
 ) -> ApiResult<Json<Value>> {
-    let cursor = state
-        .with_db(move |database| Ok(study_store::next_attempt_cursor(database.connection())?))
-        .await?;
     let now = Timestamp::now();
-    let attempts: Vec<AttemptLog> = {
+    let (user_id, session) = {
         let mut sessions = sessions(&state)?;
         let slot = slot(&mut sessions, &id, &principal.user_id)?;
+        if let Some(result) = slot.finish_result.clone() {
+            return Ok(Json(result));
+        }
+        if slot.persisted {
+            return Err(ApiError::conflict("the session is being finalized"));
+        }
         slot.session.finish(now)?;
-        slot.session.attempts(&principal.user_id, cursor)
+        slot.persisted = true;
+        (principal.user_id.clone(), slot.session.clone())
     };
-    let written = attempts.len();
-    state
+    let score = session.score()?;
+    let written = state
         .with_db(move |database| {
             let transaction = database.transaction()?;
+            let cursor = study_store::next_attempt_cursor(&transaction)?;
+            let attempts = session.attempts(&user_id, cursor);
             for attempt in &attempts {
                 study_store::append_attempt(&transaction, attempt)?;
                 if attempt.affects_scheduling {
@@ -432,15 +440,28 @@ async fn finish_session(
                 }
             }
             transaction.commit()?;
-            Ok(())
+            Ok(attempts.len())
         })
-        .await?;
+        .await;
+    let written = match written {
+        Ok(written) => written,
+        Err(error) => {
+            if let Ok(mut sessions) = sessions(&state) {
+                if let Ok(slot) = slot(&mut sessions, &id, &principal.user_id) {
+                    slot.persisted = false;
+                }
+            }
+            return Err(error);
+        }
+    };
+    let result = json!({
+        "attempts_written": written,
+        "score": score,
+    });
     let mut sessions = sessions(&state)?;
     let slot = slot(&mut sessions, &id, &principal.user_id)?;
-    Ok(Json(json!({
-        "attempts_written": written,
-        "score": slot.session.score()?,
-    })))
+    slot.finish_result = Some(result.clone());
+    Ok(Json(result))
 }
 
 async fn get_score(
