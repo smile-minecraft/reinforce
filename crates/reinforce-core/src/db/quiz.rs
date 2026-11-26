@@ -95,6 +95,7 @@ pub fn topic_question_ids(
     let sql = format!(
         "SELECT DISTINCT q.id
          FROM edges e
+         JOIN knowledge_cards k ON k.id = e.to_id AND k.status = 'published'
          JOIN question_cards q ON q.id = e.from_id
          WHERE e.edge_type = 'tests'
            AND e.to_kind = 'card'

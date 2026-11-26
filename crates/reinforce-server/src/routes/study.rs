@@ -255,6 +255,16 @@ fn public_question(question: &QuestionCard) -> Value {
         object.remove("accepted_answers");
         object.remove("answer_basis");
         object.remove("explanation_blocks");
+        if let Some(options) = object
+            .get_mut("options")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for option in options {
+                if let Some(option) = option.as_object_mut() {
+                    option.remove("explanation");
+                }
+            }
+        }
     }
     value
 }

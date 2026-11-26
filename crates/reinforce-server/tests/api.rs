@@ -65,7 +65,10 @@ async fn call(
     body: Vec<u8>,
     cookie: Option<&str>,
 ) -> axum::response::Response {
-    let mut builder = Request::builder().method(method).uri(uri);
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::HOST, "127.0.0.1");
     if let Some(value) = content_type {
         builder = builder.header(header::CONTENT_TYPE, value);
     }
@@ -935,4 +938,610 @@ async fn owner_can_upload_files_larger_than_the_default_body_limit() {
         "a 5 MiB upload must be accepted, got {}",
         response.status()
     );
+}
+
+fn card_with_status(title: &str, status: CardStatus) -> reinforce_core::KnowledgeCard {
+    let now = Timestamp::now();
+    reinforce_core::KnowledgeCard {
+        id: uuid::Uuid::now_v7().to_string().parse().expect("card id"),
+        subject: "physics".to_owned(),
+        topics: vec![],
+        title: title.to_owned(),
+        blocks: vec![],
+        anchor_ids: vec![],
+        status,
+        verification: reinforce_core::Verification::Unchecked,
+        unsure_count: 0,
+        metadata: json!({}),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn add_edge(
+    connection: &rusqlite::Connection,
+    from: reinforce_core::EdgeEndpoint,
+    to: reinforce_core::EdgeEndpoint,
+) {
+    reinforce_core::content_store::insert_edge(
+        connection,
+        &reinforce_core::Edge {
+            id: uuid::Uuid::now_v7().to_string().parse().expect("edge id"),
+            edge_type: reinforce_core::primitives::EdgeType::ConfusableWith,
+            from,
+            to,
+            created_at: Timestamp::now(),
+        },
+    )
+    .expect("insert edge");
+}
+
+fn fresh_id<T: std::str::FromStr>() -> T
+where
+    T::Err: std::fmt::Debug,
+{
+    uuid::Uuid::now_v7().to_string().parse().expect("fresh id")
+}
+
+#[tokio::test]
+async fn exam_sets_require_authentication_and_hide_owner_only_sources() {
+    let (app, state, _dir) = test_state(AuthMode::Invite).await;
+    let owner_cookie = setup_invite_owner(&app, &state).await;
+    let member_cookie = register_member(&app, &owner_cookie).await;
+
+    assert_eq!(
+        json_call(&app, Method::GET, "/api/exam_sets", None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/exam_sets/{EXAM_SET}"),
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let (content_type, bytes) = multipart(
+        &[
+            ("title", "private-source.pdf"),
+            ("kind", "pdf"),
+            ("export_policy", "owner_only"),
+        ],
+        "private.pdf",
+        b"private source",
+    );
+    let uploaded = expect_json(
+        call(
+            &app,
+            Method::POST,
+            "/api/resources/upload",
+            Some(&content_type),
+            bytes,
+            Some(&owner_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let owner_only_id: reinforce_core::ResourceId = uploaded["id"]
+        .as_str()
+        .expect("resource id")
+        .parse()
+        .expect("resource id");
+
+    let draft_set_id: reinforce_core::ExamSetId = fresh_id();
+    let public_set_id: reinforce_core::ExamSetId = fresh_id();
+    let draft_question_id: reinforce_core::QuestionCardId = fresh_id();
+    let public_question_id: reinforce_core::QuestionCardId = fresh_id();
+    let draft_set_id_for_db = draft_set_id.clone();
+    let public_set_id_for_db = public_set_id.clone();
+    let owner_only_id_for_db = owner_only_id.clone();
+    state
+        .with_db(move |database| {
+            let connection = database.connection();
+            let mut draft_set =
+                content_store::get_exam_set(connection, &EXAM_SET.parse().unwrap())?
+                    .expect("exam set");
+            draft_set.id = draft_set_id_for_db.clone();
+            draft_set.title = "draft set".to_owned();
+            draft_set.source_resource_id = Some(owner_only_id_for_db.clone());
+            content_store::insert_exam_set(connection, &draft_set)?;
+
+            let mut public_set = draft_set.clone();
+            public_set.id = public_set_id_for_db.clone();
+            public_set.title = "published set".to_owned();
+            content_store::insert_exam_set(connection, &public_set)?;
+
+            let question =
+                content_store::get_question_card(connection, &QUESTION_ONE.parse().unwrap())?
+                    .expect("question");
+            let mut draft_question = question.clone();
+            draft_question.id = draft_question_id;
+            draft_question.exam_set_id = Some(draft_set_id_for_db);
+            draft_question.status = CardStatus::Draft;
+            content_store::insert_question_card(connection, &draft_question)?;
+            let mut public_question = question;
+            public_question.id = public_question_id;
+            public_question.exam_set_id = Some(public_set_id_for_db);
+            content_store::insert_question_card(connection, &public_question)?;
+            Ok(())
+        })
+        .await
+        .expect("insert exam set fixtures");
+
+    let listed = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            "/api/exam_sets",
+            None,
+            Some(&member_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let listed_ids: Vec<&str> = listed
+        .as_array()
+        .expect("exam set list")
+        .iter()
+        .filter_map(|set| set["id"].as_str())
+        .collect();
+    assert!(!listed_ids.iter().any(|id| *id == draft_set_id.as_str()));
+    assert!(listed_ids.iter().any(|id| *id == public_set_id.as_str()));
+
+    assert_eq!(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/exam_sets/{draft_set_id}"),
+            None,
+            Some(&member_cookie),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/exam_sets/{draft_set_id}"),
+            None,
+            Some(&owner_cookie),
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+
+    let learner_set = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/exam_sets/{public_set_id}"),
+            None,
+            Some(&member_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert!(learner_set["source_resource_id"].is_null());
+    let owner_set = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/exam_sets/{public_set_id}"),
+            None,
+            Some(&owner_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(owner_set["source_resource_id"], owner_only_id.as_str());
+}
+
+#[tokio::test]
+async fn quiz_builders_never_include_unpublished_questions() {
+    let (app, state, _dir) = test_state(AuthMode::Single).await;
+    let draft_question_id: reinforce_core::QuestionCardId = fresh_id();
+    let draft_question_for_request = draft_question_id.clone();
+    let draft_card = card_with_status("draft topic", CardStatus::Draft);
+    let draft_card_id = draft_card.id.clone();
+    let draft_card_for_request = draft_card_id.clone();
+    state
+        .with_db(move |database| {
+            let connection = database.connection();
+            let mut question =
+                content_store::get_question_card(connection, &QUESTION_ONE.parse().unwrap())?
+                    .expect("question");
+            question.id = draft_question_id.clone();
+            question.question_type = reinforce_core::primitives::QuestionType::PinIdentify;
+            question.status = CardStatus::Draft;
+            content_store::insert_question_card(connection, &question)?;
+            content_store::insert_knowledge_card(connection, &draft_card)?;
+            add_edge(
+                connection,
+                reinforce_core::EdgeEndpoint::Question {
+                    id: QUESTION_ONE.parse().expect("question id"),
+                },
+                reinforce_core::EdgeEndpoint::Card {
+                    id: draft_card_id.clone(),
+                },
+            );
+            Ok(())
+        })
+        .await
+        .expect("insert draft quiz fixtures");
+
+    let practical = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({
+                "mode": "practical_exam",
+                "question_ids": [draft_question_for_request.as_str()],
+            })),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(practical["question_count"], 0);
+
+    let topic = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({
+                "mode": "topic_drill",
+                "knowledge_card_ids": [draft_card_for_request.as_str()],
+            })),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(topic["question_count"], 0);
+
+    let created = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({"mode": "daily_due", "options": {"question_limit": 1}})),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let session_id = created["session_id"].as_str().expect("session id");
+    expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/answers"),
+            Some(json!({
+                "submission": {"kind": "keys", "values": ["A"]},
+                "confidence": "certain"
+            })),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/finish"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    state
+        .with_db(move |database| {
+            database.connection().execute(
+                "UPDATE question_cards SET status = 'draft' WHERE id = ?1",
+                rusqlite::params![QUESTION_ONE],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("unpublish historical question");
+    let weakness = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({"mode": "weakness_drill"})),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(weakness["question_count"], 0);
+}
+
+#[tokio::test]
+async fn graph_neighbors_stays_inside_the_published_subgraph() {
+    let (app, state, _dir) = test_state(AuthMode::Invite).await;
+    let owner_cookie = setup_invite_owner(&app, &state).await;
+    let member_cookie = register_member(&app, &owner_cookie).await;
+    let first = card_with_status("graph A", CardStatus::Published);
+    let second = card_with_status("graph B", CardStatus::Published);
+    let bridge = card_with_status("graph draft", CardStatus::Draft);
+    let first_id = first.id.clone();
+    let second_id = second.id.clone();
+    let bridge_id = bridge.id.clone();
+    let bridge_edge_id = bridge_id.clone();
+    let bridge_id_for_db = bridge_id.clone();
+    let option_question_id: reinforce_core::QuestionCardId = fresh_id();
+    let first_id_for_db = first_id.clone();
+    let second_id_for_db = second_id.clone();
+    let option_question_id_for_db = option_question_id.clone();
+    state
+        .with_db(move |database| {
+            let connection = database.connection();
+            for card in [&first, &second, &bridge] {
+                content_store::insert_knowledge_card(connection, card)?;
+            }
+            add_edge(
+                connection,
+                reinforce_core::EdgeEndpoint::Card {
+                    id: first_id_for_db,
+                },
+                reinforce_core::EdgeEndpoint::Card { id: bridge_edge_id },
+            );
+            add_edge(
+                connection,
+                reinforce_core::EdgeEndpoint::Card {
+                    id: bridge_id_for_db,
+                },
+                reinforce_core::EdgeEndpoint::Card {
+                    id: second_id_for_db.clone(),
+                },
+            );
+            let mut question = content_store::get_question_card(
+                connection,
+                &QUESTION_ONE.parse().expect("question id"),
+            )?
+            .expect("question");
+            question.id = option_question_id_for_db.clone();
+            content_store::insert_question_card(connection, &question)?;
+            add_edge(
+                connection,
+                reinforce_core::EdgeEndpoint::Option {
+                    id: option_question_id_for_db,
+                    key: "B".to_owned(),
+                },
+                reinforce_core::EdgeEndpoint::Card {
+                    id: second_id_for_db.clone(),
+                },
+            );
+            Ok(())
+        })
+        .await
+        .expect("insert graph fixtures");
+
+    assert_eq!(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/graph/card/{bridge_id}/neighbors"),
+            None,
+            Some(&member_cookie),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let learner = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/graph/card/{first_id}/neighbors?depth=2"),
+            None,
+            Some(&member_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let learner_ids: Vec<&str> = learner
+        .as_array()
+        .expect("neighbors")
+        .iter()
+        .filter_map(|node| node["endpoint"]["id"].as_str())
+        .collect();
+    assert!(!learner_ids.iter().any(|id| *id == second_id.as_str()));
+    assert!(!learner_ids.iter().any(|id| *id == bridge_id.as_str()));
+
+    let owner = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/graph/card/{first_id}/neighbors?depth=2"),
+            None,
+            Some(&owner_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let owner_ids: Vec<&str> = owner
+        .as_array()
+        .expect("neighbors")
+        .iter()
+        .filter_map(|node| node["endpoint"]["id"].as_str())
+        .collect();
+    assert!(owner_ids.iter().any(|id| *id == second_id.as_str()));
+
+    let options = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/graph/option/{option_question_id}/neighbors?key=B"),
+            None,
+            Some(&member_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let option_ids: Vec<&str> = options
+        .as_array()
+        .expect("option neighbors")
+        .iter()
+        .filter_map(|node| node["endpoint"]["id"].as_str())
+        .collect();
+    assert!(option_ids.iter().any(|id| *id == second_id.as_str()));
+}
+
+#[tokio::test]
+async fn current_question_hides_solution_fields() {
+    let (app, state, _dir) = test_state(AuthMode::Single).await;
+    let question_id: reinforce_core::QuestionCardId = fresh_id();
+    let question_for_request = question_id.clone();
+    state
+        .with_db(move |database| {
+            let connection = database.connection();
+            let mut question = content_store::get_question_card(
+                connection,
+                &QUESTION_ONE.parse().expect("question id"),
+            )?
+            .expect("question");
+            question.id = question_id.clone();
+            question.question_type = reinforce_core::primitives::QuestionType::PinIdentify;
+            question.answer_basis = Some("hidden basis".to_owned());
+            question.explanation_blocks = vec![reinforce_core::ContentBlock::Markdown {
+                text: "hidden explanation".to_owned(),
+            }];
+            if let Some(option) = question.options.first_mut() {
+                option.explanation = Some("hidden option explanation".to_owned());
+            }
+            content_store::insert_question_card(connection, &question)?;
+            Ok(())
+        })
+        .await
+        .expect("insert question");
+    let created = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({
+                "mode": "practical_exam",
+                "question_ids": [question_for_request.as_str()],
+            })),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let session_id = created["session_id"].as_str().expect("session id");
+    let session = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/study/sessions/{session_id}"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let question = &session["question"];
+    assert!(question.get("answer").is_none());
+    assert!(question.get("accepted_answers").is_none());
+    assert!(question.get("answer_basis").is_none());
+    assert!(question.get("explanation_blocks").is_none());
+    assert!(question["options"][0].get("explanation").is_none());
+}
+
+#[tokio::test]
+async fn search_returns_published_results_before_the_limit() {
+    let (app, state, _dir) = test_state(AuthMode::Invite).await;
+    let owner_cookie = setup_invite_owner(&app, &state).await;
+    let member_cookie = register_member(&app, &owner_cookie).await;
+    let draft_card = card_with_status("uniquefilterterm draft", CardStatus::Draft);
+    let published_card = card_with_status("uniquefilterterm published", CardStatus::Published);
+    let draft_card_id = draft_card.id.clone();
+    let published_card_id = published_card.id.clone();
+    let draft_note_id: reinforce_core::NoteId = fresh_id();
+    let published_note_id: reinforce_core::NoteId = fresh_id();
+    let draft_note_id_for_db = draft_note_id.clone();
+    let published_note_id_for_db = published_note_id.clone();
+    state
+        .with_db(move |database| {
+            let connection = database.connection();
+            content_store::insert_knowledge_card(connection, &draft_card)?;
+            content_store::insert_knowledge_card(connection, &published_card)?;
+            let now = Timestamp::now();
+            for (id, status) in [
+                (draft_note_id_for_db, CardStatus::Draft),
+                (published_note_id_for_db, CardStatus::Published),
+            ] {
+                let note = reinforce_core::Note {
+                    id,
+                    subject: "physics".to_owned(),
+                    title: "uniquefilterterm note".to_owned(),
+                    outline: vec![],
+                    view_settings: json!({}),
+                    status,
+                    created_at: now,
+                    updated_at: now,
+                };
+                content_store::insert_note(connection, &note)?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("insert search fixtures");
+
+    let hits = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            "/api/search?q=uniquefilterterm&limit=2",
+            None,
+            Some(&member_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let ids: Vec<&str> = hits
+        .as_array()
+        .expect("search hits")
+        .iter()
+        .filter_map(|hit| hit["id"].as_str())
+        .collect();
+    assert!(ids.iter().any(|id| *id == published_card_id.as_str()));
+    assert!(ids.iter().any(|id| *id == published_note_id.as_str()));
+    assert!(!ids.iter().any(|id| *id == draft_card_id.as_str()));
+    assert!(!ids.iter().any(|id| *id == draft_note_id.as_str()));
+    assert!(hits.as_array().expect("search hits").len() <= 2);
 }

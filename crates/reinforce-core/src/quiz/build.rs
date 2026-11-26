@@ -72,9 +72,12 @@ fn session(
 
 fn load(connection: &Connection, ids: Vec<QuestionCardId>) -> Result<Vec<QuestionCard>> {
     ids.into_iter()
-        .map(|id| {
-            store::get_question_card(connection, &id)?
-                .ok_or_else(|| Error::InvalidValue("question id", id.as_str()))
+        .filter_map(|id| match store::get_question_card(connection, &id) {
+            Ok(Some(card)) if card.status == crate::primitives::CardStatus::Published => {
+                Some(Ok(card))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
         })
         .collect()
 }

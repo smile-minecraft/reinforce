@@ -76,6 +76,8 @@ struct SearchQuery {
 struct GraphQuery {
     #[serde(default)]
     depth: Option<u32>,
+    #[serde(default)]
+    key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -300,11 +302,42 @@ async fn get_question(
     Ok(Json(card))
 }
 
+fn has_published_question(connection: &Connection, set: &ExamSet) -> ApiResult<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM question_cards
+             WHERE exam_set_id = ?1 AND status = 'published')",
+        rusqlite::params![set.id],
+        |row| row.get::<_, i64>(0),
+    )? != 0)
+}
+
+fn public_exam_set(connection: &Connection, set: ExamSet, owner: bool) -> ApiResult<ExamSet> {
+    if !owner {
+        if !has_published_question(connection, &set)? {
+            return Err(ApiError::not_found("exam set"));
+        }
+        let mut set = set;
+        if let Some(id) = set.source_resource_id.clone() {
+            let hidden = content_store::get_resource(connection, &id)?.map_or(true, |resource| {
+                resource.export_policy == ExportPolicy::OwnerOnly
+            });
+            if hidden {
+                set.source_resource_id = None;
+            }
+        }
+        Ok(set)
+    } else {
+        Ok(set)
+    }
+}
+
 async fn list_exam_sets(
     State(state): State<AppState>,
     QueryParams(query): QueryParams<ListQuery>,
+    principal: Principal,
 ) -> ApiResult<Json<Vec<ExamSet>>> {
     let subject = query.subject.clone();
+    let owner = principal.is_owner();
     let sets = state
         .with_db(move |database| {
             let connection = database.connection();
@@ -313,6 +346,12 @@ async fn list_exam_sets(
             if let Some(subject) = subject.as_deref() {
                 values.push(SqlValue::Text(subject.to_owned()));
                 sql.push_str(&format!(" AND subject = ?{}", values.len()));
+            }
+            if !owner {
+                sql.push_str(
+                    " AND EXISTS (SELECT 1 FROM question_cards q
+                       WHERE q.exam_set_id = exam_sets.id AND q.status = 'published')",
+                );
             }
             values.push(SqlValue::Integer(
                 i64::try_from(limit_of(query.limit)).unwrap_or(50),
@@ -325,10 +364,13 @@ async fn list_exam_sets(
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             ids.into_iter()
-                .map(|id| content_store::get_exam_set(connection, &id))
-                .collect::<reinforce_core::Result<Vec<_>>>()
+                .map(|id| {
+                    content_store::get_exam_set(connection, &id)?
+                        .map(|set| public_exam_set(connection, set, owner))
+                        .transpose()
+                })
+                .collect::<ApiResult<Vec<_>>>()
                 .map(|items| items.into_iter().flatten().collect())
-                .map_err(Into::into)
         })
         .await?;
     Ok(Json(sets))
@@ -337,11 +379,17 @@ async fn list_exam_sets(
 async fn get_exam_set(
     State(state): State<AppState>,
     PathParam(id): PathParam<ExamSetId>,
+    principal: Principal,
 ) -> ApiResult<Json<ExamSet>> {
+    let owner = principal.is_owner();
     let set = state
-        .with_db(move |database| Ok(content_store::get_exam_set(database.connection(), &id)?))
-        .await?
-        .ok_or_else(|| ApiError::not_found("exam set"))?;
+        .with_db(move |database| {
+            let connection = database.connection();
+            content_store::get_exam_set(connection, &id)?
+                .ok_or_else(|| ApiError::not_found("exam set"))
+                .and_then(|set| public_exam_set(connection, set, owner))
+        })
+        .await?;
     Ok(Json(set))
 }
 
@@ -360,7 +408,7 @@ async fn search_content(
         .with_db(move |database| {
             let connection = database.connection();
             let mut results = Vec::new();
-            for hit in search::search_cards(connection, &term, limit)? {
+            for hit in search::search_cards_visible(connection, &term, limit, !owner)? {
                 match hit {
                     SearchHit::KnowledgeCard(id) => {
                         let card = content_store::get_knowledge_card(connection, &id)?;
@@ -384,10 +432,11 @@ async fn search_content(
                 .replace('\\', "\\\\")
                 .replace('%', "\\%")
                 .replace('_', "\\_");
-            let mut statement = connection.prepare(
+            let status_filter = if owner { "" } else { " AND status = 'published'" };
+            let mut statement = connection.prepare(&format!(
                 "SELECT id, title FROM notes WHERE title LIKE ?1 ESCAPE '\\'
-                    OR subject LIKE ?1 ESCAPE '\\' ORDER BY id LIMIT ?2",
-            )?;
+                    OR subject LIKE ?1 ESCAPE '\\'{status_filter} ORDER BY id LIMIT ?2"
+            ))?;
             let notes = statement
                 .query_map(rusqlite::params![format!("%{escaped}%"), i64::try_from(limit).unwrap_or(50)], |row| {
                     Ok((row.get::<_, NoteId>(0)?, row.get::<_, String>(1)?))
@@ -414,35 +463,56 @@ async fn graph_neighbors(
     principal: Principal,
 ) -> ApiResult<Json<Vec<GraphNode>>> {
     let depth = query.depth.unwrap_or(1).min(16);
-    let endpoint = match path.kind.as_str() {
-        "card" => EdgeEndpoint::Card {
-            id: path.id.parse()?,
-        },
-        "question" => EdgeEndpoint::Question {
-            id: path.id.parse()?,
-        },
-        "option" => EdgeEndpoint::Option {
-            id: path.id.parse()?,
-            key: String::new(),
-        },
-        other => {
-            return Err(ApiError::bad_request(
-                "kind",
-                format!("unknown endpoint kind {other}"),
-            ));
-        }
-    };
+    let requested_key = query.key;
     let owner = principal.is_owner();
     let nodes = state
         .with_db(move |database| {
             let connection = database.connection();
-            let mut visible = Vec::new();
-            for node in search::graph_neighbors(connection, &endpoint, depth)? {
-                if owner || endpoint_is_published(connection, &node.endpoint)? {
-                    visible.push(node);
+            let endpoint = match path.kind.as_str() {
+                "card" => EdgeEndpoint::Card {
+                    id: path
+                        .id
+                        .parse::<KnowledgeCardId>()
+                        .map_err(|_| ApiError::bad_request("id", "invalid id"))?,
+                },
+                "question" => EdgeEndpoint::Question {
+                    id: path
+                        .id
+                        .parse::<QuestionCardId>()
+                        .map_err(|_| ApiError::bad_request("id", "invalid id"))?,
+                },
+                "option" => {
+                    let id = path
+                        .id
+                        .parse::<QuestionCardId>()
+                        .map_err(|_| ApiError::bad_request("id", "invalid id"))?;
+                    let key = match requested_key {
+                        Some(key) => key,
+                        None => content_store::get_question_card(connection, &id)?
+                            .and_then(|card| card.options.first().map(|option| option.key.clone()))
+                            .ok_or_else(|| ApiError::not_found("question option"))?,
+                    };
+                    EdgeEndpoint::Option { id, key }
                 }
+                other => {
+                    return Err(ApiError::bad_request(
+                        "kind",
+                        format!("unknown endpoint kind {other}"),
+                    ));
+                }
+            };
+            if !owner && !endpoint_is_published(connection, &endpoint)? {
+                return Err(ApiError::not_found("content"));
             }
-            Ok(visible)
+            if owner {
+                search::graph_neighbors(connection, &endpoint, depth)
+            } else {
+                let visible = |candidate: &EdgeEndpoint| {
+                    endpoint_is_published(connection, candidate).unwrap_or(false)
+                };
+                search::graph_neighbors_filtered(connection, &endpoint, depth, visible)
+            }
+            .map_err(Into::into)
         })
         .await?;
     Ok(Json(nodes))
