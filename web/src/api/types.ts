@@ -478,3 +478,149 @@ export interface AuthSession {
   user_id: string
   role: UserRole
 }
+
+// Proposals & Triage
+export type ProposalStatus = 'pending' | 'approved' | 'rejected'
+
+export type OperationKind =
+  | 'resource'
+  | 'anchor'
+  | 'knowledge_card'
+  | 'note'
+  | 'exam_set'
+  | 'question_group'
+  | 'question_card'
+  | 'edge'
+
+export type ProposalTarget =
+  | { resource: string }
+  | { knowledge_card: string }
+  | { note: string }
+  | { exam_set: string }
+  | { question_group: string }
+  | { question_card: string }
+  | { edge: string }
+
+export function parseProposalTarget(target: ProposalTarget): {
+  kind: Exclude<OperationKind, 'anchor'>
+  id: string
+} {
+  if ('resource' in target) return { kind: 'resource', id: target.resource }
+  if ('knowledge_card' in target) return { kind: 'knowledge_card', id: target.knowledge_card }
+  if ('note' in target) return { kind: 'note', id: target.note }
+  if ('exam_set' in target) return { kind: 'exam_set', id: target.exam_set }
+  if ('question_group' in target) return { kind: 'question_group', id: target.question_group }
+  if ('question_card' in target) return { kind: 'question_card', id: target.question_card }
+  return { kind: 'edge', id: target.edge }
+}
+
+export interface QuestionGroup {
+  id: string
+  exam_set_id: string | null
+  title: string | null
+  shared_stem_blocks: ContentBlock[]
+}
+
+export interface Edge {
+  id: string
+  edge_type: EdgeType
+  from: EdgeEndpoint
+  to: EdgeEndpoint
+  created_at?: string
+}
+
+// Discriminated union by `op` matching StoredOperation in crates/reinforce-core/src/proposal/batch.rs
+export type BatchOperation =
+  | { op: 'resource'; temp_ref?: string | null; id?: string; data: Resource }
+  | { op: 'anchor'; temp_ref?: string | null; id?: string; data: Anchor }
+  | { op: 'knowledge_card'; temp_ref?: string | null; id?: string; data: KnowledgeCard }
+  | { op: 'note'; temp_ref?: string | null; id?: string; data: Note }
+  | { op: 'exam_set'; temp_ref?: string | null; id?: string; data: ExamSet }
+  | { op: 'question_group'; temp_ref?: string | null; id?: string; data: QuestionGroup }
+  | { op: 'question_card'; temp_ref?: string | null; id?: string; data: QuestionCard }
+  | { op: 'edge'; temp_ref?: string | null; id?: string; data: Edge }
+
+export interface BatchPayload {
+  format?: string
+  actor?: unknown
+  operations: BatchOperation[]
+}
+
+export interface Proposal {
+  id: string
+  target: ProposalTarget
+  payload: BatchPayload
+  submitted_by: string
+  status: ProposalStatus
+  review_note: string | null
+  created_at: string
+  updated_at: string
+  sync_cursor: number
+}
+
+export type ValidationRule =
+  | 'answer_provenance'
+  | 'original_anti_fabrication'
+  | 'type_grading_consistency'
+  | 'count_conservation'
+  | 'referential_integrity'
+  | 'verification_lock'
+  | 'temp_ref'
+  | 'operation_shape'
+
+export interface ValidationErrorItem {
+  op_index: number | null
+  temp_ref: string | null
+  field_path: string
+  rule: ValidationRule | string
+  message: string
+}
+
+export interface ValidationReport {
+  errors: ValidationErrorItem[]
+}
+
+export interface PinAdjustment {
+  no?: number
+  index?: number
+  x: number
+  y: number
+  label_x: number
+  label_y: number
+}
+
+export interface AdjustPinsRequest {
+  resource_id?: string
+  pins: PinAdjustment[]
+}
+
+export interface AdjustPinsResponse {
+  id: string
+  adjusted: number
+}
+
+export interface UpdateOperationRequest {
+  data: BatchOperation['data']
+}
+
+// Export Center
+export type ExportFormat = 'pdf' | 'markdown'
+export type ExportPreset = 'standard' | 'goodnotes' | 'worksheet'
+
+export type ExportScope =
+  | { kind: 'note'; note_id: string }
+  | { kind: 'subject'; subject: string }
+  | { kind: 'weakness'; threshold: number }
+
+export interface ExportRequest {
+  format: ExportFormat
+  preset?: ExportPreset
+  scope: ExportScope
+  web_base_url?: string
+}
+
+export interface ExportResult {
+  blob: Blob
+  filename: string
+  contentType: string
+}

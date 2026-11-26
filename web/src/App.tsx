@@ -14,6 +14,12 @@ const StudyRunnerPage = lazy(() =>
   import('./pages/StudyRunnerPage').then((m) => ({ default: m.StudyRunnerPage })),
 )
 const LoginPage = lazy(() => import('./pages/LoginPage').then((m) => ({ default: m.LoginPage })))
+const TriageListPage = lazy(() =>
+  import('./pages/TriageListPage').then((m) => ({ default: m.TriageListPage })),
+)
+const TriageDetailPage = lazy(() =>
+  import('./pages/TriageDetailPage').then((m) => ({ default: m.TriageDetailPage })),
+)
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -45,6 +51,8 @@ export function App() {
                   element={<StudyHubPage key="practical" defaultMode="practical_exam" />}
                 />
                 <Route path="study/session/:id" element={<StudyRunnerPage />} />
+                <Route path="triage" element={<TriageListPage />} />
+                <Route path="triage/:id" element={<TriageDetailPage />} />
                 <Route path="login" element={<LoginPage />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
