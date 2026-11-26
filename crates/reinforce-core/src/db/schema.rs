@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS resources (
     sha256 TEXT NOT NULL UNIQUE,
     byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
     page_count INTEGER CHECK (page_count IS NULL OR page_count >= 0),
+    width INTEGER CHECK (width IS NULL OR width > 0),
+    height INTEGER CHECK (height IS NULL OR height > 0),
     license TEXT,
     attribution_url TEXT,
     attribution_notice TEXT,
@@ -106,6 +108,7 @@ CREATE TABLE IF NOT EXISTS question_cards (
         'official','peer_note','duplicate_question','inferred','original_authored','unanswered'
     )),
     answer_basis TEXT,
+    duplicate_question_id TEXT REFERENCES question_cards(id),
     status TEXT NOT NULL CHECK (status IN ('draft','staging','published','archived')),
     verification TEXT NOT NULL CHECK (verification IN ('unchecked','verified')),
     unsure_count INTEGER NOT NULL DEFAULT 0 CHECK (unsure_count >= 0),
