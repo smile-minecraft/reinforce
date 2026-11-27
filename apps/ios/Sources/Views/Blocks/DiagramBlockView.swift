@@ -83,29 +83,6 @@ struct DiagramBlockView: View {
     }
 
     private func wrapSVGHTML(_ svg: String, isDark: Bool) -> String {
-        let ink = isDark ? "#e6edf3" : "#141923"
-        return """
-        <!doctype html>
-        <html>
-        <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          html, body {
-            margin: 0;
-            padding: 0;
-            background: transparent;
-            color: \(ink);
-          }
-          svg {
-            display: block;
-            max-width: 100%;
-            height: auto;
-            margin: 0 auto;
-          }
-        </style>
-        </head>
-        <body>\(svg)</body>
-        </html>
-        """
+        OfflineWebViewFactory.wrapSVGDocument(svgMarkup: svg, isDark: isDark, fillViewport: false)
     }
 }

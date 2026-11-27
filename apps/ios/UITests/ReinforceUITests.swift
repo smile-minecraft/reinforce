@@ -71,6 +71,14 @@ final class ReinforceUITests: XCTestCase {
         }
     }
 
+    private func waitForImageLoaded(_ app: XCUIApplication, id: String, timeout: TimeInterval = 12) {
+        let element = app.descendants(matching: .any)[id].firstMatch
+        XCTAssertTrue(element.waitForExistence(timeout: timeout), "Missing image element \(id)")
+        let loadedPredicate = NSPredicate(format: "value == %@", "loaded")
+        let loadedExpectation = expectation(for: loadedPredicate, evaluatedWith: element)
+        wait(for: [loadedExpectation], timeout: timeout)
+    }
+
     private func tapButton(_ app: XCUIApplication, id: String, timeout: TimeInterval = 6) {
         let btn = app.buttons[id].firstMatch
         XCTAssertTrue(btn.waitForExistence(timeout: timeout), "Missing button \(id)")
@@ -103,15 +111,22 @@ final class ReinforceUITests: XCTestCase {
         // 2. Open the note "相位變化入門" in Reading Room
         tapButton(app, id: "note-row-相位變化入門", timeout: 8)
 
-        // Verify transcluded cards & interactive pins overlay toggle
+        // Verify transcluded cards, interactive pins base diagram loaded, & overlay toggle
         XCTAssertTrue(app.staticTexts["水的三態與相變"].waitForExistence(timeout: 8))
         let overlayToggle = app.buttons["pins-overlay-toggle"].firstMatch
+        if !isPad {
+            // Scroll gently so both the GFM table and interactive pins diagram are clearly visible
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.72))
+            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.36))
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+        waitForImageLoaded(app, id: "interactive-pins-base-image", timeout: 12)
         if !overlayToggle.isHittable {
             app.swipeUp()
         }
-        if overlayToggle.waitForExistence(timeout: 5) {
-            overlayToggle.tap()
-        }
+        XCTAssertTrue(overlayToggle.waitForExistence(timeout: 5), "Missing pins-overlay-toggle")
+        overlayToggle.tap()
+        waitForImageLoaded(app, id: "interactive-pins-overlay-image", timeout: 12)
         attachScreenshot("reading-room")
 
         // 3. Navigate to Study Hub and verify all 5 modes are available
@@ -198,10 +213,11 @@ final class ReinforceUITests: XCTestCase {
         openPracticalTab(app)
         tapButton(app, id: "study-start-session-button")
 
-        // Verify timer & zoomable canvas
+        // Verify timer & zoomable canvas with loaded base diagram
         XCTAssertTrue(app.descendants(matching: .any)["quiz-timer-badge"].firstMatch.waitForExistence(timeout: 8))
         let canvas = app.otherElements["practical-canvas"].firstMatch
         XCTAssertTrue(canvas.waitForExistence(timeout: 6))
+        waitForImageLoaded(app, id: "practical-canvas-base-image", timeout: 12)
 
         // Exercise zoom in (toolbar + pinch-to-zoom)
         tapButton(app, id: "practical-zoom-in")

@@ -163,14 +163,22 @@ struct PracticalCanvasView: View {
                 ReinforceTheme.subtle.opacity(0.4)
 
                 ZStack(alignment: .topLeading) {
-                    ResourceImageView(fileURL: baseURL, fallbackAspectRatio: aspectRatio)
-                        .frame(width: fitted.width, height: fitted.height)
+                    ResourceImageView(
+                        fileURL: baseURL,
+                        fallbackAspectRatio: aspectRatio,
+                        accessibilityId: "practical-canvas-base-image"
+                    )
+                    .frame(width: fitted.width, height: fitted.height)
 
                     if let overlayURL, revealPins, showOverlay {
-                        ResourceImageView(fileURL: overlayURL, fallbackAspectRatio: aspectRatio)
-                            .frame(width: fitted.width, height: fitted.height)
-                            .opacity(0.75)
-                            .allowsHitTesting(false)
+                        ResourceImageView(
+                            fileURL: overlayURL,
+                            fallbackAspectRatio: aspectRatio,
+                            accessibilityId: "practical-canvas-overlay-image"
+                        )
+                        .frame(width: fitted.width, height: fitted.height)
+                        .opacity(0.75)
+                        .allowsHitTesting(false)
                     }
 
                     if mode == .identify || revealPins {

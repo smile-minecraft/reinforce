@@ -85,14 +85,22 @@ struct InteractivePinsBlockView: View {
 
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
-                    ResourceImageView(fileURL: baseURL, fallbackAspectRatio: aspectRatio)
-                        .frame(width: geo.size.width, height: geo.size.height)
+                    ResourceImageView(
+                        fileURL: baseURL,
+                        fallbackAspectRatio: aspectRatio,
+                        accessibilityId: "interactive-pins-base-image"
+                    )
+                    .frame(width: geo.size.width, height: geo.size.height)
 
                     if let overlayURL, showOverlay, !hideLabelsAndTerms {
-                        ResourceImageView(fileURL: overlayURL, fallbackAspectRatio: aspectRatio)
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .opacity(0.75)
-                            .allowsHitTesting(false)
+                        ResourceImageView(
+                            fileURL: overlayURL,
+                            fallbackAspectRatio: aspectRatio,
+                            accessibilityId: "interactive-pins-overlay-image"
+                        )
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .opacity(0.75)
+                        .allowsHitTesting(false)
                     }
 
                     if showLabels && !hideLabelsAndTerms {

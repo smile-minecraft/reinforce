@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 import XCTest
 @testable import Reinforce
 
@@ -305,5 +306,188 @@ final class ReinforceTests: XCTestCase {
         for (key, value) in zhDict {
             XCTAssertFalse(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Empty zh-Hant value for \(key)")
         }
+    }
+
+    @MainActor
+    func testOfflineWebViewConfigurationAndCSP() {
+        let expectedCSP = OfflineWebViewFactory.cspMetaTag
+        XCTAssertTrue(expectedCSP.contains("default-src 'none'; style-src 'unsafe-inline'; img-src data:"))
+
+        let svgWebView = SVGWebView.makeWebView()
+        XCTAssertFalse(svgWebView.configuration.defaultWebpagePreferences.allowsContentJavaScript)
+        XCTAssertFalse(svgWebView.configuration.websiteDataStore.isPersistent)
+
+        let mathWebView = AutoSizingHTMLView.makeWebView()
+        XCTAssertFalse(mathWebView.configuration.defaultWebpagePreferences.allowsContentJavaScript)
+        XCTAssertFalse(mathWebView.configuration.websiteDataStore.isPersistent)
+
+        let svgHTML = SVGWebView.makeHTML(
+            svgMarkup: #"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"></svg>"#,
+            isDark: false
+        )
+        XCTAssertTrue(svgHTML.contains(expectedCSP))
+
+        let diagramFallbackHTML = OfflineWebViewFactory.wrapSVGDocument(
+            svgMarkup: #"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#,
+            isDark: true,
+            fillViewport: false
+        )
+        XCTAssertTrue(diagramFallbackHTML.contains(expectedCSP))
+
+        let mathML = LatexToMathML.renderMathML(latex: #"E = mc^2"#, display: true)
+        let mathHTML = MathBlockView.wrapMathHTML(mathML: mathML, display: true, isDark: false)
+        XCTAssertTrue(mathHTML.contains(expectedCSP))
+    }
+
+    @MainActor
+    func testOfflineWebNavigationDelegateRejectsNonInitialNavigations() {
+        let delegate = OfflineWebNavigationDelegate()
+        let webView = OfflineWebViewFactory.makeWebView()
+
+        // Without an authorized loadHTML call, even about:blank is rejected
+        XCTAssertEqual(
+            delegate.navigationPolicy(
+                for: URL(string: "about:blank"),
+                navigationType: .other,
+                isMainFrame: true
+            ),
+            .cancel
+        )
+
+        // Calling loadHTML authorizes exactly one main-frame about:blank load
+        delegate.loadHTML(
+            SVGWebView.makeHTML(svgMarkup: "<svg></svg>", isDark: false),
+            in: webView
+        )
+        XCTAssertEqual(
+            delegate.navigationPolicy(
+                for: URL(string: "https://example.com/malicious"),
+                navigationType: .other,
+                isMainFrame: true
+            ),
+            .cancel
+        )
+        XCTAssertEqual(
+            delegate.navigationPolicy(
+                for: URL(string: "about:blank"),
+                navigationType: .other,
+                isMainFrame: false
+            ),
+            .cancel
+        )
+        XCTAssertEqual(
+            delegate.navigationPolicy(
+                for: URL(string: "about:blank"),
+                navigationType: .linkActivated,
+                isMainFrame: true
+            ),
+            .cancel
+        )
+
+        // The authorized initial load succeeds once, then subsequent loads are cancelled
+        XCTAssertEqual(
+            delegate.navigationPolicy(
+                for: URL(string: "about:blank"),
+                navigationType: .other,
+                isMainFrame: true
+            ),
+            .allow
+        )
+        XCTAssertEqual(
+            delegate.navigationPolicy(
+                for: URL(string: "about:blank"),
+                navigationType: .other,
+                isMainFrame: true
+            ),
+            .cancel
+        )
+        XCTAssertEqual(
+            delegate.navigationPolicy(
+                for: URL(string: "file:///etc/passwd"),
+                navigationType: .other,
+                isMainFrame: true
+            ),
+            .cancel
+        )
+    }
+
+    @MainActor
+    func testSVGWebViewBlocksScriptsAndExternalImageWhileHostEvaluatesDOM() async throws {
+        let maliciousSVG = """
+        <svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200" onload="window.__svgOnloadRan = true; document.documentElement.setAttribute('data-onload', '1');">
+          <rect width="320" height="200" fill="#f7fafc"/>
+          <script>window.__svgScriptRan = true; document.documentElement.setAttribute('data-script', '1');</script>
+          <image id="ext-image" href="https://example.com/x.png" width="80" height="80"/>
+        </svg>
+        """
+        let html = SVGWebView.makeHTML(svgMarkup: maliciousSVG, isDark: false)
+        let webView = SVGWebView.makeWebView()
+        webView.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+
+        let delegate = OfflineWebNavigationDelegate()
+        webView.navigationDelegate = delegate
+        webView.uiDelegate = delegate
+
+        let finished = expectation(description: "SVG WebView finished loading")
+        delegate.onDidFinish = { _ in
+            finished.fulfill()
+        }
+        delegate.onDidFail = { _, error in
+            XCTFail("Unexpected SVG WebView load failure: \(error)")
+        }
+
+        delegate.loadHTML(html, in: webView)
+        await fulfillment(of: [finished], timeout: 10.0)
+
+        // Host-side evaluateJavaScript still works with content JS disabled
+        let probe = try await webView.evaluateJavaScript("""
+        (() => ({
+          scriptRan: Boolean(window.__svgScriptRan),
+          onloadRan: Boolean(window.__svgOnloadRan),
+          dataScript: document.documentElement.getAttribute('data-script') || '',
+          dataOnload: document.documentElement.getAttribute('data-onload') || '',
+          csp: document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content') || '',
+          svgWidth: Math.round(document.querySelector('svg')?.getBoundingClientRect().width || 0),
+          svgHeight: Math.round(document.querySelector('svg')?.getBoundingClientRect().height || 0),
+          scrollHeight: Math.ceil(document.body.scrollHeight)
+        }))()
+        """)
+
+        let dict = try XCTUnwrap(probe as? [String: Any])
+        XCTAssertEqual(dict["scriptRan"] as? Bool, false, "Inline <script> inside SVG must not execute")
+        XCTAssertEqual(dict["onloadRan"] as? Bool, false, "Inline onload handler inside SVG must not execute")
+        XCTAssertEqual(dict["dataScript"] as? String, "")
+        XCTAssertEqual(dict["dataOnload"] as? String, "")
+        XCTAssertEqual(dict["csp"] as? String, OfflineWebViewFactory.contentSecurityPolicy)
+        XCTAssertGreaterThan(dict["svgWidth"] as? Int ?? 0, 0)
+        XCTAssertGreaterThan(dict["svgHeight"] as? Int ?? 0, 0)
+        XCTAssertGreaterThan(dict["scrollHeight"] as? Int ?? 0, 0)
+    }
+
+    @MainActor
+    func testMathAutoSizingWebViewMeasuresHeightWithContentJavaScriptDisabled() async throws {
+        let mathML = LatexToMathML.renderMathML(latex: #"\frac{dP}{dT}=\frac{L}{T\Delta v}"#, display: true)
+        let html = MathBlockView.wrapMathHTML(mathML: mathML, display: true, isDark: false)
+        let webView = AutoSizingHTMLView.makeWebView()
+        webView.frame = CGRect(x: 0, y: 0, width: 320, height: 120)
+
+        let delegate = OfflineWebNavigationDelegate()
+        webView.navigationDelegate = delegate
+        webView.uiDelegate = delegate
+
+        let finished = expectation(description: "Math WebView finished loading")
+        delegate.onDidFinish = { _ in
+            finished.fulfill()
+        }
+        delegate.onDidFail = { _, error in
+            XCTFail("Unexpected Math WebView load failure: \(error)")
+        }
+
+        delegate.loadHTML(html, in: webView)
+        await fulfillment(of: [finished], timeout: 10.0)
+
+        let rawHeight = try await webView.evaluateJavaScript("Math.ceil(document.body.scrollHeight)")
+        let measured = (rawHeight as? NSNumber)?.doubleValue ?? 0
+        XCTAssertGreaterThan(measured, 20, "Host evaluateJavaScript must still measure MathML scrollHeight")
     }
 }

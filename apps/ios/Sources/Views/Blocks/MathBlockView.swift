@@ -11,7 +11,7 @@ struct MathBlockView: View {
     var body: some View {
         let mathML = LatexToMathML.renderMathML(latex: latex, display: display)
         AutoSizingHTMLView(
-            html: wrapMathHTML(mathML: mathML, display: display, isDark: colorScheme == .dark),
+            html: Self.wrapMathHTML(mathML: mathML, display: display, isDark: colorScheme == .dark),
             contentHeight: $measuredHeight
         )
         .frame(height: max(display ? 54 : 32, measuredHeight))
@@ -27,35 +27,8 @@ struct MathBlockView: View {
         .accessibilityLabel(latex)
     }
 
-    private func wrapMathHTML(mathML: String, display: Bool, isDark: Bool) -> String {
-        let ink = isDark ? "#e6edf3" : "#141923"
-        let fontSize = display ? "20px" : "16px"
-        let align = display ? "center" : "left"
-        return """
-        <!doctype html>
-        <html>
-        <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          html, body {
-            margin: 0;
-            padding: 4px 2px;
-            background: transparent;
-            color: \(ink);
-            font-size: \(fontSize);
-            text-align: \(align);
-            font-family: "STIX Two Math", "Cambria Math", "Times New Roman", serif;
-            overflow-x: auto;
-            overflow-y: hidden;
-          }
-          math {
-            font-size: 1em;
-          }
-        </style>
-        </head>
-        <body>\(mathML)</body>
-        </html>
-        """
+    static func wrapMathHTML(mathML: String, display: Bool, isDark: Bool) -> String {
+        OfflineWebViewFactory.wrapMathDocument(mathML: mathML, display: display, isDark: isDark)
     }
 }
 
@@ -63,29 +36,32 @@ struct AutoSizingHTMLView: UIViewRepresentable {
     let html: String
     @Binding var contentHeight: CGFloat
 
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        webView.isOpaque = false
-        webView.backgroundColor = .clear
-        webView.scrollView.backgroundColor = .clear
-        webView.scrollView.bounces = false
+    static func makeWebView() -> OfflineWKWebView {
+        let webView = OfflineWebViewFactory.makeWebView(scrollEnabled: true)
         webView.scrollView.showsVerticalScrollIndicator = false
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {
+    func makeUIView(context: Context) -> OfflineWKWebView {
+        let webView = Self.makeWebView()
+        webView.navigationDelegate = context.coordinator.navigationDelegate
+        webView.uiDelegate = context.coordinator.navigationDelegate
+        context.coordinator.bind(webView: webView)
+        return webView
+    }
+
+    func updateUIView(_ webView: OfflineWKWebView, context: Context) {
         if context.coordinator.lastHTML == html { return }
         context.coordinator.lastHTML = html
-        webView.loadHTMLString(html, baseURL: nil)
+        context.coordinator.navigationDelegate.loadHTML(html, in: webView)
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(contentHeight: $contentHeight)
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator {
+        let navigationDelegate = OfflineWebNavigationDelegate()
         var lastHTML: String?
         @Binding var contentHeight: CGFloat
 
@@ -93,7 +69,17 @@ struct AutoSizingHTMLView: UIViewRepresentable {
             self._contentHeight = contentHeight
         }
 
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        func bind(webView: OfflineWKWebView) {
+            navigationDelegate.onDidFinish = { [weak self] finishedWebView in
+                self?.measureHeight(in: finishedWebView)
+            }
+            webView.onBoundsChange = { [weak self, weak webView] bounds in
+                guard let self, let webView, bounds.width > 0 else { return }
+                self.measureHeight(in: webView)
+            }
+        }
+
+        private func measureHeight(in webView: WKWebView) {
             webView.evaluateJavaScript("Math.ceil(document.body.scrollHeight)") { result, _ in
                 if let height = result as? CGFloat, height > 0 {
                     DispatchQueue.main.async {

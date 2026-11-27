@@ -89,68 +89,145 @@ final class MediaAssetCache {
 struct SVGWebView: UIViewRepresentable {
     let svgMarkup: String
     let isDark: Bool
+    var onLoadStateChange: ((Bool) -> Void)? = nil
 
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.isOpaque = false
-        webView.backgroundColor = .clear
-        webView.scrollView.backgroundColor = .clear
-        webView.scrollView.isScrollEnabled = false
-        webView.scrollView.bounces = false
+    static func makeWebView() -> OfflineWKWebView {
+        let webView = OfflineWebViewFactory.makeWebView(scrollEnabled: false)
         webView.isUserInteractionEnabled = false
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {
-        let key = "\(isDark ? "d" : "l"):\(svgMarkup.hashValue)"
-        if context.coordinator.lastKey == key { return }
-        context.coordinator.lastKey = key
+    static func makeHTML(svgMarkup: String, isDark: Bool) -> String {
+        OfflineWebViewFactory.wrapSVGDocument(svgMarkup: svgMarkup, isDark: isDark, fillViewport: true)
+    }
 
-        let ink = isDark ? "#e6edf3" : "#141923"
-        let html = """
-        <!doctype html>
-        <html>
-        <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <style>
-          html, body {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background: transparent;
-            color: \(ink);
-          }
-          svg {
-            display: block;
-            width: 100% !important;
-            height: 100% !important;
-          }
-        </style>
-        </head>
-        <body>\(svgMarkup)</body>
-        </html>
-        """
-        webView.loadHTMLString(html, baseURL: nil)
+    func makeUIView(context: Context) -> OfflineWKWebView {
+        let webView = Self.makeWebView()
+        webView.navigationDelegate = context.coordinator.navigationDelegate
+        webView.uiDelegate = context.coordinator.navigationDelegate
+        context.coordinator.bind(webView: webView, onLoadStateChange: onLoadStateChange)
+        return webView
+    }
+
+    func updateUIView(_ webView: OfflineWKWebView, context: Context) {
+        context.coordinator.onLoadStateChange = onLoadStateChange
+        let html = Self.makeHTML(svgMarkup: svgMarkup, isDark: isDark)
+        if context.coordinator.lastHTML == html {
+            context.coordinator.checkReadinessIfNeeded(in: webView)
+            return
+        }
+        context.coordinator.load(html: html, in: webView)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator {
-        var lastKey: String?
+        let navigationDelegate = OfflineWebNavigationDelegate()
+        var lastHTML: String?
+        var onLoadStateChange: ((Bool) -> Void)?
+
+        private var loadGeneration = 0
+        private var hasFinishedNavigation = false
+        private var hasReportedLoaded = false
+        private var isCheckingReadiness = false
+
+        func bind(webView: OfflineWKWebView, onLoadStateChange: ((Bool) -> Void)?) {
+            self.onLoadStateChange = onLoadStateChange
+            navigationDelegate.onDidFinish = { [weak self] finishedWebView in
+                guard let self else { return }
+                self.hasFinishedNavigation = true
+                self.checkReadinessIfNeeded(in: finishedWebView)
+            }
+            navigationDelegate.onDidFail = { [weak self] _, _ in
+                guard let self else { return }
+                self.hasFinishedNavigation = false
+                self.hasReportedLoaded = false
+                DispatchQueue.main.async {
+                    self.onLoadStateChange?(false)
+                }
+            }
+            webView.onBoundsChange = { [weak self, weak webView] _ in
+                guard let self, let webView else { return }
+                self.checkReadinessIfNeeded(in: webView)
+            }
+        }
+
+        func load(html: String, in webView: WKWebView) {
+            lastHTML = html
+            loadGeneration += 1
+            hasFinishedNavigation = false
+            hasReportedLoaded = false
+            isCheckingReadiness = false
+            DispatchQueue.main.async { [weak self] in
+                self?.onLoadStateChange?(false)
+            }
+            navigationDelegate.loadHTML(html, in: webView)
+        }
+
+        func checkReadinessIfNeeded(in webView: WKWebView) {
+            guard hasFinishedNavigation,
+                  !hasReportedLoaded,
+                  !isCheckingReadiness,
+                  webView.bounds.width > 0,
+                  webView.bounds.height > 0 else {
+                return
+            }
+
+            isCheckingReadiness = true
+            let generation = loadGeneration
+            let probeJS = """
+            (() => {
+              const svg = document.querySelector('svg');
+              if (!svg) return false;
+              const rect = svg.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0;
+            })()
+            """
+
+            webView.evaluateJavaScript(probeJS) { [weak self, weak webView] result, _ in
+                guard let self, let webView, self.loadGeneration == generation else { return }
+                let hasRenderedSVG = (result as? Bool) ?? ((result as? NSNumber)?.boolValue ?? false)
+                guard hasRenderedSVG else {
+                    self.isCheckingReadiness = false
+                    return
+                }
+
+                // Force a tiny compositor snapshot flush so the WebContent layer is committed to screen.
+                let snapConfig = WKSnapshotConfiguration()
+                snapConfig.rect = CGRect(x: 0, y: 0, width: 1, height: 1)
+                webView.takeSnapshot(with: snapConfig) { [weak self] _, _ in
+                    guard let self, self.loadGeneration == generation else { return }
+                    self.isCheckingReadiness = false
+                    self.hasReportedLoaded = true
+                    DispatchQueue.main.async {
+                        self.onLoadStateChange?(true)
+                    }
+                }
+            }
+        }
     }
 }
 
 struct ResourceImageView: View {
     let fileURL: URL?
     var fallbackAspectRatio: CGFloat = 16.0 / 10.0
+    var accessibilityId: String? = nil
 
     @Environment(\.colorScheme) private var colorScheme
+    @State private var svgLoaded = false
 
     var loaded: LoadedMediaAsset? {
         MediaAssetCache.shared.asset(for: fileURL)
+    }
+
+    private var isImageLoaded: Bool {
+        guard let loaded else { return false }
+        switch loaded.payload {
+        case .raster:
+            return true
+        case .svg:
+            return svgLoaded
+        }
     }
 
     var body: some View {
@@ -162,7 +239,15 @@ struct ResourceImageView: View {
                         .resizable()
                         .scaledToFill()
                 case .svg(let markup):
-                    SVGWebView(svgMarkup: markup, isDark: colorScheme == .dark)
+                    SVGWebView(
+                        svgMarkup: markup,
+                        isDark: colorScheme == .dark,
+                        onLoadStateChange: { ready in
+                            if svgLoaded != ready {
+                                svgLoaded = ready
+                            }
+                        }
+                    )
                 }
             } else {
                 ZStack {
@@ -171,6 +256,18 @@ struct ResourceImageView: View {
                         .font(.title2)
                         .foregroundStyle(ReinforceTheme.inkMuted)
                 }
+            }
+        }
+        .onChange(of: fileURL) { _, _ in
+            svgLoaded = false
+        }
+        .overlay {
+            if let accessibilityId {
+                Color.clear
+                    .allowsHitTesting(false)
+                    .accessibilityElement()
+                    .accessibilityIdentifier(accessibilityId)
+                    .accessibilityValue(isImageLoaded ? "loaded" : "loading")
             }
         }
     }

@@ -194,15 +194,16 @@ private struct MarkdownTableView: View {
                             .foregroundStyle(ReinforceTheme.ink)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 10)
-                            .frame(minWidth: 92, alignment: .leading)
+                            .frame(minWidth: 92, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                            .background(ReinforceTheme.subtle)
                     }
                 }
-                .background(ReinforceTheme.subtle)
 
                 Divider()
                     .background(ReinforceTheme.border)
 
                 ForEach(Array(rows.enumerated()), id: \.offset) { rowIdx, row in
+                    let rowBg = rowIdx.isMultiple(of: 2) ? ReinforceTheme.surface : ReinforceTheme.subtle.opacity(0.45)
                     GridRow {
                         ForEach(0..<columnCount, id: \.self) { col in
                             let value = col < row.count ? row[col] : ""
@@ -211,10 +212,10 @@ private struct MarkdownTableView: View {
                                 .foregroundStyle(ReinforceTheme.ink)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 9)
-                                .frame(minWidth: 92, alignment: .leading)
+                                .frame(minWidth: 92, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                                .background(rowBg)
                         }
                     }
-                    .background(rowIdx.isMultiple(of: 2) ? ReinforceTheme.surface : ReinforceTheme.subtle.opacity(0.45))
 
                     if rowIdx < rows.count - 1 {
                         Divider()
