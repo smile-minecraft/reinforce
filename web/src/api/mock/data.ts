@@ -1,5 +1,6 @@
 import type {
   Anchor,
+  Edge,
   ExamSet,
   GraphNode,
   KnowledgeCard,
@@ -525,6 +526,23 @@ export const MOCK_QUESTIONS: QuestionCard[] = [
     metadata: {},
     created_at: '2026-01-01T00:00:00.000000Z',
     updated_at: '2026-01-01T00:00:00.000000Z',
+  },
+]
+
+export const MOCK_EDGES: Edge[] = [
+  {
+    id: '01a21714-c98d-7153-8d11-f9450c86de70',
+    edge_type: 'confusable_with',
+    from: { kind: 'card', id: '01a21714-c98d-7210-a469-b56decf9f22b' },
+    to: { kind: 'card', id: '01a21714-c98d-716e-9b53-ead7c8ee810f' },
+    created_at: '2026-01-01T00:00:00.000000Z',
+  },
+  {
+    id: '01a21714-c98d-7153-8d11-f9450c86de71',
+    edge_type: 'prerequisite',
+    from: { kind: 'card', id: '01a21714-c98d-716e-9b53-ead7c8ee810f' },
+    to: { kind: 'card', id: '01a21714-c98d-7b1d-92e4-b2d361f54d7f' },
+    created_at: '2026-01-01T00:00:00.000000Z',
   },
 ]
 

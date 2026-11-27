@@ -1,24 +1,27 @@
+use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::io::SeekFrom;
 use std::str::FromStr;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
+use axum::extract::rejection::BytesRejection;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use reinforce_core::content_store;
 use reinforce_core::db::search::{self, SearchHit};
 use reinforce_core::primitives::{CardStatus, ExportPolicy, ResourceKind};
 use reinforce_core::{
-    Anchor, AnchorId, ContentHash, EdgeEndpoint, ExamSet, ExamSetId, GraphNode, KnowledgeCard,
-    KnowledgeCardId, Note, NoteId, QuestionCard, QuestionCardId, Resource, ResourceId, Timestamp,
+    Anchor, AnchorId, ContentHash, Edge, EdgeEndpoint, ExamSet, ExamSetId, GraphNode,
+    KnowledgeCard, KnowledgeCardId, Note, NoteId, QuestionCard, QuestionCardId, Resource,
+    ResourceId, Timestamp,
 };
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, params_from_iter};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -33,11 +36,18 @@ use crate::state::AppState;
 const MAX_UPLOAD_BYTES: u64 = 64 * 1024 * 1024;
 /// Request body allowance for uploads: the file cap plus room for multipart framing.
 const UPLOAD_BODY_LIMIT: usize = MAX_UPLOAD_BYTES as usize + 1024 * 1024;
+const MAX_VIEW_SETTINGS_BYTES: usize = 256 * 1024;
+const MAX_CANVAS_NODES: usize = 2000;
+const MIN_CANVAS_ZOOM: f64 = 0.1;
+const MAX_CANVAS_ZOOM: f64 = 4.0;
+const CANVAS_VERSION: u32 = 1;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/notes", get(list_notes))
         .route("/notes/{id}", get(get_note))
+        .route("/notes/{id}/edges", get(list_note_edges))
+        .route("/notes/{id}/view_settings", put(update_note_view_settings))
         .route("/knowledge_cards", get(list_knowledge_cards))
         .route("/knowledge_cards/{id}", get(get_knowledge_card))
         .route("/questions", get(list_questions))
@@ -200,6 +210,256 @@ async fn get_note(
         .ok_or_else(|| ApiError::not_found("note"))?;
     ensure_visible(note.status, &principal)?;
     Ok(Json(note))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateNoteViewSettingsRequest {
+    canvas: CanvasViewSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanvasViewSettings {
+    version: u32,
+    nodes: Vec<CanvasNodeLayout>,
+    viewport: CanvasViewport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanvasNodeLayout {
+    card_id: KnowledgeCardId,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanvasViewport {
+    x: f64,
+    y: f64,
+    zoom: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct FieldError {
+    field: String,
+    message: String,
+}
+
+fn require_owner(principal: &Principal, action: &str) -> ApiResult<()> {
+    if principal.is_owner() {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(format!("only the owner can {action}")))
+    }
+}
+
+fn invalid_view_settings(errors: Vec<FieldError>) -> ApiError {
+    let summary = errors
+        .first()
+        .map(|first| format!("{}: {}", first.field, first.message))
+        .unwrap_or_else(|| "view_settings: invalid canvas layout".to_owned());
+    ApiError {
+        status: StatusCode::BAD_REQUEST,
+        code: "invalid_request".to_owned(),
+        message: summary,
+        details: Some(json!({ "fields": errors })),
+        diagnostic: None,
+    }
+}
+
+fn validate_canvas_view_settings(
+    canvas: &CanvasViewSettings,
+    outline_cards: &HashSet<KnowledgeCardId>,
+) -> std::result::Result<(), Vec<FieldError>> {
+    let mut errors = Vec::new();
+
+    if canvas.version != CANVAS_VERSION {
+        errors.push(FieldError {
+            field: "canvas.version".to_owned(),
+            message: format!("must be {CANVAS_VERSION}"),
+        });
+    }
+
+    if !canvas.viewport.x.is_finite() {
+        errors.push(FieldError {
+            field: "canvas.viewport.x".to_owned(),
+            message: "must be a finite number".to_owned(),
+        });
+    }
+    if !canvas.viewport.y.is_finite() {
+        errors.push(FieldError {
+            field: "canvas.viewport.y".to_owned(),
+            message: "must be a finite number".to_owned(),
+        });
+    }
+    if !canvas.viewport.zoom.is_finite()
+        || !(MIN_CANVAS_ZOOM..=MAX_CANVAS_ZOOM).contains(&canvas.viewport.zoom)
+    {
+        errors.push(FieldError {
+            field: "canvas.viewport.zoom".to_owned(),
+            message: format!(
+                "must be a finite number between {MIN_CANVAS_ZOOM} and {MAX_CANVAS_ZOOM}"
+            ),
+        });
+    }
+
+    if canvas.nodes.len() > MAX_CANVAS_NODES {
+        errors.push(FieldError {
+            field: "canvas.nodes".to_owned(),
+            message: format!("must contain at most {MAX_CANVAS_NODES} nodes"),
+        });
+    }
+
+    let mut seen_cards = HashSet::with_capacity(canvas.nodes.len().min(MAX_CANVAS_NODES));
+    for (index, node) in canvas.nodes.iter().take(MAX_CANVAS_NODES).enumerate() {
+        if !outline_cards.contains(&node.card_id) {
+            errors.push(FieldError {
+                field: format!("canvas.nodes[{index}].card_id"),
+                message: "card_id is not referenced in this note's outline".to_owned(),
+            });
+        } else if !seen_cards.insert(node.card_id.clone()) {
+            errors.push(FieldError {
+                field: format!("canvas.nodes[{index}].card_id"),
+                message: "duplicate card_id in canvas nodes".to_owned(),
+            });
+        }
+
+        if !node.x.is_finite() {
+            errors.push(FieldError {
+                field: format!("canvas.nodes[{index}].x"),
+                message: "must be a finite number".to_owned(),
+            });
+        }
+        if !node.y.is_finite() {
+            errors.push(FieldError {
+                field: format!("canvas.nodes[{index}].y"),
+                message: "must be a finite number".to_owned(),
+            });
+        }
+        if !node.w.is_finite() || node.w <= 0.0 {
+            errors.push(FieldError {
+                field: format!("canvas.nodes[{index}].w"),
+                message: "must be a finite number greater than 0".to_owned(),
+            });
+        }
+        if !node.h.is_finite() || node.h <= 0.0 {
+            errors.push(FieldError {
+                field: format!("canvas.nodes[{index}].h"),
+                message: "must be a finite number greater than 0".to_owned(),
+            });
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+async fn update_note_view_settings(
+    State(state): State<AppState>,
+    PathParam(id): PathParam<NoteId>,
+    principal: Principal,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Json<Note>> {
+    require_owner(&principal, "update note view settings")?;
+
+    let body = body.map_err(|error| {
+        invalid_view_settings(vec![FieldError {
+            field: "view_settings".to_owned(),
+            message: format!("invalid or oversized payload: {error}"),
+        }])
+    })?;
+
+    if body.len() > MAX_VIEW_SETTINGS_BYTES {
+        return Err(invalid_view_settings(vec![FieldError {
+            field: "view_settings".to_owned(),
+            message: format!("payload exceeds {MAX_VIEW_SETTINGS_BYTES} bytes (256 KiB)"),
+        }]));
+    }
+
+    let request: UpdateNoteViewSettingsRequest =
+        serde_json::from_slice(&body).map_err(|error| {
+            invalid_view_settings(vec![FieldError {
+                field: "body".to_owned(),
+                message: error.to_string(),
+            }])
+        })?;
+
+    let updated = state
+        .with_db(move |database| {
+            let connection = database.connection();
+            let mut note = content_store::get_note(connection, &id)?
+                .ok_or_else(|| ApiError::not_found("note"))?;
+            let outline_cards: HashSet<KnowledgeCardId> =
+                note.outline_card_ids().into_iter().collect();
+
+            if let Err(errors) = validate_canvas_view_settings(&request.canvas, &outline_cards) {
+                return Err(invalid_view_settings(errors));
+            }
+
+            let mut merged = match note.view_settings {
+                Value::Object(map) => map,
+                _ => serde_json::Map::new(),
+            };
+            merged.insert("canvas".to_owned(), serde_json::to_value(&request.canvas)?);
+            let next_settings = Value::Object(merged);
+            let serialized = serde_json::to_vec(&next_settings)?;
+            if serialized.len() > MAX_VIEW_SETTINGS_BYTES {
+                return Err(invalid_view_settings(vec![FieldError {
+                    field: "view_settings".to_owned(),
+                    message: format!(
+                        "merged view_settings exceeds {MAX_VIEW_SETTINGS_BYTES} bytes (256 KiB)"
+                    ),
+                }]));
+            }
+
+            let now = Timestamp::now();
+            content_store::update_note_view_settings(connection, &id, &next_settings, now)?;
+            note.view_settings = next_settings;
+            note.updated_at = now;
+            Ok(note)
+        })
+        .await?;
+
+    Ok(Json(updated))
+}
+
+async fn list_note_edges(
+    State(state): State<AppState>,
+    PathParam(id): PathParam<NoteId>,
+    principal: Principal,
+) -> ApiResult<Json<Vec<Edge>>> {
+    let owner = principal.is_owner();
+    let edges = state
+        .with_db(move |database| {
+            let connection = database.connection();
+            let note = content_store::get_note(connection, &id)?
+                .ok_or_else(|| ApiError::not_found("note"))?;
+            ensure_visible(note.status, &principal)?;
+            let card_ids = note.outline_card_ids();
+            let edges = content_store::list_edges_between_cards(connection, &card_ids)?;
+            if owner {
+                return Ok(edges);
+            }
+            let mut visible = Vec::with_capacity(edges.len());
+            for edge in edges {
+                if endpoint_is_published(connection, &edge.from)?
+                    && endpoint_is_published(connection, &edge.to)?
+                {
+                    visible.push(edge);
+                }
+            }
+            Ok(visible)
+        })
+        .await?;
+    Ok(Json(edges))
 }
 
 async fn list_knowledge_cards(
@@ -872,4 +1132,48 @@ fn parse_range(header: &str, size: u64) -> Option<(u64, u64, bool)> {
         return None;
     }
     Some((start, end, true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_canvas_rejects_non_finite_values_and_zoom_bounds() {
+        let card_a = KnowledgeCardId::generate();
+        let outline = HashSet::from([card_a.clone()]);
+
+        let bad_canvas = CanvasViewSettings {
+            version: 1,
+            nodes: vec![CanvasNodeLayout {
+                card_id: card_a,
+                x: f64::NAN,
+                y: f64::INFINITY,
+                w: -10.0,
+                h: f64::NEG_INFINITY,
+            }],
+            viewport: CanvasViewport {
+                x: f64::INFINITY,
+                y: f64::NAN,
+                zoom: 4.5,
+            },
+        };
+
+        let errors = validate_canvas_view_settings(&bad_canvas, &outline).unwrap_err();
+        let fields: HashSet<&str> = errors.iter().map(|err| err.field.as_str()).collect();
+        for expected in [
+            "canvas.viewport.x",
+            "canvas.viewport.y",
+            "canvas.viewport.zoom",
+            "canvas.nodes[0].x",
+            "canvas.nodes[0].y",
+            "canvas.nodes[0].w",
+            "canvas.nodes[0].h",
+        ] {
+            assert!(
+                fields.contains(expected),
+                "expected field error {expected}, got {fields:?}"
+            );
+        }
+    }
 }

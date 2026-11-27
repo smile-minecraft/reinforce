@@ -163,12 +163,40 @@ export type OutlineNode =
       card_id: string
     }
 
+export interface CanvasNodeLayout {
+  card_id: string
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+export interface CanvasViewport {
+  x: number
+  y: number
+  zoom: number
+}
+
+export interface CanvasViewSettings {
+  version: 1
+  nodes: CanvasNodeLayout[]
+  viewport: CanvasViewport
+}
+
+export interface NoteViewSettings extends Record<string, unknown> {
+  canvas?: CanvasViewSettings
+}
+
+export interface UpdateNoteViewSettingsRequest {
+  canvas: CanvasViewSettings
+}
+
 export interface Note {
   id: string
   subject: string
   title: string
   outline: OutlineNode[]
-  view_settings: Record<string, unknown>
+  view_settings: NoteViewSettings
   status: CardStatus
   created_at: string
   updated_at: string

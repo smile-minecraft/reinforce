@@ -150,6 +150,27 @@ pub struct Note {
     pub updated_at: Timestamp,
 }
 
+/// Collects every `KnowledgeCardId` referenced by an outline tree in pre-order.
+pub fn collect_outline_card_ids(nodes: &[OutlineNode]) -> Vec<KnowledgeCardId> {
+    let mut ids = Vec::new();
+    for node in nodes {
+        match node {
+            OutlineNode::CardRef { card_id } => ids.push(card_id.clone()),
+            OutlineNode::Section { children, .. } => {
+                ids.extend(collect_outline_card_ids(children));
+            }
+        }
+    }
+    ids
+}
+
+impl Note {
+    /// Returns every `KnowledgeCardId` referenced anywhere in this note's outline.
+    pub fn outline_card_ids(&self) -> Vec<KnowledgeCardId> {
+        collect_outline_card_ids(&self.outline)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExamSet {
     pub id: ExamSetId,
