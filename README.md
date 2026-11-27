@@ -55,6 +55,31 @@ with `uniffi-bindgen`, and type-checks the Swift source with `swiftc` when
 available. On macOS the library is `target/release/libreinforce_ffi.dylib`;
 on Linux it is `target/release/libreinforce_ffi.so`.
 
+The bindings cover the whole offline study flow, not just single reads:
+
+```swift
+let database = try LocalDatabase.openWithBlobs(databasePath: db, blobsDir: media)
+let summary = try database.importBundle(bundlePath: demoBundle)
+let subjects = try database.subjects()
+let notes = try database.notes(subject: "physics", limit: 50)
+let outline = try database.noteOutline(noteId: noteId)
+let examSets = try database.examSets(subject: "physics", limit: 50)
+let questions = try database.questionCards(examSetId: examSetId, limit: 100)
+let neighbors = try database.neighbors(endpoint: .card(id: cardId), depth: 1)
+let path = try database.resourceBlobPath(resourceId: resourceId)
+```
+
+`importBundle` accepts a `bundle.jsonl` file or a bundle directory and copies
+the `assets/` files its resource operations reference into the blob directory
+under their sha256. Blobs are content-addressed and never rewritten, so
+re-importing the same bundle is safe and reports `blobsWritten == 0`.
+`open(path)` keeps the blob directory in `blobs/` beside the database;
+`openWithBlobs` points it at an app-group or sandbox location. `resource` and
+`anchor` expose media metadata, `resourceBlobPath` returns the absolute local
+file to render, and `userCardMeta`/`saveUserCardMeta` keep stars, personal tags
+and notes. Library lists return published content only; `examSets` reports both
+the total and published question counts of each set.
+
 The workspace version in the root `Cargo.toml` is the single source of truth
 for every crate, the WebApp package and all documentation.
 

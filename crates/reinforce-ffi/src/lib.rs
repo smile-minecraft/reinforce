@@ -5,8 +5,12 @@
 
 uniffi::setup_scaffolding!();
 
+mod bundle;
+
+pub mod catalog;
 pub mod database;
 pub mod error;
+pub mod resources;
 pub mod session;
 pub mod types;
 
