@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 pub const SCHEMA: &str = r#"
 -- Content Store: shared, source-grounded entities.
@@ -272,6 +272,36 @@ CREATE TABLE IF NOT EXISTS sync_meta_uploads (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, card_id)
 );
+
+-- External plugin work queue. A row is the durable record of one heavy task
+-- handed to an out-of-process worker: the plugin name and capability must
+-- match a manifest the owner wrote in the server configuration file, and the
+-- result is always a proposal, never a direct write. `attempts` counts started
+-- runs, `cancel_requested` records a cancel that a running worker still has to
+-- honour, and `proposal_id` is set only when the submission was accepted.
+CREATE TABLE IF NOT EXISTS plugin_jobs (
+    id TEXT PRIMARY KEY,
+    plugin TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN (
+        'queued','running','succeeded','failed','cancelled'
+    )),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    max_attempts INTEGER NOT NULL CHECK (max_attempts >= 1),
+    cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0,1)),
+    progress REAL NOT NULL DEFAULT 0.0 CHECK (progress >= 0.0 AND progress <= 1.0),
+    progress_message TEXT,
+    proposal_id TEXT REFERENCES proposals(id),
+    error_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS plugin_jobs_queue ON plugin_jobs (status, created_at, id);
+CREATE INDEX IF NOT EXISTS plugin_jobs_plugin ON plugin_jobs (plugin, status, created_at);
 
 -- External-content FTS5 with the trigram tokenizer so CJK substring queries work.
 -- Only readable text is indexed; topics are flattened by the writer.

@@ -9,6 +9,7 @@ pub mod export;
 pub mod export_scope;
 pub mod guard;
 pub mod mcp;
+pub mod plugins;
 pub mod routes;
 pub mod state;
 pub mod sync_content;
@@ -39,6 +40,7 @@ pub async fn run() -> ApiResult<()> {
         config::Command::Check(args) => cli::check(args).await,
         config::Command::Import(args) => cli::import(args).await,
         config::Command::Export(args) => cli::export(args).await,
+        config::Command::Plugin(args) => cli::plugin(args).await,
     }
 }
 

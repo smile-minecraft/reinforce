@@ -13,9 +13,12 @@ and human review before it is published.
 | Path | Purpose |
 | --- | --- |
 | `crates/reinforce-core` | Pure domain layer: SQLite storage, models, validator, FSRS, quiz engine |
+| `crates/reinforce-desktop` | Native GPUI desktop reader and quiz runner for a local database |
 | `crates/reinforce-ffi` | Synchronous UniFFI bindings for offline Swift and Kotlin clients |
 | `crates/reinforce-export` | Embedded Typst PDF engine and lossless Markdown export |
+| `crates/reinforce-plugin-protocol` | Versioned JSON messages shared with out-of-process plugins |
 | `crates/reinforce-server` | HTTP/WS API, embedded WebApp, MCP server and the `reinforce` CLI |
+| `plugins/` | Protocol documentation for external worker processes |
 | `web/` | Touch-first WebApp (React, TypeScript, Vite, Tailwind CSS, i18n) |
 | `apps/ios/` | Native offline SwiftUI app for iPhone and iPad using `reinforce-ffi` |
 
@@ -142,6 +145,53 @@ file to render, and `userCardMeta`/`saveUserCardMeta` keep stars, personal tags
 and notes. Library lists return published content only; `examSets` reports both
 the total and published question counts of each set.
 
+### Desktop app (GPUI)
+
+`crates/reinforce-desktop` is a native macOS window that links `reinforce-core`
+directly — no server, no FFI — and reads a local `reinforce.db` plus its `blobs`
+directory. It renders notes and knowledge cards in a reading room, pre-renders
+math and diagrams to SVG with the embedded Typst engine, and runs all five study
+modes (daily due, full exam, topic drill, practical exam, weakness drill). Every
+finished session is written to the append-only attempt log and refreshes FSRS
+scheduling through the same core functions the CLI uses.
+
+It is excluded from `scripts/verify.sh` and from the Linux CI job: GPUI needs
+macOS, a GUI toolkit and a full Metal toolchain, and compiling it adds several
+minutes. Check it on a Mac instead:
+
+```sh
+./scripts/check-desktop.sh
+```
+
+Building GPUI requires the Metal toolchain once per Xcode installation:
+
+```sh
+xcodebuild -downloadComponent MetalToolchain   # one-time, ~840 MB
+```
+
+Run it against the demo library (the import happens before the window opens):
+
+```sh
+CARGO_BUILD_JOBS=4 cargo run -p reinforce-desktop -- \
+  --db /tmp/reinforce-desktop/reinforce.db \
+  --import fixtures/demo \
+  --practical-exam 2026-12-20
+```
+
+Useful flags: `--db`, `--blobs`, `--cache`, `--import`, `--practical-exam
+YYYY-MM-DD`, `--start reading|card:<n>|exam|daily|topic|practical|weakness` and
+`--select A,C` (preselect option keys, handy for screenshots). `--help` prints
+the full list.
+
+Keyboard: `j`/`k` move through notes, `1`–`5` start a study mode, `A`–`Z` toggle
+answer options, `Enter` submits (and hands in a finished paper), `Backspace`
+edits a typed answer, `Esc` returns. The header shows the practical exam
+countdown; the footer shows the database path, the attempt count and the keys.
+
+Pin-locate questions require free positioning on the image; the desktop build
+records a blank submission for them and leaves the coordinate input to the
+touch-first WebApp.
+
 The workspace version in the root `Cargo.toml` is the single source of truth
 for every crate, the WebApp package and all documentation.
 
@@ -179,6 +229,41 @@ Open `apps/ios/Reinforce.xcodeproj` in Xcode to run interactively on an iPhone
 or iPad simulator (or choose any available iPhone/iPad destination listed by
 `xcrun simctl list devices available`). Pass `--release` to
 `./scripts/build-ios-ffi.sh` when building optimized release libraries.
+
+### External plugins
+
+Heavy work (PDF layout analysis, agent sessions, TikZ rendering) can run in a
+separate worker process. The owner declares the workers in a manifest file —
+
+```json
+{
+  "plugins": [
+    {
+      "name": "mineru",
+      "capabilities": ["ingest_pdf"],
+      "transport": {"type": "stdio", "command": "/usr/local/bin/reinforce-plugin-mineru"}
+    }
+  ]
+}
+```
+
+— and starts the server with `reinforce serve --plugins ./plugins.json`. Only
+that file decides which programs may run: the HTTP API and the CLI can queue
+work for a declared plugin, read its status and cancel it, and nothing more.
+
+```sh
+reinforce plugin list --plugins ./plugins.json
+reinforce plugin submit --db ./reinforce.db --plugins ./plugins.json \
+  --plugin mineru --capability ingest_pdf --input '{"resource_id":"..."}'
+reinforce plugin status --db ./reinforce.db --job <job-id> --wait 120
+```
+
+Workers speak a versioned newline-delimited JSON protocol over stdio and return
+a proposal batch. The batch is submitted as an agent actor, so everything it
+produces stays `unchecked` and pending until the owner reviews it; a worker can
+never publish content directly. Jobs are durable across restarts, with a
+timeout, an output cap and cancellation per job. The trust boundary, the wire
+format and the queue state machine are documented in [`plugins/README.md`](plugins/README.md).
 
 ## License
 

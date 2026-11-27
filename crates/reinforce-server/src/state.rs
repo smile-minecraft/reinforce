@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::auth::{hash_token, random_token};
 use crate::config::{AuthMode, ServeArgs};
 use crate::error::{ApiError, ApiResult};
+use crate::plugins::{PluginConfig, PluginRuntime};
 
 const OWNER_SETTING: &str = "owner_user_id";
 const SETUP_TOKEN_SETTING: &str = "owner_setup_token_hash";
@@ -69,6 +70,7 @@ pub struct AppState {
     pub bind_host: String,
     pub owner_id: UserId,
     pub sessions: Arc<Mutex<HashMap<String, SessionSlot>>>,
+    pub plugins: Arc<PluginRuntime>,
 }
 
 impl AppState {
@@ -109,6 +111,20 @@ impl AppState {
             })
             .await?;
 
+        // The plugin manifest is owner-written configuration: loading it is the
+        // only place that can widen what the server is allowed to execute.
+        let plugin_config = PluginConfig::load(config.plugins.as_deref())?;
+        let plugins = PluginRuntime::new(store.clone(), plugin_config);
+        let recovery = plugins.recover().await?;
+        if recovery.interrupted > 0 || recovery.orphaned > 0 {
+            tracing::warn!(
+                interrupted = recovery.interrupted,
+                orphaned = recovery.orphaned,
+                "plugin queue recovered after a restart"
+            );
+        }
+        plugins.start();
+
         Ok(Self {
             store,
             blobs: config.blobs.clone(),
@@ -117,6 +133,7 @@ impl AppState {
             bind_host: config.host.clone(),
             owner_id,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            plugins,
         })
     }
 

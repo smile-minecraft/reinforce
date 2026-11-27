@@ -7,6 +7,7 @@ pub mod content;
 pub mod db;
 pub mod fsrs;
 pub mod hash;
+pub mod plugin;
 pub mod primitives;
 pub mod proposal;
 pub mod quiz;
@@ -20,9 +21,11 @@ pub use content::{
     ProposalTarget, QuestionCard, QuestionGroup, Resource,
 };
 pub use hash::ContentHash;
+pub use plugin::{JobError, JobErrorCode, PluginJob};
 pub use primitives::{
-    AnchorId, CardId, CardStatus, Confidence, EdgeId, Error, ExamSetId, KnowledgeCardId, NoteId,
-    ProposalId, QuestionCardId, QuestionGroupId, ResourceId, Result, UserId, Verification,
+    AnchorId, CardId, CardStatus, Confidence, EdgeId, Error, ExamSetId, JobId, JobStatus,
+    KnowledgeCardId, NoteId, ProposalId, QuestionCardId, QuestionGroupId, ResourceId, Result,
+    UserId, Verification,
 };
 pub use proposal::{
     ApprovalOptions, ApprovalOutcome, BatchOperation, BatchPayload, OperationKind, SubmitOutcome,
@@ -38,6 +41,7 @@ pub use db::Database;
 pub use db::auth;
 pub use db::catalog as catalog_store;
 pub use db::content as content_store;
+pub use db::plugins as plugin_store;
 pub use db::quiz as quiz_store;
 pub use db::search;
 pub use db::study as study_store;
