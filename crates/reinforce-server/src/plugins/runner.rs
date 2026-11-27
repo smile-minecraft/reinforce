@@ -197,7 +197,13 @@ async fn drive(
         job.capability.clone(),
         job.input.clone(),
     ));
-    if let Err(error) = write_message(&mut stdin, &hello).await {
+    // A worker that never reads stdin must not hold a cancel until the timeout.
+    let written = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return DriveOutcome::Cancelled,
+        written = write_message(&mut stdin, &hello) => written,
+    };
+    if let Err(error) = written {
         return DriveOutcome::Failed(JobError::new(
             JobErrorCode::SpawnFailed,
             format!("cannot write the plugin handshake: {error}"),
@@ -326,10 +332,14 @@ async fn next_line(
 ) -> Result<Option<String>, ReadError> {
     let mut buffer = Vec::new();
     loop {
+        // Bound each read by the remaining budget (plus one byte to detect
+        // overflow) so output without a newline cannot grow memory.
+        let limit = u64::try_from(*budget).unwrap_or(u64::MAX).saturating_add(1);
+        let mut bounded = (&mut *reader).take(limit);
         let read = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(ReadError::Cancelled),
-            read = reader.read_until(b'\n', &mut buffer) => read.map_err(ReadError::Io)?,
+            read = bounded.read_until(b'\n', &mut buffer) => read.map_err(ReadError::Io)?,
         };
         if read == 0 {
             if buffer.is_empty() {

@@ -593,6 +593,51 @@ async fn oversized_output_is_cut_off() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn output_without_newlines_is_cut_off_at_the_cap() {
+    let mut setup = Setup::new(AuthMode::Single);
+    setup.plugin_with("flood", "flood", &[], 30, 1_024, 1);
+    let fixture = setup.open().await;
+
+    let started = Instant::now();
+    let submitted = fixture.submit_ok("flood").await;
+    let job = fixture
+        .wait_terminal(submitted["id"].as_str().expect("job id"))
+        .await;
+    assert_eq!(job["status"], "failed", "{job}");
+    assert_eq!(job["error"]["code"], "output_too_large", "{job}");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the cap must trip long before the 30s timeout"
+    );
+    server_is_healthy(&fixture).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_jobs_for_a_removed_capability_do_not_run() {
+    let mut setup = Setup::new(AuthMode::Single);
+    setup.plugin("fake", "ok", &[]);
+    let stale_id = {
+        let database =
+            reinforce_core::Database::open(setup.path("test.db")).expect("open database");
+        let stale = reinforce_core::PluginJob::queued(
+            "fake",
+            "removed_capability",
+            json!({"resource_id": "r1"}),
+            1,
+        );
+        reinforce_core::plugin_store::insert_job(database.connection(), &stale).expect("insert");
+        stale.id
+    };
+    let fixture = setup.open().await;
+
+    let job = fixture.wait_terminal(&stale_id.to_string()).await;
+    assert_eq!(job["status"], "failed", "{job}");
+    assert_eq!(job["error"]["code"], "plugin_not_configured", "{job}");
+    assert!(job["proposal_id"].is_null(), "{job}");
+    assert_eq!(fixture.published_card_count().await, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn protocol_violations_fail_the_job_cleanly() {
     let mut setup = Setup::new(AuthMode::Single);
     setup.plugin("old_version", "bad_version", &[]);

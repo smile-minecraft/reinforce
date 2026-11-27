@@ -137,6 +137,18 @@ fn main() {
             std::thread::sleep(Duration::from_secs(1));
             std::process::exit(0);
         }
+        "flood" => {
+            // Endless output with no newline: the host must stop reading at
+            // its byte cap instead of buffering until the timeout.
+            ready(&job, &plugin, &capability, 1);
+            let noise = "x".repeat(64 * 1024);
+            let mut stdout = std::io::stdout();
+            loop {
+                if stdout.write_all(noise.as_bytes()).is_err() {
+                    std::process::exit(0);
+                }
+            }
+        }
         "bad_version" => {
             ready(&job, &plugin, &capability, 99);
             std::thread::sleep(Duration::from_millis(200));

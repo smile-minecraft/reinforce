@@ -239,6 +239,19 @@ impl PluginRuntime {
             self.fail(&job, error, false).await;
             return;
         };
+        // The manifest may have changed since the job was queued; a capability
+        // the owner removed must not keep running from old queue rows.
+        if !definition.supports(&job.capability) {
+            let error = JobError::new(
+                JobErrorCode::PluginNotConfigured,
+                format!(
+                    "plugin {:?} no longer declares the capability {:?}",
+                    job.plugin, job.capability
+                ),
+            );
+            self.fail(&job, error, false).await;
+            return;
+        }
         if job.cancel_requested {
             self.cancel_running(&job).await;
             return;
