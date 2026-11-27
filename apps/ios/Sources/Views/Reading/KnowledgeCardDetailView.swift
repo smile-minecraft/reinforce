@@ -72,6 +72,7 @@ struct KnowledgeCardDetailView: View {
                         onOpenCard: onOpenCard,
                         onOpenAnchor: { activeAnchor = AnchorSheetItem(id: $0) }
                     )
+                    .accessibilityIdentifier("card-detail-content")
 
                     // Personal note saved locally via userCardMeta
                     VStack(alignment: .leading, spacing: 10) {
@@ -192,8 +193,7 @@ struct KnowledgeCardDetailView: View {
 
     private func savePersonalMeta(_ card: KnowledgeCard) {
         let noteValue = personalNote.trimmingCharacters(in: .whitespacesAndNewlines)
-        _ = try? store.database.saveUserCardMeta(
-            userId: store.userId,
+        store.saveUserCardMeta(
             cardId: card.id,
             starred: starred,
             personalTags: [],

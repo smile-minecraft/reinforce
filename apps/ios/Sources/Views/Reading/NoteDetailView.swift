@@ -5,6 +5,7 @@ struct NoteDetailView: View {
     let store: AppStore
     let l10n: LocalizationManager
     var onOpenCard: (String) -> Void
+    var onRequestExport: ((PDFExportContext) -> Void)? = nil
 
     @State private var outlineNodes: [NoteOutlineNode] = []
     @State private var loadedCards: [String: KnowledgeCard] = [:]
@@ -59,7 +60,16 @@ struct NoteDetailView: View {
             .navigationTitle(note.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if let onRequestExport {
+                        Button {
+                            onRequestExport(.note(id: note.id, title: note.title))
+                        } label: {
+                            Label(l10n.t("export.title"), systemImage: "square.and.arrow.up")
+                        }
+                        .accessibilityIdentifier("note-export-pdf-button")
+                    }
+
                     let sections = collectTOC(nodes: outlineNodes, prefix: "sec", depth: 0)
                     if !sections.isEmpty {
                         Button {

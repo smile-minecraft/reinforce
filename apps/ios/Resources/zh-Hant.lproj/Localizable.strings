@@ -206,3 +206,71 @@
 "study.runner.summary.reviewHeading" = "逐題檢討";
 "study.runner.summary.backToStudy" = "返回刷題室";
 "study.runner.summary.yourAnswer" = "你的作答";
+
+/* Server Sync */
+"sync.title" = "伺服器與同步";
+"sync.connectHeading" = "連線至 Reinforce 伺服器";
+"sync.connectSubtitle" = "登入後自動上傳離線作答紀錄、拉取最新教材，並透過伺服器匯出講義 PDF。";
+"sync.connectShort" = "連線伺服器";
+"sync.serverURL" = "伺服器網址";
+"sync.checkServer" = "檢查";
+"sync.modeSingleHint" = "偵測到單人模式，不需密碼即可直接連線同步。";
+"sync.modeInviteHint" = "偵測到邀請帳號模式，請輸入既有帳號與密碼登入。";
+"sync.username" = "帳號";
+"sync.usernamePlaceholder" = "請輸入帳號";
+"sync.password" = "密碼";
+"sync.passwordPlaceholder" = "請輸入密碼";
+"sync.connectAndSync" = "連線並同步";
+"sync.signInAndSync" = "登入並同步";
+"sync.keychainNotice" = "登入憑證會安全儲存在 iOS Keychain，登出時一併清除。";
+"sync.keychainBadge" = "Keychain";
+"sync.localPendingNotice" = "本機尚有待上傳紀錄：%1$d 筆作答、%2$d 筆卡片筆記。";
+"sync.account" = "帳號";
+"sync.authMode" = "驗證模式";
+"sync.authModeSingle" = "單人模式（預設擁有者）";
+"sync.authModeInvite" = "帳號登入（Session Cookie）";
+"sync.networkState" = "網路狀態";
+"sync.online" = "已連線";
+"sync.offline" = "離線中";
+"sync.queueHeading" = "同步佇列";
+"sync.pendingAttempts" = "待上傳作答";
+"sync.pendingMeta" = "待上傳卡片筆記";
+"sync.lastSynced" = "上次同步";
+"sync.lastSummary" = "上次同步：上傳 %1$d 筆作答、拉取 %2$d 筆作答、套用 %3$d 筆內容。";
+"sync.syncNow" = "立即同步";
+"sync.signOut" = "登出";
+"sync.status.signedOut" = "未連線";
+"sync.status.syncing" = "同步中…";
+"sync.status.synced" = "已同步";
+"sync.status.offlineQueued" = "離線 · %d 筆待傳";
+"sync.status.error" = "同步失敗";
+"sync.status.authExpired" = "登入已過期";
+"sync.banner.pendingCount" = "尚有 %d 筆紀錄等待上傳";
+
+/* PDF Export */
+"export.title" = "匯出講義 PDF";
+"export.shortButton" = "匯出 PDF";
+"export.scopeHeading" = "匯出範圍";
+"export.scope.note" = "筆記：%@";
+"export.scope.subject" = "科目：%@";
+"export.scope.weakness" = "弱點複習講義";
+"export.deepLinkHint" = "由 Reinforce 伺服器即時排版，內含 reinforce:// 深度連結可一鍵跳回對應卡片。";
+"export.weaknessThreshold" = "弱點門檻";
+"export.presetHeading" = "版面樣式";
+"export.preset.standard.name" = "標準講義（Standard）";
+"export.preset.standard.desc" = "適合閱讀與列印的精簡排版，完整保留圖表與出處。";
+"export.preset.goodnotes.name" = "GoodNotes 手寫版";
+"export.preset.goodnotes.desc" = "留白筆記欄搭配卡片深度連結，適合匯入 GoodNotes 標註手寫。";
+"export.preset.worksheet.name" = "練習卷（Worksheet）";
+"export.preset.worksheet.desc" = "預留作答空白區，適合紙本或平板主動回想練習。";
+"export.serverRequiredTitle" = "需要先連線伺服器";
+"export.serverRequiredBody" = "PDF 講義由 Reinforce 伺服器（/api/export）產生，請先登入伺服器。";
+"export.shareAgain" = "再次分享";
+"export.generating" = "正在產生 PDF…";
+"export.generateAndShare" = "產生並分享 PDF";
+
+/* Question Detail */
+"question.detailTitle" = "題目詳情";
+"question.revealAnswer" = "顯示答案與解析";
+"question.hideAnswer" = "隱藏答案";
+"question.missing" = "本機找不到對應題目。";
