@@ -1,0 +1,152 @@
+//! TikZ plugin: one stdio job renders TikZ source through LaTeX and dvisvgm.
+
+mod convert;
+mod protocol;
+
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::sync::mpsc::Receiver;
+
+use clap::Parser;
+use reinforce_plugin_protocol::{Hello, HostMessage, Operation};
+
+const CAPABILITIES: &[&str] = &["tikz_render"];
+/// Larger SVGs would not fit the server's default plugin output limit anyway.
+const MAX_SVG_BYTES: u64 = 4 * 1024 * 1024;
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "reinforce-plugin-tikz",
+    about = "Reinforce stdio plugin that renders TikZ with LaTeX and dvisvgm"
+)]
+struct Args {
+    /// Absolute path to the LaTeX executable.
+    #[arg(long)]
+    latex: PathBuf,
+
+    /// Absolute path to the dvisvgm executable.
+    #[arg(long)]
+    dvisvgm: PathBuf,
+
+    /// Absolute path to a writable directory for per-job scratch files.
+    #[arg(long)]
+    work_dir: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+pub struct Options {
+    pub latex: PathBuf,
+    pub dvisvgm: PathBuf,
+    pub work_dir: PathBuf,
+}
+
+static OPTIONS: OnceLock<Options> = OnceLock::new();
+
+fn absolute(path: &Path, flag: &str) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Err(format!(
+            "{flag} must be an absolute path: {}",
+            path.display()
+        ))
+    }
+}
+
+fn work(
+    hello: &Hello,
+    cancel: &Receiver<HostMessage>,
+) -> Result<Vec<Operation>, protocol::RunError> {
+    let input = convert::parse_input(&hello.input)?;
+    let options = OPTIONS.get().expect("options are set before serving");
+    let scratch = protocol::Scratch::new(&options.work_dir, "tikz").map_err(|error| {
+        protocol::failure(
+            "io_error",
+            format!(
+                "cannot create a work directory in {}: {error}",
+                options.work_dir.display()
+            ),
+        )
+    })?;
+    let tex = scratch.path().join(convert::TEX_FILE);
+    let dvi = scratch.path().join(convert::DVI_FILE);
+    let svg = scratch.path().join(convert::SVG_FILE);
+    std::fs::write(&tex, convert::tex_source(&input)).map_err(|error| {
+        protocol::failure(
+            "io_error",
+            format!("cannot write {}: {error}", tex.display()),
+        )
+    })?;
+
+    protocol::run_command(
+        &options.latex,
+        &convert::latex_arguments(),
+        scratch.path(),
+        cancel,
+    )?;
+    if !dvi.is_file() {
+        return Err(protocol::failure(
+            "unparseable_output",
+            format!("LaTeX did not produce {}", dvi.display()),
+        ));
+    }
+
+    protocol::run_command(
+        &options.dvisvgm,
+        &convert::dvisvgm_arguments(),
+        scratch.path(),
+        cancel,
+    )?;
+    let svg_size = std::fs::metadata(&svg)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if svg_size > MAX_SVG_BYTES {
+        return Err(protocol::failure(
+            "output_too_large",
+            format!("dvisvgm wrote {svg_size} bytes, more than {MAX_SVG_BYTES}"),
+        ));
+    }
+    let svg_bytes = std::fs::read(&svg).map_err(|error| {
+        protocol::failure(
+            "unparseable_output",
+            format!("dvisvgm did not write {}: {error}", svg.display()),
+        )
+    })?;
+    convert::operations(&input, &svg_bytes)
+}
+
+fn main() {
+    let args = Args::parse();
+    let latex = match absolute(&args.latex, "--latex") {
+        Ok(path) => path,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+    let dvisvgm = match absolute(&args.dvisvgm, "--dvisvgm") {
+        Ok(path) => path,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+    let work_dir = match absolute(
+        &args.work_dir.unwrap_or_else(std::env::temp_dir),
+        "--work-dir",
+    ) {
+        Ok(path) => path,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+    OPTIONS
+        .set(Options {
+            latex,
+            dvisvgm,
+            work_dir,
+        })
+        .expect("options are set once");
+    std::process::exit(protocol::run(CAPABILITIES, work));
+}
