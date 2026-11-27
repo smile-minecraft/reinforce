@@ -1,0 +1,208 @@
+/* App */
+"app.name" = "Reinforce";
+"app.tagline" = "Offline notes, active recall, and practical exams.";
+"app.language" = "Language";
+"app.language.system" = "System";
+"app.language.en" = "English";
+"app.language.zhTW" = "繁體中文";
+"app.offlineBadge" = "Offline";
+
+/* Navigation */
+"nav.reading" = "Reading Room";
+"nav.study" = "Study & Quiz";
+"nav.practical" = "Practical Exam";
+"nav.subjects" = "Subjects";
+"nav.library" = "Library";
+
+/* Common */
+"common.loading" = "Loading…";
+"common.retry" = "Retry";
+"common.back" = "Back";
+"common.close" = "Close";
+"common.cancel" = "Cancel";
+"common.confirm" = "Confirm";
+"common.done" = "Done";
+"common.reset" = "Reset";
+"common.save" = "Save";
+"common.search" = "Search notes, cards, questions…";
+"common.allSubjects" = "All subjects";
+"common.empty" = "Nothing here yet.";
+"common.verified" = "Verified";
+"common.unchecked" = "Unchecked";
+"common.errorGeneric" = "Something went wrong. Please try again.";
+
+/* Import */
+"import.button" = "Import Bundle";
+"import.fromFiles" = "Import from Files…";
+"import.emptyTitle" = "Your offline library is empty";
+"import.emptySubtitle" = "Import a Reinforce bundle (.jsonl file or bundle folder with assets/) from the Files app to start reading and quizzing offline.";
+"import.successTitle" = "Bundle imported";
+"import.successSummary" = "Applied %1$d items and %2$d media files.";
+"import.failedTitle" = "Import failed";
+"import.hintFolder" = "Tip: Select the bundle folder to include images and SVG assets alongside bundle.jsonl.";
+
+/* Reading Room */
+"reading.title" = "Reading Room";
+"reading.dailyDueBannerTitle" = "Daily recall queue";
+"reading.dailyDueBannerDesc" = "Review due cards and new items scheduled by FSRS.";
+"reading.dueCount" = "%d due";
+"reading.reviewedCount" = "%d reviewed";
+"reading.startDailyDue" = "Start daily due";
+"reading.startWeakness" = "Weakness drill";
+"reading.notesHeading" = "Notes";
+"reading.cardsHeading" = "Knowledge cards";
+"reading.searchResultsHeading" = "Search results";
+"reading.noNotes" = "No notes match the current filter.";
+"reading.noCards" = "No knowledge cards found.";
+"reading.noSearchResults" = "No matching notes, cards, or questions.";
+"reading.outline" = "Outline";
+"reading.sources" = "Sources";
+"reading.openSource" = "View source";
+"reading.sourceAnchor" = "Source anchor";
+"reading.openCard" = "Open card";
+"reading.drillThisCard" = "Drill this card";
+"reading.relatedNodes" = "Related knowledge";
+"reading.noRelatedNodes" = "No linked cards or questions yet.";
+"reading.missingCard" = "Referenced card could not be loaded.";
+"reading.subjectCount" = "%d items";
+"reading.cardCount" = "%d cards";
+"reading.selectNotePrompt" = "Select a note or knowledge card to start reading.";
+"reading.personalNote" = "Personal note";
+"reading.personalNotePlaceholder" = "Add your own study reminder…";
+"reading.starCard" = "Star card";
+"reading.unstarCard" = "Unstar card";
+
+/* Blocks */
+"blocks.mathError" = "Could not render formula";
+"blocks.diagramError" = "Could not render diagram";
+"blocks.diagramSource" = "Diagram source";
+"blocks.occlusionHint" = "Tap masks to reveal or hide";
+"blocks.revealAll" = "Reveal all";
+"blocks.hideAll" = "Hide all";
+"blocks.maskGroup" = "Group %@";
+"blocks.pinsOverlayOn" = "Overlay on";
+"blocks.pinsOverlayOff" = "Overlay off";
+"blocks.pinsLabelsOn" = "Labels on";
+"blocks.pinsLabelsOff" = "Labels off";
+"blocks.pinSelected" = "Pin #%d";
+"blocks.pinHint" = "Hint";
+"blocks.pinDetail" = "Detail";
+"blocks.pinLinkedCard" = "Linked card";
+"blocks.pinTapPrompt" = "Tap a numbered pin to inspect its term and notes.";
+
+/* Anchor Viewer */
+"anchor.title" = "Source viewer";
+"anchor.pdfPage" = "PDF p. %d";
+"anchor.printedPage" = "Printed p. %d";
+"anchor.legendPage" = "Legend p. %d";
+"anchor.regionHighlight" = "Highlighted region";
+"anchor.restrictedNotice" = "Restricted resource (%@)";
+"anchor.attribution" = "Attribution";
+"anchor.license" = "License";
+"anchor.blobUnavailable" = "Media file is not available locally.";
+
+/* Study Hub */
+"study.title" = "Study & Quiz";
+"study.subtitle" = "Choose a study mode to launch an offline session.";
+"study.stats.due" = "Due now";
+"study.stats.reviewed" = "Scheduled cards";
+"study.stats.attempts" = "Recorded attempts";
+"study.modes.daily_due.name" = "FSRS Daily Due";
+"study.modes.daily_due.desc" = "Overdue reviews first, followed by new cards within your daily cap.";
+"study.modes.full_exam.name" = "Full Exam Simulation";
+"study.modes.full_exam.desc" = "Ordered exam set with optional total countdown and deferred grading until finish.";
+"study.modes.topic_drill.name" = "Topic / Card Drill";
+"study.modes.topic_drill.desc" = "Target specific knowledge cards via their linked test questions.";
+"study.modes.practical_exam.name" = "Practical Exam";
+"study.modes.practical_exam.desc" = "Timed per-question image & pin identification or location with pinch-to-zoom.";
+"study.modes.weakness_drill.name" = "Weakness Drill";
+"study.modes.weakness_drill.desc" = "Prioritizes high-error, hesitant, and slow questions from your attempt history.";
+
+/* Study Options */
+"study.options.questionLimit" = "Question limit";
+"study.options.newCardLimit" = "New card limit";
+"study.options.selectExamSet" = "Exam set";
+"study.options.noExamSets" = "No exam sets available.";
+"study.options.totalTimeMins" = "Total time (minutes, optional)";
+"study.options.noTimeLimit" = "Untimed";
+"study.options.selectCards" = "Knowledge cards to drill";
+"study.options.selectedCardsCount" = "%d selected";
+"study.options.secondsPerQuestion" = "Seconds per question (1–300)";
+"study.options.pinRadius" = "Pin hit tolerance";
+"study.options.affectsScheduling" = "Update FSRS scheduling";
+"study.options.startSession" = "Start session";
+"study.options.emptySessionError" = "No eligible questions found for this mode.";
+"study.options.selectAtLeastOneCard" = "Select at least one knowledge card.";
+
+/* Weakness Preview */
+"study.weaknessPreview.heading" = "Current weakness hotspots";
+"study.weaknessPreview.empty" = "No attempt history yet. Complete a session to build your weakness profile.";
+"study.weaknessPreview.errorRate" = "Error %d%%";
+"study.weaknessPreview.hesitantRate" = "Hesitant %d%%";
+"study.weaknessPreview.avgDuration" = "Avg %.1fs";
+"study.weaknessPreview.attempts" = "%d attempts";
+
+/* Study Runner */
+"study.runner.progress" = "Question %1$d of %2$d";
+"study.runner.pause" = "Pause";
+"study.runner.resume" = "Resume";
+"study.runner.finish" = "Finish & grade";
+"study.runner.exit" = "Exit";
+"study.runner.pausedTitle" = "Session paused";
+"study.runner.pausedBackground" = "Timer paused automatically while the app was in the background.";
+"study.runner.pausedManual" = "Timer is paused. Resume when you are ready to continue.";
+"study.runner.expiredTitle" = "Time expired";
+"study.runner.expiredDesc" = "The session timer reached zero. Finish now to calculate your score.";
+"study.runner.deferredBanner" = "Full exam mode: grading is deferred until you submit the exam.";
+"study.runner.recorded" = "Answer recorded";
+"study.runner.submitAnswer" = "Submit answer";
+"study.runner.nextQuestion" = "Next question";
+"study.runner.viewSummary" = "View summary";
+"study.runner.typeAnswer" = "Type your answer…";
+"study.runner.pinIdentifyPrompt" = "Identify the marked pin structure(s)";
+"study.runner.pinLocatePrompt" = "Tap on the image to place pin #%d";
+"study.runner.pinLocateAllPlaced" = "All required pins placed. Tap again to adjust or submit.";
+"study.runner.pinLocateTarget" = "Target pin #%d";
+"study.runner.pinClear" = "Clear pins";
+"study.runner.zoomIn" = "Zoom in";
+"study.runner.zoomOut" = "Zoom out";
+"study.runner.zoomReset" = "Reset zoom";
+"study.runner.zoomHint" = "Pinch to zoom · drag to pan";
+"study.runner.sharedStem" = "Shared vignette";
+"study.runner.confidence" = "Confidence";
+"study.runner.confidence.certain" = "Certain";
+"study.runner.confidence.split" = "Split";
+"study.runner.confidence.guessed" = "Guessed";
+"study.runner.errorTags" = "Error tags (optional)";
+"study.runner.errorTag.concept_gap" = "Concept gap";
+"study.runner.errorTag.misread" = "Misread stem";
+"study.runner.errorTag.confused_term" = "Confused term";
+"study.runner.errorTag.careless" = "Careless";
+"study.runner.errorTag.time_pressure" = "Time pressure";
+"study.runner.questionType.single_choice" = "Single choice";
+"study.runner.questionType.multiple_choice" = "Multiple choice";
+"study.runner.questionType.short_answer" = "Short answer";
+"study.runner.questionType.vocab" = "Vocabulary";
+"study.runner.questionType.image_qa" = "Image Q&A";
+"study.runner.questionType.image_occlusion" = "Image occlusion";
+"study.runner.questionType.pin_identify" = "Pin identify";
+"study.runner.questionType.pin_locate" = "Pin locate";
+
+/* Grading & Summary */
+"study.runner.grading.correct" = "Correct";
+"study.runner.grading.incorrect" = "Incorrect";
+"study.runner.grading.anyAccepted" = "Multi-key accepted";
+"study.runner.grading.voided" = "Voided — full credit (excluded from FSRS)";
+"study.runner.grading.timedOut" = "Time expired";
+"study.runner.grading.answerBasis" = "Answer basis";
+"study.runner.grading.explanation" = "Explanation";
+"study.runner.grading.linkedCards" = "Linked knowledge cards (%d)";
+"study.runner.grading.officialAnswer" = "Answer";
+"study.runner.summary.title" = "Session complete";
+"study.runner.summary.score" = "Score";
+"study.runner.summary.correctOf" = "%1$d / %2$d scoreable";
+"study.runner.summary.voidedCount" = "%d voided (excluded from denominator)";
+"study.runner.summary.attemptsSaved" = "%d attempt(s) saved locally";
+"study.runner.summary.reviewHeading" = "Question review";
+"study.runner.summary.backToStudy" = "Back to Study Hub";
+"study.runner.summary.yourAnswer" = "Your answer";

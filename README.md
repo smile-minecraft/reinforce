@@ -17,6 +17,7 @@ and human review before it is published.
 | `crates/reinforce-export` | Embedded Typst PDF engine and lossless Markdown export |
 | `crates/reinforce-server` | HTTP/WS API, embedded WebApp, MCP server and the `reinforce` CLI |
 | `web/` | Touch-first WebApp (React, TypeScript, Vite, Tailwind CSS, i18n) |
+| `apps/ios/` | Native offline SwiftUI app for iPhone and iPad using `reinforce-ffi` |
 
 ## Development
 
@@ -82,6 +83,35 @@ the total and published question counts of each set.
 
 The workspace version in the root `Cargo.toml` is the single source of truth
 for every crate, the WebApp package and all documentation.
+
+### iOS and iPadOS app (`apps/ios`)
+
+The native SwiftUI client in `apps/ios/` supports iPhone and iPad from a single
+target and runs completely offline against `reinforce-core` via UniFFI and local
+SQLite. The Xcode project is generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+from `apps/ios/project.yml` and is not committed to git.
+
+Requirements: Xcode (with an iOS Simulator runtime installed), `xcodegen`, and
+`rustup` with the `aarch64-apple-ios` and `aarch64-apple-ios-sim` targets.
+
+```sh
+# 1. Build debug iOS static libraries, Swift bindings, and ReinforceFFI.xcframework
+CARGO_BUILD_JOBS=4 ./scripts/build-ios-ffi.sh
+
+# 2. Generate apps/ios/Reinforce.xcodeproj
+(cd apps/ios && xcodegen generate)
+
+# 3. Build and run unit + UI tests on an iPhone or iPad simulator
+xcodebuild test \
+  -project apps/ios/Reinforce.xcodeproj \
+  -scheme Reinforce \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+```
+
+Open `apps/ios/Reinforce.xcodeproj` in Xcode to run interactively on an iPhone
+or iPad simulator (or choose any available iPhone/iPad destination listed by
+`xcrun simctl list devices available`). Pass `--release` to
+`./scripts/build-ios-ffi.sh` when building optimized release libraries.
 
 ## License
 

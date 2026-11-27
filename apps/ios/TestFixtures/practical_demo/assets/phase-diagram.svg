@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500" viewBox="0 0 800 500">
+  <rect width="800" height="500" fill="#f7fafc"/>
+  <line x1="90" y1="430" x2="740" y2="430" stroke="#334155" stroke-width="3"/>
+  <line x1="90" y1="430" x2="90" y2="50" stroke="#334155" stroke-width="3"/>
+  <path d="M90 330 L300 210 L520 260 L740 120" fill="none" stroke="#2563eb" stroke-width="4"/>
+  <path d="M300 210 L470 100 L740 120" fill="none" stroke="#dc2626" stroke-width="4"/>
+  <text x="400" y="470" font-family="sans-serif" font-size="22" fill="#334155">Temperature</text>
+  <text x="20" y="250" font-family="sans-serif" font-size="22" fill="#334155" transform="rotate(-90 20 250)">Pressure</text>
+  <text x="120" y="380" font-family="sans-serif" font-size="20" fill="#0f172a">solid</text>
+  <text x="420" y="370" font-family="sans-serif" font-size="20" fill="#0f172a">liquid</text>
+  <text x="420" y="150" font-family="sans-serif" font-size="20" fill="#0f172a">vapor</text>
+</svg>
