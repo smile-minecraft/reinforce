@@ -78,7 +78,45 @@
     "noRelatedNodes": "No linked cards or questions yet.",
     "missingCard": "Referenced card could not be loaded.",
     "subjectCount": "{{count}} items",
-    "cardCount": "{{count}} cards"
+    "cardCount": "{{count}} cards",
+    "viewModeLabel": "Note view mode",
+    "viewReading": "Reading",
+    "viewCanvas": "Canvas"
+  },
+  "canvas": {
+    "stageLabel": "2D knowledge canvas",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fitView": "Fit view",
+    "autoArrange": "Auto-arrange",
+    "saveLayout": "Save layout",
+    "saving": "Saving…",
+    "saved": "Layout saved",
+    "unsavedChanges": "Unsaved layout changes",
+    "saveError": "Could not save canvas layout.",
+    "viewOnly": "View only",
+    "viewOnlyHint": "Drag or pinch to navigate. Tap a card to inspect.",
+    "ownerHint": "Drag cards to arrange · drag background to pan · pinch or scroll to zoom",
+    "emptyTitle": "No cards in this note",
+    "emptyDesc": "Add knowledge cards to this note's outline to explore them on the canvas.",
+    "inspectCard": "Inspect card",
+    "cardDrawerTitle": "Card details",
+    "connectedCards": "Connected in this note",
+    "edgeDirectionFrom": "Prerequisite for",
+    "edgeDirectionTo": "Depends on",
+    "edgeTypes": {
+      "prerequisite": "Prerequisite",
+      "confusable_with": "Confusable",
+      "tests": "Tests",
+      "variant_of": "Variant"
+    },
+    "blocks": {
+      "markdown": "Notes",
+      "math": "Math",
+      "diagram": "Diagram",
+      "image_occlusion": "Occlusion",
+      "interactive_pins": "Pins"
+    }
   },
   "blocks": {
     "mathError": "Could not render formula",

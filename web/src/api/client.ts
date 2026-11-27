@@ -10,6 +10,7 @@ import type {
   CardScheduling,
   CreateSessionRequest,
   CreateSessionResponse,
+  Edge,
   ExamSet,
   ExportRequest,
   ExportResult,
@@ -30,6 +31,7 @@ import type {
   SessionState,
   SubmitAnswerResponse,
   TickOutcome,
+  UpdateNoteViewSettingsRequest,
   UpdateOperationRequest,
   ValidationErrorItem,
   ValidationReport,
@@ -259,6 +261,12 @@ export const api = {
   listNotes: (params?: { subject?: string; status?: string; limit?: number }) =>
     apiFetch<Note[]>(`/api/notes${buildQuery(params ?? {})}`),
   getNote: (id: string) => apiFetch<Note>(`/api/notes/${encodeURIComponent(id)}`),
+  listNoteEdges: (id: string) => apiFetch<Edge[]>(`/api/notes/${encodeURIComponent(id)}/edges`),
+  updateNoteViewSettings: (id: string, body: UpdateNoteViewSettingsRequest) =>
+    apiFetch<Note>(`/api/notes/${encodeURIComponent(id)}/view_settings`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 
   listKnowledgeCards: (params?: { subject?: string; status?: string; limit?: number }) =>
     apiFetch<KnowledgeCard[]>(`/api/knowledge_cards${buildQuery(params ?? {})}`),

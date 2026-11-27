@@ -2174,3 +2174,289 @@ async fn answer_rejects_invalid_error_tags() {
     .await;
     assert_eq!(attempts.as_array().expect("attempts").len(), 0);
 }
+
+const DEMO_NOTE_ID: &str = "01a21714-c98d-769f-be7a-f92b11e5cc60";
+const DEMO_CARD_PHASE_CHANGES: &str = "01a21714-c98d-716e-9b53-ead7c8ee810f";
+const DEMO_CARD_PHASE_PINS: &str = "01a21714-c98d-7b1d-92e4-b2d361f54d7f";
+const DEMO_CARD_CLAPEYRON: &str = "01a21714-c98d-7210-a469-b56decf9f22b";
+
+#[tokio::test]
+async fn note_view_settings_saves_canvas_preserves_other_keys_and_enforces_owner() {
+    let (app, state, _dir) = test_state(AuthMode::Invite).await;
+    let owner_cookie = setup_invite_owner(&app, &state).await;
+    let member_cookie = register_member(&app, &owner_cookie).await;
+
+    // Seed an unrelated view_settings key on the demo note so we can verify preservation.
+    let note_id: reinforce_core::NoteId = DEMO_NOTE_ID.parse().expect("note id");
+    state
+        .with_db(move |database| {
+            content_store::update_note_view_settings(
+                database.connection(),
+                &note_id,
+                &json!({ "reading": { "font_scale": 1.15 }, "custom_flag": true }),
+                Timestamp::now(),
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed other view_settings keys");
+
+    let payload = json!({
+        "canvas": {
+            "version": 1,
+            "nodes": [
+                { "card_id": DEMO_CARD_PHASE_CHANGES, "x": 120.5, "y": 40.0, "w": 320.0, "h": 200.0 },
+                { "card_id": DEMO_CARD_PHASE_PINS, "x": 520.0, "y": 90.25, "w": 340.0, "h": 210.0 }
+            ],
+            "viewport": { "x": -48.0, "y": 16.0, "zoom": 1.25 }
+        }
+    });
+
+    // Learner cannot update note view_settings (403).
+    let forbidden = json_call(
+        &app,
+        Method::PUT,
+        &format!("/api/notes/{DEMO_NOTE_ID}/view_settings"),
+        Some(payload.clone()),
+        Some(&member_cookie),
+    )
+    .await;
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    // Owner saves canvas layout (200).
+    let saved = expect_json(
+        json_call(
+            &app,
+            Method::PUT,
+            &format!("/api/notes/{DEMO_NOTE_ID}/view_settings"),
+            Some(payload.clone()),
+            Some(&owner_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(saved["view_settings"]["canvas"], payload["canvas"]);
+    assert_eq!(
+        saved["view_settings"]["reading"],
+        json!({ "font_scale": 1.15 })
+    );
+    assert_eq!(saved["view_settings"]["custom_flag"], json!(true));
+
+    // Reloading note via GET preserves exact saved coordinates and unrelated keys.
+    let reloaded = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/notes/{DEMO_NOTE_ID}"),
+            None,
+            Some(&member_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(reloaded["view_settings"]["canvas"], payload["canvas"]);
+    assert_eq!(
+        reloaded["view_settings"]["reading"],
+        json!({ "font_scale": 1.15 })
+    );
+    assert_eq!(reloaded["view_settings"]["custom_flag"], json!(true));
+}
+
+#[tokio::test]
+async fn note_view_settings_validates_outline_membership_numbers_zoom_and_size() {
+    let (app, _state, _dir) = test_state(AuthMode::Single).await;
+    let uri = format!("/api/notes/{DEMO_NOTE_ID}/view_settings");
+
+    // 1. card_id not in the note's outline (Clapeyron card exists in DB but is not in demo note outline).
+    let outside_outline = expect_json(
+        json_call(
+            &app,
+            Method::PUT,
+            &uri,
+            Some(json!({
+                "canvas": {
+                    "version": 1,
+                    "nodes": [
+                        { "card_id": DEMO_CARD_CLAPEYRON, "x": 0.0, "y": 0.0, "w": 320.0, "h": 200.0 }
+                    ],
+                    "viewport": { "x": 0.0, "y": 0.0, "zoom": 1.0 }
+                }
+            })),
+            None,
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    assert_eq!(
+        outside_outline["error"]["details"]["fields"][0]["field"],
+        "canvas.nodes[0].card_id"
+    );
+
+    // 2. Non-finite number in JSON (1e309 overflows f64 and raw NaN token).
+    for raw_body in [
+        format!(
+            r#"{{"canvas":{{"version":1,"nodes":[{{"card_id":"{DEMO_CARD_PHASE_CHANGES}","x":1e309,"y":0,"w":320,"h":200}}],"viewport":{{"x":0,"y":0,"zoom":1}}}}}}"#
+        ),
+        format!(
+            r#"{{"canvas":{{"version":1,"nodes":[{{"card_id":"{DEMO_CARD_PHASE_CHANGES}","x":NaN,"y":0,"w":320,"h":200}}],"viewport":{{"x":0,"y":0,"zoom":1}}}}}}"#
+        ),
+    ] {
+        let resp = call(
+            &app,
+            Method::PUT,
+            &uri,
+            Some("application/json"),
+            raw_body.into_bytes(),
+            None,
+        )
+        .await;
+        let body = expect_json(resp, StatusCode::BAD_REQUEST).await;
+        assert!(body["error"]["details"]["fields"].is_array());
+    }
+
+    // 3. Zoom out of bounds (< 0.1 or > 4.0).
+    for bad_zoom in [0.05, 0.0, -1.0, 4.01, 10.0] {
+        let resp = expect_json(
+            json_call(
+                &app,
+                Method::PUT,
+                &uri,
+                Some(json!({
+                    "canvas": {
+                        "version": 1,
+                        "nodes": [],
+                        "viewport": { "x": 0.0, "y": 0.0, "zoom": bad_zoom }
+                    }
+                })),
+                None,
+            )
+            .await,
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+        assert_eq!(
+            resp["error"]["details"]["fields"][0]["field"],
+            "canvas.viewport.zoom"
+        );
+    }
+
+    // 4. Too many nodes (> 2000).
+    let too_many_nodes: Vec<Value> = (0..2001)
+        .map(|i| {
+            json!({
+                "card_id": DEMO_CARD_PHASE_CHANGES,
+                "x": i as f64,
+                "y": 0.0,
+                "w": 320.0,
+                "h": 200.0
+            })
+        })
+        .collect();
+    let too_many_resp = expect_json(
+        json_call(
+            &app,
+            Method::PUT,
+            &uri,
+            Some(json!({
+                "canvas": {
+                    "version": 1,
+                    "nodes": too_many_nodes,
+                    "viewport": { "x": 0.0, "y": 0.0, "zoom": 1.0 }
+                }
+            })),
+            None,
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    assert_eq!(
+        too_many_resp["error"]["details"]["fields"][0]["field"],
+        "canvas.nodes"
+    );
+
+    // 5. Payload exceeding 256 KiB returns 400.
+    let huge_padding = " ".repeat(260 * 1024);
+    let oversized = format!(
+        r#"{{"canvas":{{"version":1,"nodes":[],"viewport":{{"x":0,"y":0,"zoom":1}}}}{huge_padding}}}"#
+    );
+    let oversized_resp = expect_json(
+        call(
+            &app,
+            Method::PUT,
+            &uri,
+            Some("application/json"),
+            oversized.into_bytes(),
+            None,
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    assert_eq!(
+        oversized_resp["error"]["details"]["fields"][0]["field"],
+        "view_settings"
+    );
+}
+
+#[tokio::test]
+async fn note_edges_returns_typed_edges_between_outline_cards_only() {
+    let (app, state, _dir) = test_state(AuthMode::Single).await;
+
+    // Initially, demo note outline has PHASE_CHANGES and PHASE_PINS; demo edge is CLAPEYRON -> PHASE_CHANGES,
+    // which should NOT appear because CLAPEYRON is outside this note's outline.
+    let initial = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/notes/{DEMO_NOTE_ID}/edges"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(initial.as_array().expect("edges array").len(), 0);
+
+    // Insert a prerequisite edge between the two cards inside the demo note outline.
+    let from_id: reinforce_core::KnowledgeCardId = DEMO_CARD_PHASE_CHANGES.parse().expect("from");
+    let to_id: reinforce_core::KnowledgeCardId = DEMO_CARD_PHASE_PINS.parse().expect("to");
+    let edge = reinforce_core::Edge {
+        id: reinforce_core::EdgeId::generate(),
+        edge_type: reinforce_core::primitives::EdgeType::Prerequisite,
+        from: reinforce_core::EdgeEndpoint::Card { id: from_id },
+        to: reinforce_core::EdgeEndpoint::Card { id: to_id },
+        created_at: Timestamp::now(),
+    };
+    let expected_id = edge.id.as_str();
+    state
+        .with_db(move |database| {
+            content_store::insert_edge(database.connection(), &edge)?;
+            Ok(())
+        })
+        .await
+        .expect("insert edge");
+
+    let edges = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/notes/{DEMO_NOTE_ID}/edges"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let list = edges.as_array().expect("edges array");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["id"], expected_id);
+    assert_eq!(list[0]["edge_type"], "prerequisite");
+    assert_eq!(list[0]["from"]["id"], DEMO_CARD_PHASE_CHANGES);
+    assert_eq!(list[0]["to"]["id"], DEMO_CARD_PHASE_PINS);
+}

@@ -6,6 +6,8 @@ import type {
   ExportRequest,
   GradedAnswer,
   GradingOutcome,
+  Note,
+  OutlineNode,
   Proposal,
   QuestionCard,
   QuizAnswer,
@@ -13,11 +15,13 @@ import type {
   SearchResult,
   SessionMode,
   SessionState,
+  UpdateNoteViewSettingsRequest,
   UpdateOperationRequest,
   ValidationErrorItem,
 } from '../types'
 import {
   MOCK_ANCHORS,
+  MOCK_EDGES,
   MOCK_EXAM_SETS,
   MOCK_GRAPH,
   MOCK_KNOWLEDGE_CARDS,
@@ -29,6 +33,18 @@ import {
 } from './data'
 
 const mockProposals: Proposal[] = MOCK_PROPOSALS.map((p) => structuredClone(p))
+const mockNotes: Note[] = MOCK_NOTES.map((n) => structuredClone(n))
+
+function collectMockOutlineCardIds(nodes: OutlineNode[]): Set<string> {
+  const ids = new Set<string>()
+  for (const node of nodes) {
+    if (node.type === 'card_ref') ids.add(node.card_id)
+    else {
+      for (const childId of collectMockOutlineCardIds(node.children)) ids.add(childId)
+    }
+  }
+  return ids
+}
 
 function validateMockProposal(proposal: Proposal): ValidationErrorItem[] {
   const errors: ValidationErrorItem[] = []
@@ -365,14 +381,87 @@ export async function handleMockRequest(
   // Notes
   if (pathname === '/api/notes') {
     const subject = url.searchParams.get('subject')
-    const items = subject ? MOCK_NOTES.filter((n) => n.subject === subject) : MOCK_NOTES
-    return { status: 200, body: items }
+    const items = subject ? mockNotes.filter((n) => n.subject === subject) : mockNotes
+    return { status: 200, body: items.map((n) => structuredClone(n)) }
+  }
+  const noteEdgesMatch = pathname.match(/^\/api\/notes\/([^/]+)\/edges$/)
+  if (noteEdgesMatch && method === 'GET') {
+    const found = mockNotes.find((n) => n.id === noteEdgesMatch[1])
+    if (!found) {
+      return { status: 404, body: { error: { code: 'not_found', message: 'note not found' } } }
+    }
+    const outlineIds = collectMockOutlineCardIds(found.outline)
+    const edges = MOCK_EDGES.filter(
+      (e) =>
+        e.from.kind === 'card' &&
+        e.to.kind === 'card' &&
+        outlineIds.has(e.from.id) &&
+        outlineIds.has(e.to.id),
+    )
+    return { status: 200, body: structuredClone(edges) }
+  }
+  const noteViewSettingsMatch = pathname.match(/^\/api\/notes\/([^/]+)\/view_settings$/)
+  if (noteViewSettingsMatch && method === 'PUT') {
+    const found = mockNotes.find((n) => n.id === noteViewSettingsMatch[1])
+    if (!found) {
+      return { status: 404, body: { error: { code: 'not_found', message: 'note not found' } } }
+    }
+    const rawBody = String(init?.body ?? '{}')
+    if (new TextEncoder().encode(rawBody).length > 256 * 1024) {
+      return {
+        status: 400,
+        body: {
+          error: {
+            code: 'invalid_request',
+            message: 'view_settings: payload exceeds 256 KiB',
+            details: { fields: [{ field: 'view_settings', message: 'payload exceeds 256 KiB' }] },
+          },
+        },
+      }
+    }
+    const parsed = JSON.parse(rawBody) as UpdateNoteViewSettingsRequest
+    const canvas = parsed.canvas
+    const outlineIds = collectMockOutlineCardIds(found.outline)
+    if (
+      !canvas ||
+      canvas.version !== 1 ||
+      !Number.isFinite(canvas.viewport.zoom) ||
+      canvas.viewport.zoom < 0.1 ||
+      canvas.viewport.zoom > 4 ||
+      canvas.nodes.length > 2000 ||
+      canvas.nodes.some(
+        (n) =>
+          !outlineIds.has(n.card_id) ||
+          !Number.isFinite(n.x) ||
+          !Number.isFinite(n.y) ||
+          !Number.isFinite(n.w) ||
+          !Number.isFinite(n.h) ||
+          n.w <= 0 ||
+          n.h <= 0,
+      )
+    ) {
+      return {
+        status: 400,
+        body: {
+          error: {
+            code: 'invalid_request',
+            message: 'canvas: invalid canvas view settings',
+          },
+        },
+      }
+    }
+    found.view_settings = {
+      ...found.view_settings,
+      canvas: structuredClone(canvas),
+    }
+    found.updated_at = new Date().toISOString()
+    return { status: 200, body: structuredClone(found) }
   }
   const noteMatch = pathname.match(/^\/api\/notes\/([^/]+)$/)
   if (noteMatch) {
-    const found = MOCK_NOTES.find((n) => n.id === noteMatch[1])
+    const found = mockNotes.find((n) => n.id === noteMatch[1])
     return found
-      ? { status: 200, body: found }
+      ? { status: 200, body: structuredClone(found) }
       : { status: 404, body: { error: { code: 'not_found', message: 'note not found' } } }
   }
 

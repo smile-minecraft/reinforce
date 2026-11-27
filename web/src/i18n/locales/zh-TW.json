@@ -78,7 +78,45 @@
     "noRelatedNodes": "尚未建立關聯知識卡或題目。",
     "missingCard": "無法載入被引用的知識卡。",
     "subjectCount": "{{count}} 筆",
-    "cardCount": "{{count}} 張卡"
+    "cardCount": "{{count}} 張卡",
+    "viewModeLabel": "筆記檢視模式",
+    "viewReading": "閱讀模式",
+    "viewCanvas": "畫布視圖"
+  },
+  "canvas": {
+    "stageLabel": "2D 知識畫布",
+    "zoomIn": "放大",
+    "zoomOut": "縮小",
+    "fitView": "置中全覽",
+    "autoArrange": "自動排版",
+    "saveLayout": "儲存版面",
+    "saving": "儲存中…",
+    "saved": "已儲存版面",
+    "unsavedChanges": "版面尚未儲存",
+    "saveError": "無法儲存畫布版面。",
+    "viewOnly": "僅供檢視",
+    "viewOnlyHint": "拖曳或雙指縮放瀏覽畫布，點擊卡片展開內容。",
+    "ownerHint": "拖曳卡片調整位置 · 拖曳空白處平移 · 雙指或滾輪縮放",
+    "emptyTitle": "此筆記尚未引用知識卡",
+    "emptyDesc": "將知識卡加入這份筆記的大綱後，即可在畫布上瀏覽卡片與關聯。",
+    "inspectCard": "展開卡片",
+    "cardDrawerTitle": "知識卡內容",
+    "connectedCards": "本筆記內的關聯卡片",
+    "edgeDirectionFrom": "為此卡先備概念",
+    "edgeDirectionTo": "先備概念",
+    "edgeTypes": {
+      "prerequisite": "先備概念",
+      "confusable_with": "易混淆",
+      "tests": "測驗關聯",
+      "variant_of": "變體"
+    },
+    "blocks": {
+      "markdown": "文字筆記",
+      "math": "數學公式",
+      "diagram": "圖表",
+      "image_occlusion": "圖片遮罩",
+      "interactive_pins": "互動圖釘"
+    }
   },
   "blocks": {
     "mathError": "無法渲染數學公式",

@@ -869,3 +869,154 @@ pub fn update_proposal_payload(
     )?;
     Ok(())
 }
+
+/// Updates only `view_settings_json` and `updated_at` for an existing note.
+/// Returns `Ok(true)` when a note row was updated.
+pub fn update_note_view_settings(
+    connection: &Connection,
+    id: &NoteId,
+    view_settings: &serde_json::Value,
+    updated_at: Timestamp,
+) -> Result<bool> {
+    let changed = connection.execute(
+        "UPDATE notes SET view_settings_json = ?2, updated_at = ?3 WHERE id = ?1",
+        params![id, to_json(view_settings)?, updated_at],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Lists all typed edges connecting two knowledge cards within `card_ids`.
+pub fn list_edges_between_cards(
+    connection: &Connection,
+    card_ids: &[KnowledgeCardId],
+) -> Result<Vec<Edge>> {
+    let mut unique: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for id in card_ids {
+        let value = id.as_str();
+        if seen.insert(value.clone()) {
+            unique.push(value);
+        }
+    }
+    if unique.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = unique.iter().map(|_| "(?)").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "WITH wanted(id) AS (VALUES {placeholders})
+         SELECT id, edge_type, from_kind, from_id, from_option_key,
+                to_kind, to_id, to_option_key, created_at
+         FROM edges
+         WHERE from_kind = 'card'
+           AND to_kind = 'card'
+           AND from_id IN (SELECT id FROM wanted)
+           AND to_id IN (SELECT id FROM wanted)
+         ORDER BY edge_type, from_id, to_id, id"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(unique.iter()), |row| {
+        let from_kind: EndpointKind = row.get(2)?;
+        let to_kind: EndpointKind = row.get(5)?;
+        Ok(Edge {
+            id: row.get(0)?,
+            edge_type: row.get(1)?,
+            from: EdgeEndpoint::from_db_parts(
+                from_kind,
+                &row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?.as_deref(),
+            )?,
+            to: EdgeEndpoint::from_db_parts(
+                to_kind,
+                &row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?.as_deref(),
+            )?,
+            created_at: row.get(8)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+        .map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::OutlineNode;
+    use crate::db::Database;
+    use crate::primitives::EdgeType;
+    use serde_json::json;
+
+    #[test]
+    fn update_note_view_settings_persists_json_and_list_edges_between_cards_filters() {
+        let database = Database::open_in_memory().unwrap();
+        let conn = database.connection();
+        let now = Timestamp::now();
+
+        let card_a = KnowledgeCardId::generate();
+        let card_b = KnowledgeCardId::generate();
+        let card_c = KnowledgeCardId::generate();
+
+        let note = Note {
+            id: NoteId::generate(),
+            subject: "physics".to_owned(),
+            title: "Canvas test".to_owned(),
+            outline: vec![OutlineNode::Section {
+                heading: "Intro".to_owned(),
+                intro_markdown: None,
+                children: vec![
+                    OutlineNode::CardRef {
+                        card_id: card_a.clone(),
+                    },
+                    OutlineNode::CardRef {
+                        card_id: card_b.clone(),
+                    },
+                ],
+            }],
+            view_settings: json!({ "reading": { "compact": true } }),
+            status: CardStatus::Published,
+            created_at: now,
+            updated_at: now,
+        };
+        insert_note(conn, &note).unwrap();
+
+        let updated_settings = json!({
+            "reading": { "compact": true },
+            "canvas": {
+                "version": 1,
+                "nodes": [{ "card_id": card_a, "x": 10.0, "y": 20.0, "w": 320.0, "h": 200.0 }],
+                "viewport": { "x": 0.0, "y": 0.0, "zoom": 1.0 }
+            }
+        });
+        assert!(update_note_view_settings(conn, &note.id, &updated_settings, now).unwrap());
+        assert!(
+            !update_note_view_settings(conn, &NoteId::generate(), &updated_settings, now).unwrap()
+        );
+
+        let reloaded = get_note(conn, &note.id).unwrap().unwrap();
+        assert_eq!(reloaded.view_settings, updated_settings);
+        assert_eq!(
+            reloaded.outline_card_ids(),
+            vec![card_a.clone(), card_b.clone()]
+        );
+
+        let edge_ab = Edge {
+            id: EdgeId::generate(),
+            edge_type: EdgeType::Prerequisite,
+            from: EdgeEndpoint::Card { id: card_a.clone() },
+            to: EdgeEndpoint::Card { id: card_b.clone() },
+            created_at: now,
+        };
+        let edge_ac = Edge {
+            id: EdgeId::generate(),
+            edge_type: EdgeType::ConfusableWith,
+            from: EdgeEndpoint::Card { id: card_a.clone() },
+            to: EdgeEndpoint::Card { id: card_c },
+            created_at: now,
+        };
+        insert_edge(conn, &edge_ab).unwrap();
+        insert_edge(conn, &edge_ac).unwrap();
+
+        let edges = list_edges_between_cards(conn, &[card_a, card_b]).unwrap();
+        assert_eq!(edges, vec![edge_ab]);
+    }
+}
