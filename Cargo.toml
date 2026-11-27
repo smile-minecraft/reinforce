@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "plugins/reinforce-plugin-mineru", "plugins/reinforce-plugin-tikz"]
+members = [
+    "crates/*",
+    "plugins/reinforce-plugin-acp",
+    "plugins/reinforce-plugin-mineru",
+    "plugins/reinforce-plugin-tikz",
+]
 
 [workspace.package]
 version = "0.1.0"
