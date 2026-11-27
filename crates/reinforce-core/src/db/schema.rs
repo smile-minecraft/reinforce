@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 pub const SCHEMA: &str = r#"
 -- Content Store: shared, source-grounded entities.
@@ -211,6 +211,8 @@ CREATE TABLE IF NOT EXISTS attempt_logs (
 
 CREATE INDEX IF NOT EXISTS attempt_logs_replay ON attempt_logs (user_id, card_id, direction, created_at);
 
+CREATE INDEX IF NOT EXISTS attempt_logs_sync ON attempt_logs (user_id, sync_cursor, id);
+
 CREATE TRIGGER IF NOT EXISTS attempt_logs_no_update
 BEFORE UPDATE ON attempt_logs
 BEGIN
@@ -245,6 +247,28 @@ CREATE TABLE IF NOT EXISTS user_card_meta (
     starred INTEGER NOT NULL CHECK (starred IN (0,1)),
     personal_tags_json TEXT NOT NULL DEFAULT '[]',
     personal_note TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, card_id)
+);
+
+-- Device sync bookkeeping. These tables never touch the append-only attempt
+-- log or the mutable personal rows: a failed request only leaves the work
+-- marked as pending, so retrying a batch is always safe.
+CREATE TABLE IF NOT EXISTS sync_state (
+    user_id TEXT PRIMARY KEY REFERENCES users(id),
+    remote_user_id TEXT NOT NULL,
+    pull_cursor INTEGER NOT NULL DEFAULT 0 CHECK (pull_cursor >= 0),
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_attempt_uploads (
+    attempt_id TEXT PRIMARY KEY REFERENCES attempt_logs(id),
+    uploaded_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_meta_uploads (
+    user_id TEXT NOT NULL REFERENCES users(id),
+    card_id TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, card_id)
 );

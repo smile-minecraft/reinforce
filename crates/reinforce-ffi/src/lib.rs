@@ -12,6 +12,7 @@ pub mod database;
 pub mod error;
 pub mod resources;
 pub mod session;
+pub mod sync;
 pub mod types;
 
 pub use database::{LocalDatabase, new_attempt_id};

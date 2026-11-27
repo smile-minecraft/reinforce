@@ -3112,6 +3112,7 @@ dependencies = [
  "rand 0.10.4",
  "reinforce-core",
  "reinforce-export",
+ "reinforce-ffi",
  "rmcp",
  "rusqlite",
  "rust-embed",

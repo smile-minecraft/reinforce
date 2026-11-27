@@ -11,6 +11,7 @@ pub mod guard;
 pub mod mcp;
 pub mod routes;
 pub mod state;
+pub mod sync_content;
 
 use axum::Router;
 use clap::Parser;

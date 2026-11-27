@@ -480,7 +480,7 @@ async fn finish_session(
     let written = state
         .with_db(move |database| {
             let transaction = database.transaction()?;
-            let cursor = study_store::next_attempt_cursor(&transaction)?;
+            let cursor = study_store::next_user_attempt_cursor(&transaction, &user_id)?;
             let attempts = session.attempts(&user_id, cursor);
             for attempt in &attempts {
                 study_store::append_attempt(&transaction, attempt)?;
