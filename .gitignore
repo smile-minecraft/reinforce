@@ -16,6 +16,12 @@ node_modules/
 # Generated language bindings
 /bindings/
 
+# iOS generated artifacts (XcodeGen project, XCFramework, build outputs)
+/apps/ios/*.xcodeproj/
+/apps/ios/Generated/
+/apps/ios/DerivedData/
+*.xcresult
+
 # Internal development docs (specs, plans, agent instructions) stay local
 /docs/
 AGENTS.md

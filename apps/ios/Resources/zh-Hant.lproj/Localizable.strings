@@ -1,0 +1,208 @@
+/* App */
+"app.name" = "Reinforce";
+"app.tagline" = "離線筆記閱讀、主動回想刷題與倒數實務考。";
+"app.language" = "語言";
+"app.language.system" = "跟隨系統";
+"app.language.en" = "English";
+"app.language.zhTW" = "繁體中文";
+"app.offlineBadge" = "完全離線";
+
+/* Navigation */
+"nav.reading" = "閱讀室";
+"nav.study" = "刷題室";
+"nav.practical" = "實務跑考";
+"nav.subjects" = "科目";
+"nav.library" = "題庫與筆記";
+
+/* Common */
+"common.loading" = "載入中…";
+"common.retry" = "重試";
+"common.back" = "返回";
+"common.close" = "關閉";
+"common.cancel" = "取消";
+"common.confirm" = "確認";
+"common.done" = "完成";
+"common.reset" = "重設";
+"common.save" = "儲存";
+"common.search" = "搜尋筆記、知識卡、題目…";
+"common.allSubjects" = "全部科目";
+"common.empty" = "目前還沒有內容。";
+"common.verified" = "已核對";
+"common.unchecked" = "待核對";
+"common.errorGeneric" = "發生錯誤，請稍後再試。";
+
+/* Import */
+"import.button" = "匯入題庫";
+"import.fromFiles" = "從「檔案」匯入…";
+"import.emptyTitle" = "尚未匯入任何離線題庫";
+"import.emptySubtitle" = "從「檔案」App 匯入 Reinforce 題庫包（.jsonl 檔案或含 assets/ 的資料夾），即可完全離線閱讀筆記與刷題。";
+"import.successTitle" = "題庫匯入完成";
+"import.successSummary" = "已套用 %1$d 筆資料與 %2$d 個媒體檔案。";
+"import.failedTitle" = "匯入失敗";
+"import.hintFolder" = "提示：若題庫包含圖片或 SVG，請選取整個題庫資料夾以一併匯入 assets/。";
+
+/* Reading Room */
+"reading.title" = "閱讀室";
+"reading.dailyDueBannerTitle" = "今日到期複習";
+"reading.dailyDueBannerDesc" = "依 FSRS 排程優先複習到期題目，再補足新卡配額。";
+"reading.dueCount" = "%d 題到期";
+"reading.reviewedCount" = "%d 題已複習";
+"reading.startDailyDue" = "開始今日到期";
+"reading.startWeakness" = "弱點強化";
+"reading.notesHeading" = "筆記列表";
+"reading.cardsHeading" = "知識卡索引";
+"reading.searchResultsHeading" = "搜尋結果";
+"reading.noNotes" = "目前篩選條件下沒有筆記。";
+"reading.noCards" = "找不到符合條件的知識卡。";
+"reading.noSearchResults" = "找不到符合的筆記、知識卡或題目。";
+"reading.outline" = "大綱目錄";
+"reading.sources" = "出處來源";
+"reading.openSource" = "檢視原檔";
+"reading.sourceAnchor" = "原檔出處";
+"reading.openCard" = "開啟知識卡";
+"reading.drillThisCard" = "針對此卡刷題";
+"reading.relatedNodes" = "關聯知識節點";
+"reading.noRelatedNodes" = "尚未建立關聯知識卡或題目。";
+"reading.missingCard" = "無法載入被引用的知識卡。";
+"reading.subjectCount" = "%d 筆";
+"reading.cardCount" = "%d 張卡";
+"reading.selectNotePrompt" = "請從左側選擇筆記或知識卡開始閱讀。";
+"reading.personalNote" = "個人筆記";
+"reading.personalNotePlaceholder" = "記下自己的記憶口訣或重點…";
+"reading.starCard" = "收藏卡片";
+"reading.unstarCard" = "取消收藏";
+
+/* Blocks */
+"blocks.mathError" = "無法渲染數學公式";
+"blocks.diagramError" = "無法渲染圖表";
+"blocks.diagramSource" = "圖表原始碼";
+"blocks.occlusionHint" = "點擊遮罩以顯示或隱藏";
+"blocks.revealAll" = "全部顯示";
+"blocks.hideAll" = "全部遮蓋";
+"blocks.maskGroup" = "分組 %@";
+"blocks.pinsOverlayOn" = "構造遮罩：開";
+"blocks.pinsOverlayOff" = "構造遮罩：關";
+"blocks.pinsLabelsOn" = "標籤：開";
+"blocks.pinsLabelsOff" = "標籤：關";
+"blocks.pinSelected" = "圖釘 #%d";
+"blocks.pinHint" = "記憶提示";
+"blocks.pinDetail" = "詳細說明";
+"blocks.pinLinkedCard" = "關聯知識卡";
+"blocks.pinTapPrompt" = "點擊任一編號圖釘查看名詞與說明。";
+
+/* Anchor Viewer */
+"anchor.title" = "原檔檢視";
+"anchor.pdfPage" = "PDF 第 %d 頁";
+"anchor.printedPage" = "書頁 p. %d";
+"anchor.legendPage" = "圖例第 %d 頁";
+"anchor.regionHighlight" = "標註區域";
+"anchor.restrictedNotice" = "受限素材（%@）";
+"anchor.attribution" = "來源出處";
+"anchor.license" = "授權";
+"anchor.blobUnavailable" = "本機尚未找到對應媒體檔案。";
+
+/* Study Hub */
+"study.title" = "刷題與實務考";
+"study.subtitle" = "選擇模式，立即在本機離線作答。";
+"study.stats.due" = "目前到期";
+"study.stats.reviewed" = "已排程卡片";
+"study.stats.attempts" = "累計作答紀錄";
+"study.modes.daily_due.name" = "今日到期（FSRS）";
+"study.modes.daily_due.desc" = "依到期時間優先複習逾期卡片，並補上每日新卡上限。";
+"study.modes.full_exam.name" = "整卷模擬考";
+"study.modes.full_exam.desc" = "依題號順序作答，可設總計時，交卷前延後判分。";
+"study.modes.topic_drill.name" = "主題／知識卡練習";
+"study.modes.topic_drill.desc" = "透過 tests 關聯邊抽出指定知識卡對應的考題。";
+"study.modes.practical_exam.name" = "實務跑考";
+"study.modes.practical_exam.desc" = "單題 1–300 秒倒數（預設 30 秒），支援雙指縮放、圖釘辨識與定位。";
+"study.modes.weakness_drill.name" = "弱點練習";
+"study.modes.weakness_drill.desc" = "鎖定高錯題率、猶豫猜題與作答偏慢的題目集中複習。";
+
+/* Study Options */
+"study.options.questionLimit" = "題數上限";
+"study.options.newCardLimit" = "新卡上限";
+"study.options.selectExamSet" = "選擇試卷";
+"study.options.noExamSets" = "目前沒有可用試卷。";
+"study.options.totalTimeMins" = "總作答時間（分鐘，選填）";
+"study.options.noTimeLimit" = "不限時";
+"study.options.selectCards" = "選擇要練習的知識卡";
+"study.options.selectedCardsCount" = "已選 %d 張";
+"study.options.secondsPerQuestion" = "每題倒數秒數（1–300）";
+"study.options.pinRadius" = "圖釘命中半徑";
+"study.options.affectsScheduling" = "計入 FSRS 複習排程";
+"study.options.startSession" = "開始作答";
+"study.options.emptySessionError" = "此模式下目前沒有符合條件的題目。";
+"study.options.selectAtLeastOneCard" = "請至少選擇一張知識卡。";
+
+/* Weakness Preview */
+"study.weaknessPreview.heading" = "目前弱點熱區";
+"study.weaknessPreview.empty" = "尚無作答紀錄。完成一次刷題後就會自動分析弱點。";
+"study.weaknessPreview.errorRate" = "錯題率 %d%%";
+"study.weaknessPreview.hesitantRate" = "猶豫率 %d%%";
+"study.weaknessPreview.avgDuration" = "均時 %.1fs";
+"study.weaknessPreview.attempts" = "%d 次作答";
+
+/* Study Runner */
+"study.runner.progress" = "第 %1$d / %2$d 題";
+"study.runner.pause" = "暫停";
+"study.runner.resume" = "繼續";
+"study.runner.finish" = "交卷計分";
+"study.runner.exit" = "離開";
+"study.runner.pausedTitle" = "計時已暫停";
+"study.runner.pausedBackground" = "偵測到 App 切換至背景，已自動暫停倒數保護作答時間。";
+"study.runner.pausedManual" = "目前已暫停計時，準備好後點選繼續。";
+"study.runner.expiredTitle" = "時間已到";
+"study.runner.expiredDesc" = "本場倒數計時已結束，請點選交卷結算成績。";
+"study.runner.deferredBanner" = "整卷模擬模式：延後判分，交卷後統一揭曉對錯與詳解。";
+"study.runner.recorded" = "已記錄作答";
+"study.runner.submitAnswer" = "送出答案";
+"study.runner.nextQuestion" = "下一題";
+"study.runner.viewSummary" = "查看總結";
+"study.runner.typeAnswer" = "請輸入答案…";
+"study.runner.pinIdentifyPrompt" = "請辨識標記的圖釘構造名稱";
+"study.runner.pinLocatePrompt" = "請在圖上點擊標記圖釘 #%d 的位置";
+"study.runner.pinLocateAllPlaced" = "已完成所有圖釘標記，可重新點擊微調或送出。";
+"study.runner.pinLocateTarget" = "目標圖釘 #%d";
+"study.runner.pinClear" = "清除標記";
+"study.runner.zoomIn" = "放大";
+"study.runner.zoomOut" = "縮小";
+"study.runner.zoomReset" = "一鍵復原";
+"study.runner.zoomHint" = "雙指縮放 · 放大後單指拖曳";
+"study.runner.sharedStem" = "共用題幹";
+"study.runner.confidence" = "作答信心";
+"study.runner.confidence.certain" = "確定";
+"study.runner.confidence.split" = "二選一猶豫";
+"study.runner.confidence.guessed" = "純猜";
+"study.runner.errorTags" = "錯因標記（選填）";
+"study.runner.errorTag.concept_gap" = "觀念缺口";
+"study.runner.errorTag.misread" = "看錯題幹";
+"study.runner.errorTag.confused_term" = "名詞混淆";
+"study.runner.errorTag.careless" = "粗心失誤";
+"study.runner.errorTag.time_pressure" = "時間不足";
+"study.runner.questionType.single_choice" = "單選題";
+"study.runner.questionType.multiple_choice" = "複選題";
+"study.runner.questionType.short_answer" = "簡答題";
+"study.runner.questionType.vocab" = "詞彙題";
+"study.runner.questionType.image_qa" = "圖像問答";
+"study.runner.questionType.image_occlusion" = "圖片遮罩";
+"study.runner.questionType.pin_identify" = "圖釘辨識";
+"study.runner.questionType.pin_locate" = "圖釘定位";
+
+/* Grading & Summary */
+"study.runner.grading.correct" = "答對";
+"study.runner.grading.incorrect" = "答錯";
+"study.runner.grading.anyAccepted" = "申覆多解（任一可接受解）";
+"study.runner.grading.voided" = "本題送分（不計入分母與 FSRS）";
+"study.runner.grading.timedOut" = "逾時未作答";
+"study.runner.grading.answerBasis" = "答案依據";
+"study.runner.grading.explanation" = "解析";
+"study.runner.grading.linkedCards" = "關聯知識卡（%d）";
+"study.runner.grading.officialAnswer" = "參考答案";
+"study.runner.summary.title" = "作答完成";
+"study.runner.summary.score" = "成績";
+"study.runner.summary.correctOf" = "答對 %1$d / 有效題數 %2$d";
+"study.runner.summary.voidedCount" = "含 %d 題送分（已自有效分母扣除）";
+"study.runner.summary.attemptsSaved" = "已在本機寫入 %d 筆學習紀錄";
+"study.runner.summary.reviewHeading" = "逐題檢討";
+"study.runner.summary.backToStudy" = "返回刷題室";
+"study.runner.summary.yourAnswer" = "你的作答";
