@@ -73,9 +73,8 @@ where
             raw.clear();
             match read_bounded_line(&mut reader, &mut raw, MAX_HOST_LINE_BYTES).await {
                 Ok(0) => {
-                    // Host closed stdin: treat as cancellation so a detached
-                    // worker never lingers behind a dead host.
-                    let _ = tx.send(true);
+                    // Host closed stdin (for example when piped from a CLI test);
+                    // stop listening for cancel messages and let the job finish.
                     break;
                 }
                 Ok(_) => {

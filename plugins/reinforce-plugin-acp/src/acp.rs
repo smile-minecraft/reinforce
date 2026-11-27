@@ -254,6 +254,7 @@ impl AgentTransport {
     ) -> Result<LineRead, AcpError> {
         let mut buf = Vec::new();
         let mut total = 0usize;
+        let mut cancel_channel_open = true;
         loop {
             if *cancel_rx.borrow() {
                 return Ok(LineRead::Cancelled);
@@ -262,11 +263,15 @@ impl AgentTransport {
             let mut limited = (&mut self.stdout).take(remaining as u64);
             let read = tokio::select! {
                 biased;
-                changed = cancel_rx.changed() => {
-                    if changed.is_err() || *cancel_rx.borrow() {
-                        return Ok(LineRead::Cancelled);
+                changed = wait_cancel(cancel_rx, cancel_channel_open) => {
+                    match changed {
+                        Ok(()) if *cancel_rx.borrow() => return Ok(LineRead::Cancelled),
+                        Ok(()) => continue,
+                        Err(_) => {
+                            cancel_channel_open = false;
+                            continue;
+                        }
                     }
-                    continue;
                 }
                 () = tokio::time::sleep_until(deadline) => {
                     return Err(AcpError::new(
@@ -299,6 +304,17 @@ impl AgentTransport {
                 return Ok(LineRead::Line(trim_line(&buf)));
             }
         }
+    }
+}
+
+async fn wait_cancel(
+    cancel_rx: &mut watch::Receiver<bool>,
+    channel_open: bool,
+) -> Result<(), watch::error::RecvError> {
+    if channel_open {
+        cancel_rx.changed().await
+    } else {
+        std::future::pending().await
     }
 }
 
