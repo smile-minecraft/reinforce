@@ -6,7 +6,7 @@ use crate::content::{EdgeEndpoint, GraphNode};
 use crate::primitives::{EndpointKind, Error, Result};
 use crate::{KnowledgeCardId, QuestionCardId};
 
-const MAX_GRAPH_DEPTH: u32 = 16;
+pub const MAX_GRAPH_DEPTH: u32 = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchHit {

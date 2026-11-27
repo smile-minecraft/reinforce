@@ -1,11 +1,11 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use reinforce_core::db::{auth, study as study_store};
 use reinforce_core::db::{content as content_store, quiz as quiz_store, search as search_store};
 use reinforce_core::primitives::AttemptDirection;
 use reinforce_core::proposal::{
-    ApprovalOptions, ApprovalOutcome, BatchOperation, SubmitOutcome, approve_batch, submit_batch,
+    ApprovalOptions, ApprovalOutcome, SubmitOutcome, approve_batch, submit_batch,
 };
 use reinforce_core::quiz::build::{
     build_daily_due, build_full_exam, build_practical_exam, build_topic_drill, build_weakness_drill,
@@ -24,22 +24,62 @@ use crate::types::{
 
 #[derive(uniffi::Object)]
 pub struct LocalDatabase {
-    inner: Mutex<CoreDatabase>,
+    pub(crate) inner: Mutex<CoreDatabase>,
+    /// Content-addressed directory holding imported `assets/` blobs.
+    pub(crate) blobs_dir: PathBuf,
+}
+
+impl LocalDatabase {
+    fn open_at(path: &Path, blobs_dir: PathBuf) -> Result<Arc<Self>, FfiError> {
+        let database = CoreDatabase::open(path)?;
+        Ok(Arc::new(Self {
+            inner: Mutex::new(database),
+            blobs_dir,
+        }))
+    }
+
+    fn default_blobs_dir(database_path: &Path) -> PathBuf {
+        database_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .join("blobs")
+    }
 }
 
 #[allow(unsafe_code)]
 #[uniffi::export]
 impl LocalDatabase {
+    /// Opens a database whose blobs live in a `blobs` directory beside it.
     #[uniffi::constructor]
     pub fn open(path: String) -> Result<Arc<Self>, FfiError> {
         guard("open database", || {
             if path.trim().is_empty() {
                 return Err(FfiError::invalid("database path", "path must not be empty"));
             }
-            let database = CoreDatabase::open(Path::new(&path))?;
-            Ok(Arc::new(Self {
-                inner: Mutex::new(database),
-            }))
+            let database_path = Path::new(&path);
+            Self::open_at(database_path, Self::default_blobs_dir(database_path))
+        })
+    }
+
+    /// Opens a database with an explicit blob directory, for app groups and
+    /// sandboxes that keep media outside the database folder.
+    #[uniffi::constructor]
+    pub fn open_with_blobs(
+        database_path: String,
+        blobs_dir: String,
+    ) -> Result<Arc<Self>, FfiError> {
+        guard("open database with blobs", || {
+            if database_path.trim().is_empty() {
+                return Err(FfiError::invalid("database path", "path must not be empty"));
+            }
+            if blobs_dir.trim().is_empty() {
+                return Err(FfiError::invalid(
+                    "blobs directory",
+                    "path must not be empty",
+                ));
+            }
+            Self::open_at(Path::new(&database_path), PathBuf::from(&blobs_dir))
         })
     }
 
@@ -50,27 +90,27 @@ impl LocalDatabase {
         })
     }
 
-    /// Reads a newline-delimited standard bundle and publishes it locally.
+    /// Reads a standard bundle (a `bundle.jsonl` file or a directory holding
+    /// it) and publishes it locally.
+    ///
+    /// Referenced files under `assets/` are copied into the blob directory
+    /// before the proposal is submitted, so a published resource always has its
+    /// bytes. Blobs are content-addressed: re-importing the same bundle rewrites
+    /// nothing and reports `blobs_written == 0`. A bundle that fails validation
+    /// may still leave newly copied blobs behind; they are unreferenced and
+    /// harmless.
     pub fn import_bundle(&self, bundle_path: String) -> Result<ImportSummary, FfiError> {
         guard("import bundle", || {
             if bundle_path.trim().is_empty() {
                 return Err(FfiError::invalid("bundle path", "path must not be empty"));
             }
-            let content = std::fs::read_to_string(&bundle_path)?;
-            let mut operations = Vec::new();
-            for (index, line) in content.lines().enumerate() {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let operation =
-                    serde_json::from_str::<BatchOperation>(line.trim()).map_err(|error| {
-                        FfiError::invalid(format!("bundle line {}", index + 1), error.to_string())
-                    })?;
-                operations.push(operation);
-            }
+            let path = Path::new(&bundle_path);
+            let operations = crate::bundle::read_operations(path)?;
             if operations.is_empty() {
                 return Err(FfiError::invalid("bundle", "no operations found"));
             }
+            let blobs_written =
+                crate::bundle::copy_referenced_assets(&self.blobs_dir, path, &operations)?;
 
             let mut database = locked("database", &self.inner)?;
             let proposal = match submit_batch(database.connection_mut(), Actor::Owner, operations)?
@@ -91,6 +131,7 @@ impl LocalDatabase {
                 ApprovalOutcome::Applied { applied, .. } => Ok(ImportSummary {
                     proposal_id: proposal.id.as_str(),
                     applied: u32::try_from(applied).unwrap_or(u32::MAX),
+                    blobs_written,
                 }),
                 ApprovalOutcome::Rejected { errors, .. } => {
                     Err(FfiError::invalid("bundle", serde_json::to_string(&errors)?))
