@@ -101,10 +101,18 @@ where
 }
 
 /// Synchronized writer for outbound [`WorkerMessage`] frames on stdout.
-#[derive(Clone)]
 pub struct HostWriter<W> {
     writer: Arc<Mutex<W>>,
     job_id: String,
+}
+
+impl<W> Clone for HostWriter<W> {
+    fn clone(&self) -> Self {
+        Self {
+            writer: Arc::clone(&self.writer),
+            job_id: self.job_id.clone(),
+        }
+    }
 }
 
 impl<W: AsyncWrite + Unpin> HostWriter<W> {
