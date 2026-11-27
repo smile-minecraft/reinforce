@@ -363,7 +363,7 @@ export async function handleMockRequest(
   const pathname = url.pathname
 
   if (pathname === '/api/meta') {
-    return { status: 200, body: { version: '0.1.0', auth_mode: 'single' } }
+    return { status: 200, body: { version: '0.2.0', auth_mode: 'single' } }
   }
   if (pathname === '/api/auth/status') {
     return {
