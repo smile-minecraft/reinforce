@@ -1,8 +1,8 @@
 //! Host-side `reinforce_plugin` protocol v1 stdio NDJSON transport.
 //!
 //! Reads the initial [`Hello`] line and then watches stdin in the background for
-//! [`Cancel`] (or unexpected EOF) while writing [`Ready`], [`Progress`], and a
-//! single terminal [`ResultMessage`] or [`ErrorMessage`] to stdout.
+//! [`Cancel`] while writing [`Ready`], [`Progress`], and a single terminal
+//! [`ResultMessage`] or [`ErrorMessage`] to stdout.
 
 use std::sync::Arc;
 
@@ -58,7 +58,8 @@ pub async fn read_hello<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Hello
 }
 
 /// Watches the remaining host stdin stream and triggers `cancel_tx` when a
-/// matching [`HostMessage::Cancel`] arrives or when stdin reaches EOF.
+/// matching [`HostMessage::Cancel`] arrives (or on a host stdin read error).
+/// Clean stdin EOF stops the listener without cancelling the job.
 pub fn spawn_cancel_listener<R>(
     mut reader: R,
     job_id: String,

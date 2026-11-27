@@ -133,13 +133,18 @@ line-delimited JSON-RPC 2.0 on stdio:
 3. `session/prompt` (collects `session/update` `agent_message_chunk` text updates and emits throttled `progress` frames to Reinforce)
 4. `session/cancel` when Reinforce sends `{"type":"cancel"}`, followed by a short grace wait and forced termination of the agent subprocess so cancellation never hangs.
 
-Security and validation guarantees:
+Security boundaries and validation guarantees:
 
-- **No file I/O, terminal, or permission grants to the agent**: if an agent
-  sends `session/request_permission`, the plugin always rejects (selecting a
-  `reject_always`/`reject_once` option when offered, or `outcome: "cancelled"`).
-  Any `fs/*`, `terminal/*`, or other client-side method request from the agent
-  is answered with JSON-RPC error `-32601`.
+- **Protocol-level capability denial only (no OS sandbox)**: disabling ACP `fs`
+  and `terminal` client capabilities, answering any `fs/*`, `terminal/*`, or
+  other client-side method request from the agent with JSON-RPC error `-32601`,
+  and rejecting `session/request_permission` (selecting `reject_always` /
+  `reject_once` when offered, or `outcome: "cancelled"`) only restrict what the
+  agent can request over the ACP protocol. This plugin does **not** place the
+  agent in an operating-system sandbox: the `--agent` subprocess runs with the
+  same OS permissions as the Reinforce server process and can still read or
+  write files or execute commands directly using its own built-in tools. Only
+  point `--agent` at a program you trust.
 - **Strict proposal validation**: the agent's JSON output is bounded in size
   (512 KiB), parsed with `deny_unknown_fields`, checked for required fields,
   types, length limits, and choice/answer consistency (`knowledge_card` and

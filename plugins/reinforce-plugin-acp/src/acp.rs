@@ -15,7 +15,9 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{
+    AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter,
+};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -166,6 +168,7 @@ where
         stdout: BufReader::new(stdout),
         next_id: 1,
         session_id: None,
+        stdin_interrupted: false,
     };
 
     let result = drive_session(
@@ -182,23 +185,33 @@ where
         Ok(AcpOutcome::Completed(text)) => {
             drop(transport);
             terminate_child(&mut child, SHUTDOWN_GRACE).await;
-            let _ = collect_stderr(stderr_task).await;
+            stderr_task.abort();
             Ok(AcpOutcome::Completed(text))
         }
         Ok(AcpOutcome::Cancelled) => {
-            if let Some(session_id) = transport.session_id.clone() {
+            let cancel_sent = if transport.stdin_interrupted {
+                false
+            } else if let Some(session_id) = transport.session_id.clone() {
                 let cancel_notification = json!({
                     "jsonrpc": "2.0",
                     "method": "session/cancel",
                     "params": { "sessionId": session_id }
                 });
-                let _ = transport
-                    .write_frame(&cancel_notification, CANCEL_WRITE_TIMEOUT)
-                    .await;
-            }
+                transport
+                    .write_frame_raw(&cancel_notification, CANCEL_WRITE_TIMEOUT)
+                    .await
+                    .is_ok()
+            } else {
+                false
+            };
             drop(transport);
-            terminate_child(&mut child, SHUTDOWN_GRACE).await;
-            let _ = collect_stderr(stderr_task).await;
+            let grace = if cancel_sent {
+                SHUTDOWN_GRACE
+            } else {
+                Duration::ZERO
+            };
+            terminate_child(&mut child, grace).await;
+            stderr_task.abort();
             Ok(AcpOutcome::Cancelled)
         }
         Err(error) => {
@@ -210,21 +223,86 @@ where
     }
 }
 
-struct AgentTransport {
-    stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+struct AgentTransport<W = ChildStdin, R = ChildStdout> {
+    stdin: BufWriter<W>,
+    stdout: BufReader<R>,
     next_id: u64,
     session_id: Option<String>,
+    stdin_interrupted: bool,
 }
 
-impl AgentTransport {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameWrite {
+    Written,
+    Cancelled,
+}
+
+impl<W: AsyncWrite + Unpin, R: AsyncRead + Unpin> AgentTransport<W, R> {
     fn alloc_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         id
     }
 
-    async fn write_frame(&mut self, value: &Value, timeout: Duration) -> Result<(), AcpError> {
+    async fn write_frame(
+        &mut self,
+        value: &Value,
+        timeout: Duration,
+        cancel_rx: &mut watch::Receiver<bool>,
+    ) -> Result<FrameWrite, AcpError> {
+        if *cancel_rx.borrow() {
+            return Ok(FrameWrite::Cancelled);
+        }
+        let mut encoded = serde_json::to_vec(value).map_err(|error| {
+            AcpError::new("acp_protocol_error", format!("encode error: {error}"))
+        })?;
+        encoded.push(b'\n');
+
+        let deadline = Instant::now() + timeout;
+        let mut cancel_channel_open = true;
+        let write_fut = async {
+            self.stdin.write_all(&encoded).await?;
+            self.stdin.flush().await
+        };
+        tokio::pin!(write_fut);
+
+        loop {
+            tokio::select! {
+                biased;
+                changed = wait_cancel(cancel_rx, cancel_channel_open) => {
+                    match changed {
+                        Ok(()) if *cancel_rx.borrow() => {
+                            self.stdin_interrupted = true;
+                            return Ok(FrameWrite::Cancelled);
+                        }
+                        Ok(()) => continue,
+                        Err(_) => {
+                            cancel_channel_open = false;
+                            continue;
+                        }
+                    }
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    self.stdin_interrupted = true;
+                    return Err(AcpError::new(
+                        "acp_timeout",
+                        "timed out writing JSON-RPC message to ACP agent",
+                    ));
+                }
+                result = &mut write_fut => {
+                    return match result {
+                        Ok(()) => Ok(FrameWrite::Written),
+                        Err(error) => Err(AcpError::new(
+                            "acp_crashed",
+                            format!("failed writing to ACP agent stdin: {error}"),
+                        )),
+                    };
+                }
+            }
+        }
+    }
+
+    async fn write_frame_raw(&mut self, value: &Value, timeout: Duration) -> Result<(), AcpError> {
         let mut encoded = serde_json::to_vec(value).map_err(|error| {
             AcpError::new("acp_protocol_error", format!("encode error: {error}"))
         })?;
@@ -253,13 +331,22 @@ impl AgentTransport {
         cancel_rx: &mut watch::Receiver<bool>,
     ) -> Result<LineRead, AcpError> {
         let mut buf = Vec::new();
-        let mut total = 0usize;
         let mut cancel_channel_open = true;
         loop {
             if *cancel_rx.borrow() {
                 return Ok(LineRead::Cancelled);
             }
-            let remaining = MAX_AGENT_LINE_BYTES.saturating_sub(total).saturating_add(1);
+            if buf.len() > MAX_AGENT_LINE_BYTES {
+                return Err(AcpError::new(
+                    "acp_output_too_large",
+                    format!(
+                        "ACP agent emitted a single line exceeding {MAX_AGENT_LINE_BYTES} bytes"
+                    ),
+                ));
+            }
+            let remaining = MAX_AGENT_LINE_BYTES
+                .saturating_sub(buf.len())
+                .saturating_add(1);
             let mut limited = (&mut self.stdout).take(remaining as u64);
             let read = tokio::select! {
                 biased;
@@ -285,20 +372,19 @@ impl AgentTransport {
                     })?
                 }
             };
-            if read == 0 {
-                if buf.is_empty() {
-                    return Ok(LineRead::Eof);
-                }
-                return Ok(LineRead::Line(trim_line(&buf)));
-            }
-            total += read;
-            if total > MAX_AGENT_LINE_BYTES {
+            if buf.len() > MAX_AGENT_LINE_BYTES {
                 return Err(AcpError::new(
                     "acp_output_too_large",
                     format!(
                         "ACP agent emitted a single line exceeding {MAX_AGENT_LINE_BYTES} bytes"
                     ),
                 ));
+            }
+            if read == 0 {
+                if buf.is_empty() {
+                    return Ok(LineRead::Eof);
+                }
+                return Ok(LineRead::Line(trim_line(&buf)));
             }
             if buf.last() == Some(&b'\n') {
                 return Ok(LineRead::Line(trim_line(&buf)));
@@ -324,8 +410,8 @@ enum LineRead {
     Cancelled,
 }
 
-async fn drive_session<F, Fut>(
-    transport: &mut AgentTransport,
+async fn drive_session<W, R, F, Fut>(
+    transport: &mut AgentTransport<W, R>,
     cwd: &Path,
     prompt_text: &str,
     request_timeout: Duration,
@@ -333,6 +419,8 @@ async fn drive_session<F, Fut>(
     on_progress: &mut F,
 ) -> Result<AcpOutcome, AcpError>
 where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
     F: FnMut(f64, String) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
@@ -357,7 +445,14 @@ where
             }
         }
     });
-    transport.write_frame(&init_req, WRITE_TIMEOUT).await?;
+    if matches!(
+        transport
+            .write_frame(&init_req, WRITE_TIMEOUT, cancel_rx)
+            .await?,
+        FrameWrite::Cancelled
+    ) {
+        return Ok(AcpOutcome::Cancelled);
+    }
     let init_result = match await_response(
         transport,
         init_id,
@@ -401,9 +496,14 @@ where
             "mcpServers": []
         }
     });
-    transport
-        .write_frame(&new_session_req, WRITE_TIMEOUT)
-        .await?;
+    if matches!(
+        transport
+            .write_frame(&new_session_req, WRITE_TIMEOUT, cancel_rx)
+            .await?,
+        FrameWrite::Cancelled
+    ) {
+        return Ok(AcpOutcome::Cancelled);
+    }
     let session_result = match await_response(
         transport,
         new_session_id,
@@ -448,7 +548,14 @@ where
             ]
         }
     });
-    transport.write_frame(&prompt_req, WRITE_TIMEOUT).await?;
+    if matches!(
+        transport
+            .write_frame(&prompt_req, WRITE_TIMEOUT, cancel_rx)
+            .await?,
+        FrameWrite::Cancelled
+    ) {
+        return Ok(AcpOutcome::Cancelled);
+    }
 
     let mut collector = PromptCollector::new(session_id);
     let prompt_result = match await_response(
@@ -553,8 +660,8 @@ impl PromptCollector {
     }
 }
 
-async fn await_response<F, Fut>(
-    transport: &mut AgentTransport,
+async fn await_response<W, R, F, Fut>(
+    transport: &mut AgentTransport<W, R>,
     expected_id: u64,
     method: &str,
     request_timeout: Duration,
@@ -563,6 +670,8 @@ async fn await_response<F, Fut>(
     on_progress: &mut F,
 ) -> Result<ResponseWait, AcpError>
 where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
     F: FnMut(f64, String) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
@@ -609,7 +718,14 @@ where
             (Some(req_method), Some(req_id)) if !req_id.is_null() => {
                 let response =
                     build_client_denial_response(req_id, req_method, object.get("params"));
-                transport.write_frame(&response, WRITE_TIMEOUT).await?;
+                if matches!(
+                    transport
+                        .write_frame(&response, WRITE_TIMEOUT, cancel_rx)
+                        .await?,
+                    FrameWrite::Cancelled
+                ) {
+                    return Ok(ResponseWait::Cancelled);
+                }
             }
             // Agent notification
             (Some(notif_method), _) => {
@@ -635,7 +751,7 @@ where
             // JSON-RPC response
             (None, Some(resp_id)) => {
                 let matches_expected = resp_id.as_u64() == Some(expected_id);
-                if let Some(error) = object.get("error") {
+                if let Some(error) = object.get("error").filter(|value| !value.is_null()) {
                     if matches_expected || resp_id.is_null() {
                         let code = error.get("code").and_then(Value::as_i64).unwrap_or(-32000);
                         let msg = error
@@ -885,5 +1001,117 @@ mod tests {
             }))
             .expect_err("cap exceeded");
         assert_eq!(error.code, "acp_output_too_large");
+    }
+
+    #[tokio::test]
+    async fn await_response_ignores_null_error_field() {
+        let (stdin_tx, _stdin_rx) = tokio::io::duplex(1024);
+        let (mut stdout_tx, stdout_rx) = tokio::io::duplex(1024);
+        stdout_tx
+            .write_all(br#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1},"error":null}"#)
+            .await
+            .unwrap();
+        stdout_tx.write_all(b"\n").await.unwrap();
+        drop(stdout_tx);
+
+        let mut transport = AgentTransport {
+            stdin: BufWriter::new(stdin_tx),
+            stdout: BufReader::new(stdout_rx),
+            next_id: 2,
+            session_id: None,
+            stdin_interrupted: false,
+        };
+        let (_cancel_tx, mut cancel_rx) = watch::channel(false);
+        let mut progress = |_f: f64, _m: String| async {};
+
+        let outcome = await_response(
+            &mut transport,
+            1,
+            "initialize",
+            Duration::from_secs(5),
+            &mut cancel_rx,
+            None,
+            &mut progress,
+        )
+        .await
+        .expect("null error field must not be treated as RPC error");
+        match outcome {
+            ResponseWait::Result(val) => assert_eq!(val["protocolVersion"], 1),
+            ResponseWait::Cancelled => panic!("unexpected cancel"),
+        }
+    }
+
+    #[tokio::test]
+    async fn write_frame_cancels_promptly_when_pipe_is_full() {
+        let (stdin_tx, _stdin_rx) = tokio::io::duplex(64);
+        let (_stdout_tx, stdout_rx) = tokio::io::duplex(64);
+        let mut transport = AgentTransport {
+            stdin: BufWriter::new(stdin_tx),
+            stdout: BufReader::new(stdout_rx),
+            next_id: 1,
+            session_id: Some("sess-1".to_owned()),
+            stdin_interrupted: false,
+        };
+        let (cancel_tx, mut cancel_rx) = watch::channel(false);
+
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "session/prompt",
+            "params": { "text": "x".repeat(4096) }
+        });
+
+        let cancel_handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            let _ = cancel_tx.send(true);
+        });
+
+        let started = Instant::now();
+        let outcome = transport
+            .write_frame(&payload, Duration::from_secs(5), &mut cancel_rx)
+            .await
+            .expect("cancel must return FrameWrite::Cancelled");
+        let elapsed = started.elapsed();
+        cancel_handle.await.unwrap();
+
+        assert_eq!(outcome, FrameWrite::Cancelled);
+        assert!(transport.stdin_interrupted);
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "write_frame cancel took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_line_before_tracks_buf_len_after_cancel_channel_closes() {
+        let (stdin_tx, _stdin_rx) = tokio::io::duplex(64);
+        let (mut stdout_tx, stdout_rx) = tokio::io::duplex(128);
+        let mut transport = AgentTransport {
+            stdin: BufWriter::new(stdin_tx),
+            stdout: BufReader::new(stdout_rx),
+            next_id: 1,
+            session_id: None,
+            stdin_interrupted: false,
+        };
+        let (cancel_tx, mut cancel_rx) = watch::channel(false);
+
+        let writer = tokio::spawn(async move {
+            stdout_tx.write_all(b"{\"part\":1").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            drop(cancel_tx);
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            stdout_tx.write_all(b",\"part\":2}\n").await.unwrap();
+        });
+
+        let line = transport
+            .read_line_before(Instant::now() + Duration::from_secs(5), &mut cancel_rx)
+            .await
+            .expect("read line after cancel channel EOF");
+        writer.await.unwrap();
+
+        match line {
+            LineRead::Line(text) => assert_eq!(text, r#"{"part":1,"part":2}"#),
+            _ => panic!("expected complete line"),
+        }
     }
 }

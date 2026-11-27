@@ -134,7 +134,7 @@ struct ProposedOption {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ProposedBlock {
     Markdown {
         text: String,
@@ -291,13 +291,7 @@ fn unwrap_single_json_fence(raw: &str) -> Result<&str, ProposalError> {
                 "agent returned an unterminated fenced code block",
             ));
         };
-        let inner = inner.trim();
-        if inner.contains("```") {
-            return Err(ProposalError::invalid(
-                "agent output must contain a single JSON object without extra fenced blocks",
-            ));
-        }
-        Ok(inner)
+        Ok(inner.trim())
     } else {
         Ok(trimmed)
     }
@@ -705,6 +699,61 @@ mod tests {
                 &input
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn accepts_fenced_json_containing_markdown_code_blocks() {
+        let raw = concat!(
+            "```json\n",
+            "{\n",
+            "  \"cards\": [\n",
+            "    {\n",
+            "      \"kind\": \"knowledge_card\",\n",
+            "      \"title\": \"Rust Entry Point\",\n",
+            "      \"blocks\": [\n",
+            "        {\"type\": \"markdown\", \"text\": \"Example:\\n```rust\\nfn main() {}\\n```\"}\n",
+            "      ]\n",
+            "    }\n",
+            "  ]\n",
+            "}\n",
+            "```"
+        );
+        let ops = parse_and_convert(raw, &sample_input())
+            .expect("fenced JSON with inner markdown code block must be accepted");
+        assert_eq!(ops.len(), 1);
+        assert_eq!(
+            ops[0].data["blocks"][0]["text"],
+            "Example:\n```rust\nfn main() {}\n```"
+        );
+
+        let multiple_fences = concat!(
+            "```json\n",
+            "{\"cards\":[{\"kind\":\"knowledge_card\",\"title\":\"A\",\"blocks\":[{\"type\":\"markdown\",\"text\":\"a\"}]}]}\n",
+            "```\n",
+            "```json\n",
+            "{\"cards\":[{\"kind\":\"knowledge_card\",\"title\":\"B\",\"blocks\":[{\"type\":\"markdown\",\"text\":\"b\"}]}]}\n",
+            "```"
+        );
+        assert!(
+            parse_and_convert(multiple_fences, &sample_input()).is_err(),
+            "multiple fenced blocks must still be rejected by serde_json"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_fields_on_proposed_blocks() {
+        let input = sample_input();
+        let md_extra = r#"{"cards":[{"kind":"knowledge_card","title":"T","blocks":[{"type":"markdown","text":"hello","unexpected_extra":123}]}]}"#;
+        assert!(
+            parse_and_convert(md_extra, &input).is_err(),
+            "markdown block with unknown field must be rejected"
+        );
+
+        let math_extra = r#"{"cards":[{"kind":"knowledge_card","title":"T","blocks":[{"type":"math","latex":"x^2","display":true,"unexpected_extra":true}]}]}"#;
+        assert!(
+            parse_and_convert(math_extra, &input).is_err(),
+            "math block with unknown field must be rejected"
         );
     }
 }

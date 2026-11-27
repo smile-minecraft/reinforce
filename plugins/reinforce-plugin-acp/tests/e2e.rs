@@ -576,22 +576,23 @@ async fn cancelling_running_job_sends_session_cancel_and_stops_agent() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resource_path_respects_resource_dir_confinement() {
-    let resources = tempfile::tempdir_in(target_tmp_dir()).expect("resources dir");
-    let outside = tempfile::tempdir_in(target_tmp_dir()).expect("outside dir");
+    let parent = tempfile::tempdir_in(target_tmp_dir()).expect("parent dir");
+    let resources = parent.path().join("resources");
+    std::fs::create_dir_all(&resources).expect("create resources dir");
     std::fs::write(
-        resources.path().join("chapter.md"),
+        resources.join("chapter.md"),
         "Newton's third law governs interacting force pairs.",
     )
     .expect("write resource");
-    let secret = outside.path().join("secret.txt");
+    let secret = parent.path().join("secret.txt");
     std::fs::write(&secret, "do not read").expect("write outside");
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&secret, resources.join("link.txt")).expect("create escape symlink");
 
     let harness = Harness::start(vec![acp_manifest_entry(
         "acp-res",
-        &[
-            "--resource-dir".to_owned(),
-            resources.path().display().to_string(),
-        ],
+        &["--resource-dir".to_owned(), resources.display().to_string()],
         &["--mode".to_owned(), "ok".to_owned()],
     )])
     .await;
@@ -606,19 +607,25 @@ async fn resource_path_respects_resource_dir_confinement() {
     let ok = harness.wait_terminal(&ok_job).await;
     assert_eq!(ok["status"], "succeeded", "{ok}");
 
-    let escaped_job = harness
-        .submit(
-            "acp-res",
-            json!({"subject": "physics", "resource_path": secret.display().to_string()}),
-        )
-        .await;
-    let escaped = harness.wait_terminal(&escaped_job).await;
-    assert_eq!(escaped["status"], "failed", "{escaped}");
-    assert_eq!(escaped["error"]["code"], "plugin_reported");
-    assert_eq!(
-        escaped["error"]["details"]["plugin_code"],
-        "resource_access_denied"
-    );
+    let mut escape_paths = vec![secret.display().to_string(), "../secret.txt".to_owned()];
+    #[cfg(unix)]
+    escape_paths.push("link.txt".to_owned());
+
+    for escape_path in escape_paths {
+        let escaped_job = harness
+            .submit(
+                "acp-res",
+                json!({"subject": "physics", "resource_path": escape_path}),
+            )
+            .await;
+        let escaped = harness.wait_terminal(&escaped_job).await;
+        assert_eq!(escaped["status"], "failed", "{escape_path}: {escaped}");
+        assert_eq!(escaped["error"]["code"], "plugin_reported");
+        assert_eq!(
+            escaped["error"]["details"]["plugin_code"],
+            "resource_access_denied"
+        );
+    }
 }
 
 #[test]
@@ -669,4 +676,117 @@ fn stdin_eof_after_hello_does_not_spuriously_cancel_job() {
     let frame: Value = serde_json::from_str(last_line).expect("parse last frame");
     assert_eq!(frame["type"], "result", "{stdout}");
     assert_eq!(frame["operations"].as_array().map(Vec::len), Some(2));
+}
+
+#[test]
+fn cancelling_when_agent_stdin_pipe_is_full_exits_promptly_and_reaps_agent() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let scratch_dir = tempfile::tempdir_in(target_tmp_dir()).expect("scratch dir");
+    let resource_dir = scratch_dir.path().join("resources");
+    std::fs::create_dir_all(&resource_dir).expect("create resource dir");
+    // 200 KiB exceeds typical 64 KiB OS pipe buffers while staying below the 256 KiB cap.
+    let large_content = "A".repeat(200 * 1024);
+    std::fs::write(resource_dir.join("large.md"), &large_content).expect("write large resource");
+    let pid_file = scratch_dir.path().join("stall.pid");
+
+    let mut child = ProcessCommand::new(plugin_binary())
+        .args([
+            "--agent",
+            &fake_acp_agent().display().to_string(),
+            "--resource-dir",
+            &resource_dir.display().to_string(),
+            "--",
+            "--mode",
+            "stall_stdin",
+            "--pid-file",
+            &pid_file.display().to_string(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn reinforce-plugin-acp");
+
+    let mut stdin = child.stdin.take().expect("plugin stdin");
+    let stdout = child.stdout.take().expect("plugin stdout");
+    let mut reader = BufReader::new(stdout);
+
+    let job_id = "019a0000-0000-7000-8000-000000000088";
+    let hello = json!({
+        "type": "hello",
+        "protocol": "reinforce_plugin",
+        "version": 1,
+        "job_id": job_id,
+        "plugin": "acp",
+        "capability": "draft_cards",
+        "input": {
+            "subject": "physics",
+            "resource_path": "large.md"
+        }
+    });
+    writeln!(stdin, "{hello}").expect("write hello");
+    stdin.flush().expect("flush hello");
+
+    // Wait until the plugin reaches `running ACP prompt` (right before writing the
+    // 200 KiB session/prompt frame) and the fake agent has written its PID.
+    let mut line = String::new();
+    let mut saw_prompt_progress = false;
+    while reader.read_line(&mut line).expect("read stdout line") > 0 {
+        let frame: Value = serde_json::from_str(line.trim()).expect("parse plugin frame");
+        if frame["type"] == "progress" && frame["message"].as_str() == Some("running ACP prompt") {
+            saw_prompt_progress = true;
+            break;
+        }
+        line.clear();
+    }
+    assert!(
+        saw_prompt_progress,
+        "plugin never reached running ACP prompt"
+    );
+
+    let pid_deadline = Instant::now() + Duration::from_secs(5);
+    let agent_pid = loop {
+        if let Ok(text) = std::fs::read_to_string(&pid_file) {
+            if let Ok(pid) = text.trim().parse::<u32>() {
+                break pid;
+            }
+        }
+        assert!(
+            Instant::now() < pid_deadline,
+            "fake agent never wrote pid file"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    // Give the plugin a brief moment to fill the OS pipe buffer and block in write_frame.
+    std::thread::sleep(Duration::from_millis(50));
+
+    let cancel = json!({
+        "type": "cancel",
+        "job_id": job_id,
+    });
+    let cancel_started = Instant::now();
+    writeln!(stdin, "{cancel}").expect("write cancel");
+    stdin.flush().expect("flush cancel");
+
+    let status = child.wait().expect("wait for plugin exit");
+    let elapsed = cancel_started.elapsed();
+    let agent_still_alive = process_exists(agent_pid);
+    if agent_still_alive {
+        let _ = ProcessCommand::new("kill")
+            .args(["-9", &agent_pid.to_string()])
+            .status();
+    }
+
+    assert!(status.success(), "plugin exited with {status}");
+    assert!(
+        !agent_still_alive,
+        "fake ACP agent pid {agent_pid} survived after plugin exited"
+    );
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "cancel took {elapsed:?} while stdin pipe was full (must finish within 200ms)"
+    );
 }

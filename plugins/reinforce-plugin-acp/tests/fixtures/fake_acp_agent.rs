@@ -159,6 +159,16 @@ fn main() {
         "{{\"jsonrpc\":\"2.0\",\"id\":{new_id},\"result\":{{\"sessionId\":\"{session_id}\"}}}}"
     ));
 
+    if mode == "stall_stdin" {
+        if let Some(path) = &pid_file {
+            let _ = std::fs::write(path, std::process::id().to_string());
+        }
+        // Intentionally stop reading stdin so a large session/prompt fills the
+        // OS pipe buffer and blocks the plugin's write_frame call.
+        std::thread::sleep(Duration::from_secs(15));
+        return;
+    }
+
     // 3. session/prompt
     let Some(prompt_line) = read_line() else {
         std::process::exit(1);

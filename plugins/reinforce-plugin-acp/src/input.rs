@@ -1,5 +1,7 @@
 //! Validation and resolution of the `hello.input` payload.
 
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -255,19 +257,33 @@ fn read_confined_resource(
             "input.resource_path escapes the configured --resource-dir",
         ));
     }
-    let metadata = std::fs::metadata(&canonical_target)
+    let file = File::open(&canonical_target).map_err(|error| {
+        InputError::invalid(format!("cannot open resource_path {trimmed:?}: {error}"))
+    })?;
+    let metadata = file
+        .metadata()
         .map_err(|error| InputError::invalid(format!("cannot stat resource_path: {error}")))?;
     if !metadata.is_file() {
         return Err(InputError::invalid(
             "input.resource_path must point to a regular file",
         ));
     }
-    if metadata.len() as usize > MAX_RESOURCE_CONTENT_BYTES {
+    read_bounded_utf8(file, MAX_RESOURCE_CONTENT_BYTES)
+}
+
+fn read_bounded_utf8<R: Read>(reader: R, max_bytes: usize) -> Result<String, InputError> {
+    let limit = (max_bytes as u64).saturating_add(1);
+    let mut bytes = Vec::new();
+    reader
+        .take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| InputError::invalid(format!("cannot read resource file: {error}")))?;
+    if bytes.len() > max_bytes {
         return Err(InputError::invalid(format!(
-            "resource file exceeds {MAX_RESOURCE_CONTENT_BYTES} bytes"
+            "resource file exceeds {max_bytes} bytes"
         )));
     }
-    let text = std::fs::read_to_string(&canonical_target).map_err(|error| {
+    let text = String::from_utf8(bytes).map_err(|error| {
         InputError::invalid(format!("cannot read UTF-8 resource file: {error}"))
     })?;
     if text.trim().is_empty() {
@@ -346,5 +362,60 @@ mod tests {
         )
         .expect_err("blocks escape");
         assert_eq!(escaped.code, "resource_access_denied");
+    }
+
+    #[test]
+    fn rejects_dotdot_and_symlink_resource_path_escapes() {
+        let parent = tempfile::tempdir().expect("parent");
+        let allowed = parent.path().join("allowed");
+        std::fs::create_dir_all(&allowed).unwrap();
+        let secret = parent.path().join("secret.txt");
+        std::fs::write(&secret, "top secret").unwrap();
+
+        let dotdot =
+            ResolvedJobInput::parse(json!({"resource_path": "../secret.txt"}), Some(&allowed))
+                .expect_err("must reject .. escape");
+        assert_eq!(dotdot.code, "resource_access_denied");
+
+        #[cfg(unix)]
+        {
+            let link_path = allowed.join("link.txt");
+            std::os::unix::fs::symlink(&secret, &link_path).unwrap();
+            let symlink_escape =
+                ResolvedJobInput::parse(json!({"resource_path": "link.txt"}), Some(&allowed))
+                    .expect_err("must reject symlink escape");
+            assert_eq!(symlink_escape.code, "resource_access_denied");
+        }
+    }
+
+    #[test]
+    fn enforces_bounded_resource_read_and_regular_file_check() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let subdir = dir.path().join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let exact_file = dir.path().join("exact.txt");
+        let oversized_file = dir.path().join("oversized.txt");
+        std::fs::write(&exact_file, "a".repeat(MAX_RESOURCE_CONTENT_BYTES)).unwrap();
+        std::fs::write(&oversized_file, "a".repeat(MAX_RESOURCE_CONTENT_BYTES + 1)).unwrap();
+
+        let exact =
+            ResolvedJobInput::parse(json!({"resource_path": "exact.txt"}), Some(dir.path()))
+                .expect("exact limit must succeed");
+        assert_eq!(exact.content.len(), MAX_RESOURCE_CONTENT_BYTES);
+
+        let oversized =
+            ResolvedJobInput::parse(json!({"resource_path": "oversized.txt"}), Some(dir.path()))
+                .expect_err("file over limit must be rejected");
+        assert_eq!(oversized.code, "invalid_input");
+
+        let dir_err = ResolvedJobInput::parse(json!({"resource_path": "subdir"}), Some(dir.path()))
+            .expect_err("directory must be rejected");
+        assert_eq!(dir_err.code, "invalid_input");
+
+        // Unbounded stream must stop after MAX_RESOURCE_CONTENT_BYTES + 1 bytes
+        // without relying on stat metadata.
+        let unbounded_err = read_bounded_utf8(std::io::repeat(b'a'), MAX_RESOURCE_CONTENT_BYTES)
+            .expect_err("unbounded stream must be rejected");
+        assert_eq!(unbounded_err.code, "invalid_input");
     }
 }
