@@ -1,0 +1,27 @@
+[package]
+name = "reinforce-plugin-mineru"
+description = "Official Reinforce plugin that turns PDFs into proposals with MinerU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+clap.workspace = true
+reinforce-plugin-protocol.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+time.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+reinforce-server = { path = "../../crates/reinforce-server" }
+tempfile = "3"
+tokio.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
