@@ -7,6 +7,7 @@ use crate::primitives::{Error, Result};
 pub mod auth;
 pub mod catalog;
 pub mod content;
+pub mod plugins;
 pub mod quiz;
 pub mod schema;
 pub mod search;
@@ -115,8 +116,58 @@ mod tests {
             "sync_state",
             "sync_attempt_uploads",
             "sync_meta_uploads",
+            "plugin_jobs",
         ] {
             assert!(names.contains(&table.to_owned()), "missing table {table}");
         }
+    }
+
+    #[test]
+    fn version_two_database_upgrades_to_three() {
+        let mut database = Database::open_in_memory().unwrap();
+        // A v2 store predates the plugin queue: same schema minus that table,
+        // with the marker rolled back the way an older binary left it.
+        database
+            .connection()
+            .execute_batch("DROP TABLE plugin_jobs; PRAGMA user_version = 2;")
+            .unwrap();
+        assert_eq!(database.schema_version().unwrap(), 2);
+
+        database.migrate().unwrap();
+        assert_eq!(database.schema_version().unwrap(), schema::SCHEMA_VERSION);
+
+        let tables: Vec<String> = database
+            .connection()
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|name| name.unwrap())
+            .collect();
+        assert!(tables.contains(&"plugin_jobs".to_owned()));
+        let indexes: Vec<String> = database
+            .connection()
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|name| name.unwrap())
+            .collect();
+        assert!(indexes.contains(&"plugin_jobs_queue".to_owned()));
+        assert!(indexes.contains(&"plugin_jobs_plugin".to_owned()));
+
+        // The upgraded store can immediately hold queue rows.
+        let job = crate::plugin::PluginJob::queued(
+            "fake",
+            "ingest_pdf",
+            serde_json::json!({"resource_id": "r1"}),
+            1,
+        );
+        plugins::insert_job(database.connection(), &job).expect("insert after upgrade");
+        assert!(
+            plugins::get_job(database.connection(), &job.id)
+                .expect("read")
+                .is_some()
+        );
     }
 }

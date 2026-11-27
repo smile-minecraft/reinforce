@@ -120,6 +120,7 @@ string_id!(ProposalId, "proposal id");
 string_id!(UserId, "user id");
 string_id!(AttemptId, "attempt id");
 string_id!(CardId, "card id");
+string_id!(JobId, "plugin job id");
 
 impl From<KnowledgeCardId> for CardId {
     fn from(value: KnowledgeCardId) -> Self {
@@ -306,6 +307,14 @@ string_enum!(ProposalStatus {
     Pending => "pending",
     Approved => "approved",
     Rejected => "rejected",
+});
+
+string_enum!(JobStatus {
+    Queued => "queued",
+    Running => "running",
+    Succeeded => "succeeded",
+    Failed => "failed",
+    Cancelled => "cancelled",
 });
 
 string_enum!(ProposalTargetKind {
