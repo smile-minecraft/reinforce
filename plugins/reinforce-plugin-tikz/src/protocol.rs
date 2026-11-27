@@ -75,8 +75,12 @@ pub fn run_command(
         ));
     }
 
+    // kpathsea reads these: TeX may only open files below the job directory,
+    // so `\input{/etc/passwd}` in submitted TikZ cannot leak into the SVG.
     let mut child = Command::new(tool)
         .args(arguments)
+        .env("openin_any", "p")
+        .env("openout_any", "p")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

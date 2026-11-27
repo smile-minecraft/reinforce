@@ -15,7 +15,8 @@ without owner approval.
   files. Each job gets a unique subdirectory that is removed when the job ends.
 - No external tool is bundled or installed by this plugin.
 
-LaTeX runs with `-no-shell-escape`; the worker assembles an argument vector and
+LaTeX runs with `-no-shell-escape` and with `openin_any=p` / `openout_any=p`,
+so submitted TikZ cannot read or write files outside the job directory. The worker assembles an argument vector and
 never invokes a shell. On this development machine neither `latex` nor
 `dvisvgm` is installed, so the successful path is verified only with fake
 executables in `tests/e2e.rs`, not with a real render.

@@ -143,6 +143,10 @@ fn fake_latex(path: &Path) {
     write_executable(
         path,
         r#"#!/bin/sh
+if [ "$openin_any" != "p" ] || [ "$openout_any" != "p" ]; then
+  echo "kpathsea file access is not restricted" >&2
+  exit 1
+fi
 directory=""
 tex=""
 while [ $# -gt 0 ]; do
