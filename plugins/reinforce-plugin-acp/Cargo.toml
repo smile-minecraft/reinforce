@@ -1,0 +1,37 @@
+[package]
+name = "reinforce-plugin-acp"
+description = "Official Reinforce plugin that delegates card drafting to an external ACP agent."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "reinforce-plugin-acp"
+path = "src/main.rs"
+
+[lib]
+name = "reinforce_plugin_acp"
+path = "src/lib.rs"
+
+[dependencies]
+clap.workspace = true
+reinforce-plugin-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+reinforce-core.workspace = true
+reinforce-server = { path = "../../crates/reinforce-server" }
+tempfile = "3"
+tower.workspace = true
+
+[lints]
+workspace = true
