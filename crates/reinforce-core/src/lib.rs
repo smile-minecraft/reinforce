@@ -41,6 +41,8 @@ pub use db::content as content_store;
 pub use db::quiz as quiz_store;
 pub use db::search;
 pub use db::study as study_store;
+pub use db::sync as sync_store;
+pub use db::sync::{MergeOutcome, SyncState};
 pub use quiz::{QuizSession, SessionState};
 pub use study::{AttemptLog, CardScheduling, User, UserCardMeta};
 pub use weakness::WeaknessReport;

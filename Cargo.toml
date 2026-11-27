@@ -18,6 +18,7 @@ futures-util = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false }
 rand = "0.10"
 reinforce-core = { path = "crates/reinforce-core", version = "0.1.0" }
+reinforce-ffi = { path = "crates/reinforce-ffi", version = "0.1.0" }
 reinforce-export = { path = "crates/reinforce-export", version = "0.1.0" }
 rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }
 rust-embed = "8.14"

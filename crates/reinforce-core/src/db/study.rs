@@ -2,12 +2,35 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 
 use crate::fsrs::recompute_scheduling;
-use crate::primitives::{AttemptDirection, CardId, Error, Result, SessionMode, UserId};
+use crate::primitives::{AttemptDirection, AttemptId, CardId, Error, Result, SessionMode, UserId};
 use crate::study::{AttemptLog, CardScheduling, User, UserCardMeta};
 use crate::timestamp::Timestamp;
 
 fn from_json<T: DeserializeOwned>(value: &str) -> Result<T> {
     Ok(serde_json::from_str(value)?)
+}
+
+/// Column order shared by every attempt query.
+const ATTEMPT_COLUMNS: &str = "id, user_id, card_id, direction, session_mode, submitted_payload,
+        is_correct, duration_ms, confidence, error_tags_json, created_at, sync_cursor,
+        affects_scheduling";
+
+fn attempt_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttemptLog> {
+    Ok(AttemptLog {
+        id: row.get(0)?,
+        user_id: row.get(1)?,
+        card_id: row.get(2)?,
+        direction: row.get(3)?,
+        session_mode: row.get::<_, SessionMode>(4)?,
+        submitted_payload: from_json(&row.get::<_, String>(5)?)?,
+        is_correct: row.get::<_, i64>(6)? != 0,
+        duration_ms: row.get(7)?,
+        confidence: row.get(8)?,
+        error_tags: from_json(&row.get::<_, String>(9)?)?,
+        created_at: row.get(10)?,
+        sync_cursor: row.get(11)?,
+        affects_scheduling: row.get::<_, i64>(12)? != 0,
+    })
 }
 
 pub fn insert_user(connection: &Connection, user: &User) -> Result<()> {
@@ -27,9 +50,95 @@ pub fn next_attempt_cursor(connection: &Connection) -> Result<i64> {
     Ok(cursor)
 }
 
+/// Per-user sequence used by the server so a device can pull one account's
+/// attempts incrementally. It is monotonic per user even when older rows were
+/// written with the global [`next_attempt_cursor`], because both allocate
+/// `MAX(...) + 1` over rows the same user can see.
+pub fn next_user_attempt_cursor(connection: &Connection, user_id: &UserId) -> Result<i64> {
+    let cursor: i64 = connection.query_row(
+        "SELECT COALESCE(MAX(sync_cursor), 0) + 1 FROM attempt_logs WHERE user_id = ?1",
+        params![user_id],
+        |row| row.get(0),
+    )?;
+    Ok(cursor)
+}
+
+pub fn attempt_by_id(connection: &Connection, id: &AttemptId) -> Result<Option<AttemptLog>> {
+    connection
+        .query_row(
+            &format!("SELECT {ATTEMPT_COLUMNS} FROM attempt_logs WHERE id = ?1"),
+            params![id],
+            attempt_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+/// One page of a user's attempts ordered by the stored cursor.
+///
+/// The page never splits a cursor group. One quiz session writes all of its
+/// attempts under a single cursor, so stopping in the middle of such a group
+/// would let a caller that advances to `last.sync_cursor` skip the remaining
+/// rows forever. When the limit lands inside a group, the whole group is
+/// returned and `limit` becomes a soft lower bound.
+pub fn list_attempts_after(
+    connection: &Connection,
+    user_id: &UserId,
+    cursor: i64,
+    limit: usize,
+) -> Result<Vec<AttemptLog>> {
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX).max(1);
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ATTEMPT_COLUMNS} FROM attempt_logs
+         WHERE user_id = ?1 AND sync_cursor > ?2
+           AND sync_cursor <= COALESCE((
+               SELECT sync_cursor FROM attempt_logs
+               WHERE user_id = ?1 AND sync_cursor > ?2
+               ORDER BY sync_cursor, id LIMIT 1 OFFSET ?3
+           ), 9223372036854775807)
+         ORDER BY sync_cursor, id"
+    ))?;
+    let rows = statement.query_map(params![user_id, cursor, limit - 1], attempt_from_row)?;
+    rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+        .map_err(Error::from)
+}
+
+/// Whether any of the user's attempts still sit after `cursor`.
+///
+/// Pages always return a complete cursor group, so the caller only has to ask
+/// whether something exists beyond the last cursor it received.
+pub fn has_attempts_after(connection: &Connection, user_id: &UserId, cursor: i64) -> Result<bool> {
+    let exists: i64 = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM attempt_logs WHERE user_id = ?1 AND sync_cursor > ?2
+         )",
+        params![user_id, cursor],
+        |row| row.get(0),
+    )?;
+    Ok(exists != 0)
+}
+
+pub fn max_attempt_cursor(connection: &Connection, user_id: &UserId) -> Result<i64> {
+    let cursor: i64 = connection.query_row(
+        "SELECT COALESCE(MAX(sync_cursor), 0) FROM attempt_logs WHERE user_id = ?1",
+        params![user_id],
+        |row| row.get(0),
+    )?;
+    Ok(cursor)
+}
+
 /// The only write path for attempt logs. The schema has triggers that reject
 /// UPDATE and DELETE, so this module deliberately exposes no such functions.
 pub fn append_attempt(connection: &Connection, attempt: &AttemptLog) -> Result<()> {
+    // `duration_ms` is the one client-supplied column with a CHECK constraint
+    // that a typed payload can still violate; report it as invalid input
+    // instead of leaking a constraint error from SQLite.
+    if attempt.duration_ms < 0 {
+        return Err(Error::InvalidValue(
+            "duration_ms",
+            "duration must not be negative".to_owned(),
+        ));
+    }
     connection.execute(
         "INSERT INTO attempt_logs (
             id, user_id, card_id, direction, session_mode, submitted_payload,
@@ -61,31 +170,13 @@ pub fn list_attempts(
     card_id: &CardId,
     direction: AttemptDirection,
 ) -> Result<Vec<AttemptLog>> {
-    let mut statement = connection.prepare(
-        "SELECT id, user_id, card_id, direction, session_mode, submitted_payload,
-                is_correct, duration_ms, confidence, error_tags_json, created_at, sync_cursor,
-                affects_scheduling
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ATTEMPT_COLUMNS}
          FROM attempt_logs
          WHERE user_id = ?1 AND card_id = ?2 AND direction = ?3
-         ORDER BY created_at, id",
-    )?;
-    let rows = statement.query_map(params![user_id, card_id, direction], |row| {
-        Ok(AttemptLog {
-            id: row.get(0)?,
-            user_id: row.get(1)?,
-            card_id: row.get(2)?,
-            direction: row.get(3)?,
-            session_mode: row.get::<_, SessionMode>(4)?,
-            submitted_payload: from_json(&row.get::<_, String>(5)?)?,
-            is_correct: row.get::<_, i64>(6)? != 0,
-            duration_ms: row.get(7)?,
-            confidence: row.get(8)?,
-            error_tags: from_json(&row.get::<_, String>(9)?)?,
-            created_at: row.get(10)?,
-            sync_cursor: row.get(11)?,
-            affects_scheduling: row.get::<_, i64>(12)? != 0,
-        })
-    })?;
+         ORDER BY created_at, id"
+    ))?;
+    let rows = statement.query_map(params![user_id, card_id, direction], attempt_from_row)?;
     rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
         .map_err(Error::from)
 }
@@ -139,6 +230,22 @@ pub fn save_scheduling(connection: &Connection, scheduling: &CardScheduling) -> 
         ],
     )?;
     Ok(())
+}
+
+/// Saves derived scheduling unless no attempt contributed to it.
+///
+/// A card whose only attempts are voided or marked as not affecting scheduling
+/// has no schedule at all; storing the empty replay would create a `reps = 0`
+/// row stamped at the Unix epoch and make the card look scheduled.
+pub fn save_scheduling_if_effective(
+    connection: &Connection,
+    scheduling: &CardScheduling,
+) -> Result<bool> {
+    if scheduling.reps == 0 {
+        return Ok(false);
+    }
+    save_scheduling(connection, scheduling)?;
+    Ok(true)
 }
 
 pub fn get_scheduling(
@@ -219,4 +326,24 @@ pub fn get_user_card_meta(
         )
         .optional()
         .map_err(Into::into)
+}
+
+/// Every personal card row of one user, ordered by card id.
+pub fn list_user_card_meta(connection: &Connection, user_id: &UserId) -> Result<Vec<UserCardMeta>> {
+    let mut statement = connection.prepare(
+        "SELECT user_id, card_id, starred, personal_tags_json, personal_note, updated_at
+         FROM user_card_meta WHERE user_id = ?1 ORDER BY card_id",
+    )?;
+    let rows = statement.query_map(params![user_id], |row| {
+        Ok(UserCardMeta {
+            user_id: row.get(0)?,
+            card_id: row.get(1)?,
+            starred: row.get::<_, i64>(2)? != 0,
+            personal_tags: from_json(&row.get::<_, String>(3)?)?,
+            personal_note: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+        .map_err(Error::from)
 }

@@ -109,7 +109,10 @@ fn attempt_at(
 fn migrations_create_both_layers_and_converge_on_rerun() {
     let mut database = Database::open_in_memory().unwrap();
     database.migrate().unwrap();
-    assert_eq!(database.schema_version().unwrap(), 1);
+    assert_eq!(
+        database.schema_version().unwrap(),
+        reinforce_core::db::schema::SCHEMA_VERSION
+    );
 
     let tables: Vec<String> = database
         .connection()

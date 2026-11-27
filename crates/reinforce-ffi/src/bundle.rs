@@ -23,10 +23,8 @@ pub(crate) struct AssetFile {
     pub source: PathBuf,
 }
 
-/// Reads every non-empty line as one batch operation.
-pub(crate) fn read_operations(path: &Path) -> Result<Vec<BatchOperation>, FfiError> {
-    let file = bundle_file(path);
-    let content = std::fs::read_to_string(&file)?;
+/// Reads every non-empty line of a bundle document as one batch operation.
+pub(crate) fn read_operations_from_text(content: &str) -> Result<Vec<BatchOperation>, FfiError> {
     let mut operations = Vec::new();
     for (index, line) in content.lines().enumerate() {
         if line.trim().is_empty() {
@@ -38,6 +36,13 @@ pub(crate) fn read_operations(path: &Path) -> Result<Vec<BatchOperation>, FfiErr
         operations.push(operation);
     }
     Ok(operations)
+}
+
+/// Reads every non-empty line as one batch operation.
+pub(crate) fn read_operations(path: &Path) -> Result<Vec<BatchOperation>, FfiError> {
+    let file = bundle_file(path);
+    let content = std::fs::read_to_string(&file)?;
+    read_operations_from_text(&content)
 }
 
 /// Locates `bundle.jsonl` for both accepted input shapes.
@@ -61,16 +66,13 @@ pub(crate) fn assets_dir(path: &Path) -> Option<PathBuf> {
     directory.is_dir().then_some(directory)
 }
 
-/// Hashes every regular file in `assets/` and keeps the ones a resource
-/// operation references. Unreferenced files are ignored so a bundle can carry
-/// extra source material without publishing it.
-pub(crate) fn referenced_assets(
-    path: &Path,
+/// Hashes every regular file in an `assets/` directory and keeps the ones a
+/// resource operation references. Unreferenced files are ignored so a bundle
+/// can carry extra source material without publishing it.
+pub(crate) fn assets_in(
+    directory: &Path,
     operations: &[BatchOperation],
 ) -> Result<Vec<AssetFile>, FfiError> {
-    let Some(directory) = assets_dir(path) else {
-        return Ok(Vec::new());
-    };
     let required: BTreeSet<String> = operations
         .iter()
         .filter(|operation| operation.kind() == OperationKind::Resource)
@@ -81,7 +83,7 @@ pub(crate) fn referenced_assets(
         return Ok(Vec::new());
     }
     let mut assets = Vec::new();
-    for entry in std::fs::read_dir(&directory)? {
+    for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
             continue;
@@ -99,18 +101,26 @@ pub(crate) fn referenced_assets(
     Ok(assets)
 }
 
-/// Copies every referenced asset into `blobs_dir` under its sha256, returning
-/// how many files were newly written.
+/// Hashes every regular file in `assets/` and keeps the ones a resource
+/// operation references. Unreferenced files are ignored so a bundle can carry
+/// extra source material without publishing it.
+pub(crate) fn referenced_assets(
+    path: &Path,
+    operations: &[BatchOperation],
+) -> Result<Vec<AssetFile>, FfiError> {
+    let Some(directory) = assets_dir(path) else {
+        return Ok(Vec::new());
+    };
+    assets_in(&directory, operations)
+}
+
+/// Copies content-addressed assets into `blobs_dir`, returning how many files
+/// were newly written.
 ///
 /// Blobs are content-addressed, so an existing file is never rewritten and an
 /// interrupted copy never becomes visible: each asset is copied to a hidden
 /// temporary file and renamed into place.
-pub(crate) fn copy_referenced_assets(
-    blobs_dir: &Path,
-    bundle_path: &Path,
-    operations: &[BatchOperation],
-) -> Result<u32, FfiError> {
-    let assets = referenced_assets(bundle_path, operations)?;
+pub(crate) fn copy_assets(blobs_dir: &Path, assets: &[AssetFile]) -> Result<u32, FfiError> {
     if assets.is_empty() {
         return Ok(0);
     }
@@ -134,6 +144,17 @@ pub(crate) fn copy_referenced_assets(
         written += 1;
     }
     Ok(written)
+}
+
+/// Copies every referenced asset into `blobs_dir` under its sha256, returning
+/// how many files were newly written.
+pub(crate) fn copy_referenced_assets(
+    blobs_dir: &Path,
+    bundle_path: &Path,
+    operations: &[BatchOperation],
+) -> Result<u32, FfiError> {
+    let assets = referenced_assets(bundle_path, operations)?;
+    copy_assets(blobs_dir, &assets)
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ use reinforce_ffi::error::FfiError;
 use reinforce_ffi::resources::{AnchorKind, ExportPolicy, ResourceKind, Sensitivity};
 use reinforce_ffi::types::{
     AnswerSubmission, AttemptDirection, AttemptLogRecord, BuildOptions, CardStatus, Confidence,
-    QuizAnswer, SessionState,
+    QuizAnswer, SessionMode, SessionState,
 };
 use reinforce_ffi::{LocalDatabase, new_attempt_id};
 use serde_json::json;
@@ -810,4 +810,92 @@ fn invalid_boundary_inputs_become_errors_instead_of_panics() {
         session.start("not-a-timestamp".to_owned()),
         Err(FfiError::InvalidInput { .. })
     ));
+}
+
+/// The sync helpers paginate, keep the local profile id private to the device,
+/// and refuse batches that belong to another server account.
+#[test]
+fn sync_helpers_paginate_and_guard_identity() {
+    let temp = TempDir::new();
+    let database = temp.open();
+    database
+        .import_bundle(bundle_path().to_string_lossy().into_owned())
+        .unwrap();
+    let local_user = database.create_user("Learner".to_owned()).unwrap();
+    let remote_user = Uuid::now_v7().to_string();
+    let stranger = Uuid::now_v7().to_string();
+
+    assert!(database.sync_state(local_user.clone()).unwrap().is_none());
+    let state = database
+        .bind_remote_user(local_user.clone(), remote_user.clone())
+        .unwrap();
+    assert_eq!(state.remote_user_id, remote_user);
+    assert_eq!(state.pull_cursor, 0);
+    assert_eq!(
+        database
+            .bind_remote_user(local_user.clone(), remote_user.clone())
+            .unwrap()
+            .pull_cursor,
+        0
+    );
+
+    let mut ids = Vec::new();
+    for (index, timestamp) in [
+        "2026-01-02T10:00:00.000000Z",
+        "2026-01-02T10:05:00.000000Z",
+        "2026-01-02T10:10:00.000000Z",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let id = new_attempt_id();
+        database
+            .append_attempt(AttemptLogRecord {
+                id: id.clone(),
+                user_id: local_user.clone(),
+                card_id: KNOWLEDGE_CARD_ID.to_owned(),
+                direction: AttemptDirection::Default,
+                session_mode: SessionMode::DailyDue,
+                submitted_payload_json: json!({"keys": ["A"]}).to_string(),
+                is_correct: index != 1,
+                duration_ms: 900,
+                confidence: Confidence::Certain,
+                error_tags: Vec::new(),
+                created_at: (*timestamp).to_owned(),
+                sync_cursor: database.next_attempt_cursor().unwrap(),
+                affects_scheduling: true,
+            })
+            .unwrap();
+        ids.push(id);
+    }
+
+    let page = database.pending_sync(local_user.clone(), 2).unwrap();
+    assert_eq!(page.attempts.len(), 2);
+    assert!(page.has_more_attempts);
+    assert_eq!(
+        page.attempts[0].user_id, remote_user,
+        "uploads are stamped with the server account id"
+    );
+    assert_eq!(page.remote_user_id.as_deref(), Some(remote_user.as_str()));
+
+    // Foreign rows are rejected before anything is written.
+    let mut foreign = page.attempts[0].clone();
+    foreign.id = new_attempt_id();
+    foreign.user_id = stranger.clone();
+    assert!(matches!(
+        database.apply_remote_batch(local_user.clone(), vec![foreign], Vec::new(), 1),
+        Err(FfiError::InvalidInput { .. })
+    ));
+
+    database
+        .confirm_upload(
+            local_user.clone(),
+            page.attempts.iter().map(|a| a.id.clone()).collect(),
+            Vec::new(),
+        )
+        .unwrap();
+    let page = database.pending_sync(local_user.clone(), 2).unwrap();
+    assert_eq!(page.attempts.len(), 1);
+    assert!(!page.has_more_attempts);
+    assert_eq!(page.attempts[0].id, ids[2]);
 }
