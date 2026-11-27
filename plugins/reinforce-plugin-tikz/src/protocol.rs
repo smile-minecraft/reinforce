@@ -7,11 +7,11 @@
 
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use reinforce_plugin_protocol::{
     ErrorMessage, Hello, HostMessage, Operation, PROTOCOL_NAME, PROTOCOL_VERSION, Progress, Ready,
@@ -61,11 +61,42 @@ fn emit(message: &WorkerMessage) -> io::Result<()> {
     stdout.flush()
 }
 
-/// Runs an external tool without letting it inherit stdout, and stops it when
-/// the host sends `cancel`.
+/// Bytes kept from the end of each tool output stream for error messages.
+/// The pipes are always drained to the end so a tool never blocks, but memory
+/// stays bounded however much LaTeX prints.
+const LOG_TAIL_BYTES: usize = 64 * 1024;
+/// Characters of tool output quoted in an error message.
+const MESSAGE_TAIL_CHARS: usize = 2_000;
+
+fn drain_tail(mut pipe: impl Read) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let read = match pipe.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        bytes.extend_from_slice(&chunk[..read]);
+        if bytes.len() > LOG_TAIL_BYTES {
+            let excess = bytes.len() - LOG_TAIL_BYTES;
+            bytes.drain(..excess);
+        }
+    }
+    bytes
+}
+
+fn message_tail(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let tail: Vec<char> = text.chars().rev().take(MESSAGE_TAIL_CHARS).collect();
+    tail.into_iter().rev().collect::<String>().trim().to_owned()
+}
+
+/// Runs an external tool inside `cwd` without letting it inherit stdout, and
+/// stops it when the host sends `cancel`.
 pub fn run_command(
     tool: &Path,
     arguments: &[String],
+    cwd: &Path,
     cancel: &Receiver<HostMessage>,
 ) -> Result<(), RunError> {
     if !tool.is_file() {
@@ -75,10 +106,12 @@ pub fn run_command(
         ));
     }
 
-    // kpathsea reads these: TeX may only open files below the job directory,
-    // so `\input{/etc/passwd}` in submitted TikZ cannot leak into the SVG.
+    // kpathsea reads these: TeX may only open files below its working
+    // directory (the job directory), so `\input{...}` in submitted source
+    // cannot read or write anything else. Other tools ignore them.
     let mut child = Command::new(tool)
         .args(arguments)
+        .current_dir(cwd)
         .env("openin_any", "p")
         .env("openout_any", "p")
         .stdin(Stdio::null())
@@ -92,18 +125,10 @@ pub fn run_command(
             )
         })?;
 
-    let mut stdout_pipe = child.stdout.take().expect("stdout is piped");
-    let stdout_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stdout_pipe.read_to_end(&mut bytes);
-        bytes
-    });
-    let mut stderr_pipe = child.stderr.take().expect("stderr is piped");
-    let stderr_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stderr_pipe.read_to_end(&mut bytes);
-        bytes
-    });
+    let stdout_pipe = child.stdout.take().expect("stdout is piped");
+    let stdout_reader = thread::spawn(move || drain_tail(stdout_pipe));
+    let stderr_pipe = child.stderr.take().expect("stderr is piped");
+    let stderr_reader = thread::spawn(move || drain_tail(stderr_pipe));
 
     loop {
         match cancel.recv_timeout(Duration::from_millis(50)) {
@@ -112,25 +137,12 @@ pub fn run_command(
                 let _ = child.wait();
                 return Err(RunError::Cancelled);
             }
-            Ok(HostMessage::Hello(_)) => {}
+            Ok(HostMessage::Hello(_)) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 // The host closed stdin. The tool may still be finishing; the
                 // server's timeout remains the backstop for a stuck process.
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(_)) => break,
-                        Ok(None) => thread::sleep(Duration::from_millis(50)),
-                        Err(error) => {
-                            return Err(failure(
-                                "external_tool_failed",
-                                format!("cannot wait for {}: {error}", tool.display()),
-                            ));
-                        }
-                    }
-                }
-                break;
+                thread::sleep(Duration::from_millis(50));
             }
-            Err(RecvTimeoutError::Timeout) => {}
         }
         match child.try_wait() {
             Ok(Some(_)) => break,
@@ -150,43 +162,37 @@ pub fn run_command(
             format!("cannot reap {}: {error}", tool.display()),
         )
     })?;
-    let _ = stdout_reader.join();
+    let stdout = stdout_reader.join().unwrap_or_default();
     let stderr = stderr_reader.join().unwrap_or_default();
     if !status.success() {
-        let text = String::from_utf8_lossy(&stderr);
-        let tail = text.chars().rev().take(2_000).collect::<Vec<_>>();
-        let tail: String = tail.into_iter().rev().collect();
+        // LaTeX reports errors on stdout, so fall back to it when stderr is empty.
+        let mut detail = message_tail(&stderr);
+        if detail.is_empty() {
+            detail = message_tail(&stdout);
+        }
         return Err(failure(
             "external_tool_failed",
-            format!("{} exited with {status}: {}", tool.display(), tail.trim()),
+            format!("{} exited with {status}: {detail}", tool.display()),
         ));
     }
     Ok(())
 }
 
-/// A unique directory for one job's intermediate files, removed on drop.
-pub struct Scratch(PathBuf);
+/// A unique, freshly created directory for one job's intermediate files,
+/// removed on drop.
+pub struct Scratch(tempfile::TempDir);
 
 impl Scratch {
     pub fn new(root: &Path, tag: &str) -> io::Result<Self> {
         fs::create_dir_all(root)?;
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let path = root.join(format!("{tag}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&path)?;
-        Ok(Self(path))
+        tempfile::Builder::new()
+            .prefix(&format!("{tag}-"))
+            .tempdir_in(root)
+            .map(Self)
     }
 
     pub fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        self.0.path()
     }
 }
 
@@ -290,5 +296,71 @@ pub fn run(
             }));
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sh_in(cwd: &Path, script: &str) -> Result<(), RunError> {
+        let (_sender, cancel) = mpsc::channel();
+        run_command(
+            Path::new("/bin/sh"),
+            &["-c".to_owned(), script.to_owned()],
+            cwd,
+            &cancel,
+        )
+    }
+
+    fn sh(script: &str) -> Result<(), RunError> {
+        sh_in(&std::env::current_dir().expect("cwd"), script)
+    }
+
+    fn failure_of(result: Result<(), RunError>) -> Failure {
+        match result {
+            Err(RunError::Failure(failure)) => failure,
+            Err(RunError::Cancelled) => panic!("not a cancellation"),
+            Ok(()) => panic!("expected a failure"),
+        }
+    }
+
+    #[test]
+    fn long_logs_keep_only_their_end() {
+        let failure = failure_of(sh(
+            "head -c 8000000 /dev/zero | tr '\\000' x; printf END; exit 1",
+        ));
+        assert_eq!(failure.code, "external_tool_failed");
+        assert!(failure.message.ends_with("END"));
+        assert!(failure.message.len() < 4 * MESSAGE_TAIL_CHARS);
+    }
+
+    #[test]
+    fn failures_quote_stdout_when_stderr_is_empty() {
+        let failure = failure_of(sh("echo '! Undefined control sequence.'; exit 1"));
+        assert_eq!(failure.code, "external_tool_failed");
+        assert!(failure.message.contains("Undefined control sequence"));
+    }
+
+    #[test]
+    fn tools_run_inside_the_job_directory_with_tex_file_access_confined() {
+        let directory = tempfile::tempdir().expect("directory");
+        let expected = directory.path().canonicalize().expect("canonical");
+        let script = format!(
+            "[ \"$(pwd -P)\" = '{}' ] && [ \"$openin_any\" = p ] && [ \"$openout_any\" = p ]",
+            expected.display()
+        );
+        sh_in(directory.path(), &script).expect("tool sees the job directory");
+    }
+
+    #[test]
+    fn scratch_directories_are_unique_and_removed() {
+        let root = tempfile::tempdir().expect("root");
+        let first = Scratch::new(root.path(), "job").expect("first");
+        let second = Scratch::new(root.path(), "job").expect("second");
+        assert_ne!(first.path(), second.path());
+        let path = first.path().to_path_buf();
+        drop(first);
+        assert!(!path.exists());
     }
 }

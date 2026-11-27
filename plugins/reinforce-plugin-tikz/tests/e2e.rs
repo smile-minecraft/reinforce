@@ -147,11 +147,16 @@ if [ "$openin_any" != "p" ] || [ "$openout_any" != "p" ]; then
   echo "kpathsea file access is not restricted" >&2
   exit 1
 fi
+case "$(basename "$(pwd)")" in
+  tikz-*) ;;
+  *) echo "latex must run inside the job directory, not $(pwd)" >&2; exit 1 ;;
+esac
 directory=""
 tex=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -output-directory=*) directory="${1#*=}"; shift ;;
+    /*) echo "latex must only get relative paths, got $1" >&2; exit 1 ;;
     *.tex) tex="$1"; shift ;;
     *) shift ;;
   esac

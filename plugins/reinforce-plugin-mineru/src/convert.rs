@@ -88,9 +88,10 @@ fn page_marker(line: &str) -> Option<i64> {
         .strip_suffix("-->")?
         .trim();
     let (left, right) = inner.split_once(" of ")?;
-    let number = left.strip_prefix("page ")?.trim().parse().ok()?;
-    let _total: i64 = right.trim().parse().ok()?;
-    Some(number)
+    let number: i64 = left.strip_prefix("page ")?.trim().parse().ok()?;
+    let total: i64 = right.trim().parse().ok()?;
+    // Anchors store `pdf_page >= 0`; MinerU numbers pages from 1.
+    (number >= 1 && total >= 1).then_some(number)
 }
 
 /// MinerU writes `<!-- page N of M -->` markers when `--output` is used. A
@@ -150,13 +151,16 @@ fn page_title(page: &Page) -> String {
         .unwrap_or_else(|| format!("Page {}", page.number))
 }
 
-fn hex_digest(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
+/// SHA-256 and size of a file, streamed so a large PDF is never held in memory.
+fn file_digest(path: &Path) -> std::io::Result<(String, u64)> {
+    let mut hasher = Sha256::new();
+    let size = std::io::copy(&mut fs::File::open(path)?, &mut hasher)?;
+    let digest = hasher.finalize();
     let mut text = String::with_capacity(64);
     for byte in digest {
         write!(&mut text, "{byte:02x}").expect("writing to a String cannot fail");
     }
-    text
+    Ok((text, size))
 }
 
 fn timestamp() -> String {
@@ -218,7 +222,7 @@ pub fn operations(
             "mineru produced no page content",
         ));
     }
-    let bytes = fs::read(&input.pdf_path).map_err(|error| {
+    let (sha256, byte_size) = file_digest(&input.pdf_path).map_err(|error| {
         crate::protocol::failure(
             "invalid_input",
             format!("cannot read PDF {}: {error}", input.pdf_path.display()),
@@ -244,8 +248,8 @@ pub fn operations(
             "id": resource_id,
             "kind": "pdf",
             "title": title,
-            "sha256": hex_digest(&bytes),
-            "byte_size": bytes.len(),
+            "sha256": sha256,
+            "byte_size": byte_size,
             "page_count": null,
             "width": null,
             "height": null,
@@ -301,6 +305,14 @@ mod tests {
 
     fn report() -> Value {
         json!({"parse": {"status": "done", "sha256": "abc"}})
+    }
+
+    #[test]
+    fn non_positive_page_markers_are_ignored() {
+        assert_eq!(page_marker("<!-- page -1 of 1 -->"), None);
+        assert_eq!(page_marker("<!-- page 0 of 1 -->"), None);
+        assert_eq!(page_marker("<!-- page 2 of 0 -->"), None);
+        assert_eq!(page_marker("<!-- page 2 of 3 -->"), Some(2));
     }
 
     #[test]

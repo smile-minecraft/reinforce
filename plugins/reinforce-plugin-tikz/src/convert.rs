@@ -1,7 +1,6 @@
 //! Turns LaTeX/dvisvgm output into an SVG resource and a diagram draft card.
 
 use std::fmt::Write as _;
-use std::path::Path;
 
 use reinforce_plugin_protocol::{Operation, OperationKind};
 use serde_json::{Value, json};
@@ -45,25 +44,27 @@ pub fn parse_input(value: &Value) -> Result<Input, RunError> {
     })
 }
 
+/// The job directory is the tools' working directory, so every path handed to
+/// them is relative to it. That keeps TeX's `openin_any=p` confinement tight.
+pub const TEX_FILE: &str = "diagram.tex";
+pub const DVI_FILE: &str = "diagram.dvi";
+pub const SVG_FILE: &str = "diagram.svg";
+
 /// Fixed strings handed to the external tools, never assembled from a shell.
-pub fn latex_arguments(tex: &Path, directory: &Path) -> Vec<String> {
+pub fn latex_arguments() -> Vec<String> {
     [
-        "-interaction=nonstopmode".to_owned(),
-        "-halt-on-error".to_owned(),
-        "-no-shell-escape".to_owned(),
-        format!("-output-directory={}", directory.display()),
-        tex.display().to_string(),
+        "-interaction=nonstopmode",
+        "-halt-on-error",
+        "-no-shell-escape",
+        "-output-directory=.",
+        TEX_FILE,
     ]
+    .map(str::to_owned)
     .to_vec()
 }
 
-pub fn dvisvgm_arguments(dvi: &Path, svg: &Path) -> Vec<String> {
-    [
-        "-o".to_owned(),
-        svg.display().to_string(),
-        dvi.display().to_string(),
-    ]
-    .to_vec()
+pub fn dvisvgm_arguments() -> Vec<String> {
+    ["-o", SVG_FILE, DVI_FILE].map(str::to_owned).to_vec()
 }
 
 pub fn tex_source(input: &Input) -> String {
@@ -74,38 +75,60 @@ pub fn tex_source(input: &Input) -> String {
     )
 }
 
-fn attribute_number(attributes: &str, name: &str) -> Option<i64> {
-    for quote in ['"', '\''] {
-        let needle = format!("{name}={quote}");
-        let start = attributes.find(&needle)? + needle.len();
-        let rest = &attributes[start..];
-        let end = rest.find(quote)?;
-        let value = &rest[..end];
-        let number: String = value
+/// The quoted value of `name` in an SVG start tag. The attribute must start
+/// after whitespace so `stroke-width` never matches `width`.
+fn attribute<'a>(attributes: &'a str, name: &str) -> Option<&'a str> {
+    let mut search = 0;
+    while let Some(relative) = attributes[search..].find(name) {
+        let start = search + relative;
+        search = start + name.len();
+        let preceded_by_space = attributes[..start]
             .chars()
-            .take_while(|character| character.is_ascii_digit() || *character == '.')
-            .collect();
-        if let Ok(parsed) = number.parse::<f64>() {
-            if parsed.is_finite() && parsed >= 0.0 {
-                return Some(parsed.round() as i64);
-            }
+            .next_back()
+            .is_some_and(char::is_whitespace);
+        let Some(rest) = attributes[search..].strip_prefix('=') else {
+            continue;
+        };
+        let Some(quote) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+            continue;
+        };
+        if !preceded_by_space {
+            continue;
         }
+        let value = &rest[1..];
+        return value.find(quote).map(|end| &value[..end]);
     }
     None
 }
 
+/// Rounds a length to a whole number the resource table accepts (`> 0`).
+fn positive_length(value: f64) -> Option<i64> {
+    let rounded = value.round();
+    (rounded.is_finite() && rounded >= 1.0 && rounded <= f64::from(i32::MAX))
+        .then_some(rounded as i64)
+}
+
+/// A length such as `28.746032pt`: the leading number, units ignored.
+fn length(value: &str) -> Option<i64> {
+    let number: String = value
+        .trim()
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '.')
+        .collect();
+    positive_length(number.parse().ok()?)
+}
+
 fn view_box_dimensions(attributes: &str) -> Option<(i64, i64)> {
-    let needle = "viewBox=";
-    let start = attributes.find(needle)? + needle.len();
-    let rest = &attributes[start..];
-    let quote = rest.chars().next()?;
-    if quote != '"' && quote != '\'' {
+    let values: Vec<f64> = attribute(attributes, "viewBox")?
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|part| !part.is_empty())
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if values.len() != 4 {
         return None;
     }
-    let values_text = &rest[1..];
-    let end = values_text.find(quote)?;
-    let values: Vec<&str> = values_text[..end].split_whitespace().collect();
-    Some((values.get(2)?.parse().ok()?, values.get(3)?.parse().ok()?))
+    Some((positive_length(values[2])?, positive_length(values[3])?))
 }
 
 fn svg_dimensions(svg: &str) -> (Option<i64>, Option<i64>) {
@@ -116,14 +139,12 @@ fn svg_dimensions(svg: &str) -> (Option<i64>, Option<i64>) {
         return (None, None);
     };
     let attributes = &svg[start..start + relative_end];
-    match (
-        attribute_number(attributes, "width"),
-        attribute_number(attributes, "height"),
-    ) {
+    let width = attribute(attributes, "width").and_then(length);
+    let height = attribute(attributes, "height").and_then(length);
+    match (width, height) {
         (Some(width), Some(height)) => (Some(width), Some(height)),
         _ => view_box_dimensions(attributes)
-            .map(|(width, height)| (Some(width), Some(height)))
-            .unwrap_or((None, None)),
+            .map_or((None, None), |(width, height)| (Some(width), Some(height))),
     }
 }
 
@@ -247,6 +268,33 @@ mod tests {
     fn dimensions_fall_back_to_the_view_box() {
         let svg = r#"<svg viewBox="0 0 200 100"></svg>"#;
         assert_eq!(svg_dimensions(svg), (Some(200), Some(100)));
+    }
+
+    #[test]
+    fn dimensions_parse_real_dvisvgm_output() {
+        let svg = "<?xml version='1.0' encoding='UTF-8'?>\n<svg version='1.1' xmlns='http://www.w3.org/2000/svg' width='28.746032pt' height='19.5pt' viewBox='-72.0 -72.0 28.746032 19.5'>";
+        assert_eq!(svg_dimensions(svg), (Some(29), Some(20)));
+    }
+
+    #[test]
+    fn view_box_lengths_may_be_fractional() {
+        let svg = "<svg viewBox='-72.0 -72.0 28.7 19.5'>";
+        assert_eq!(svg_dimensions(svg), (Some(29), Some(20)));
+    }
+
+    #[test]
+    fn prefixed_attributes_are_not_mistaken_for_dimensions() {
+        let svg = r#"<svg stroke-width="3" line-height="4" viewBox="0 0 50 40">"#;
+        assert_eq!(svg_dimensions(svg), (Some(50), Some(40)));
+    }
+
+    #[test]
+    fn zero_or_negative_sizes_are_dropped() {
+        assert_eq!(
+            svg_dimensions(r#"<svg width="0.2pt" height="10pt">"#),
+            (None, None)
+        );
+        assert_eq!(svg_dimensions(r#"<svg viewBox="0 0 -5 10">"#), (None, None));
     }
 
     #[test]

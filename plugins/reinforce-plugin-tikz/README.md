@@ -16,7 +16,9 @@ without owner approval.
 - No external tool is bundled or installed by this plugin.
 
 LaTeX runs with `-no-shell-escape` and with `openin_any=p` / `openout_any=p`,
-so submitted TikZ cannot read or write files outside the job directory. The worker assembles an argument vector and
+and both tools run with the job directory as their working directory, so
+submitted TikZ cannot read or write files outside that directory. Tool logs are
+drained continuously and only their last 64 KiB is kept for error messages. The worker assembles an argument vector and
 never invokes a shell. On this development machine neither `latex` nor
 `dvisvgm` is installed, so the successful path is verified only with fake
 executables in `tests/e2e.rs`, not with a real render.

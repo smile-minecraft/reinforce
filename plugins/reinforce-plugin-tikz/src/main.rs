@@ -11,6 +11,8 @@ use clap::Parser;
 use reinforce_plugin_protocol::{Hello, HostMessage, Operation};
 
 const CAPABILITIES: &[&str] = &["tikz_render"];
+/// Larger SVGs would not fit the server's default plugin output limit anyway.
+const MAX_SVG_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -66,9 +68,9 @@ fn work(
             ),
         )
     })?;
-    let tex = scratch.path().join("diagram.tex");
-    let dvi = scratch.path().join("diagram.dvi");
-    let svg = scratch.path().join("diagram.svg");
+    let tex = scratch.path().join(convert::TEX_FILE);
+    let dvi = scratch.path().join(convert::DVI_FILE);
+    let svg = scratch.path().join(convert::SVG_FILE);
     std::fs::write(&tex, convert::tex_source(&input)).map_err(|error| {
         protocol::failure(
             "io_error",
@@ -76,8 +78,12 @@ fn work(
         )
     })?;
 
-    let latex_arguments = convert::latex_arguments(&tex, scratch.path());
-    protocol::run_command(&options.latex, &latex_arguments, cancel)?;
+    protocol::run_command(
+        &options.latex,
+        &convert::latex_arguments(),
+        scratch.path(),
+        cancel,
+    )?;
     if !dvi.is_file() {
         return Err(protocol::failure(
             "unparseable_output",
@@ -85,8 +91,21 @@ fn work(
         ));
     }
 
-    let dvisvgm_arguments = convert::dvisvgm_arguments(&dvi, &svg);
-    protocol::run_command(&options.dvisvgm, &dvisvgm_arguments, cancel)?;
+    protocol::run_command(
+        &options.dvisvgm,
+        &convert::dvisvgm_arguments(),
+        scratch.path(),
+        cancel,
+    )?;
+    let svg_size = std::fs::metadata(&svg)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if svg_size > MAX_SVG_BYTES {
+        return Err(protocol::failure(
+            "output_too_large",
+            format!("dvisvgm wrote {svg_size} bytes, more than {MAX_SVG_BYTES}"),
+        ));
+    }
     let svg_bytes = std::fs::read(&svg).map_err(|error| {
         protocol::failure(
             "unparseable_output",

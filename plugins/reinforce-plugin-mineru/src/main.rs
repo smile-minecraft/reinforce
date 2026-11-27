@@ -11,6 +11,8 @@ use clap::Parser;
 use reinforce_plugin_protocol::{Hello, HostMessage, Operation};
 
 const CAPABILITIES: &[&str] = &["ingest_pdf"];
+/// MinerU's `--json` summary is small; anything larger is not a summary.
+const MAX_SUMMARY_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -73,7 +75,13 @@ fn work(
     })?;
     let output = scratch.path().join("content.md");
     let arguments = convert::tool_arguments(options, &input.pdf_path, &output);
-    let result = protocol::run_command(&options.tool, &arguments, cancel)?;
+    let result = protocol::run_command(
+        &options.tool,
+        &arguments,
+        scratch.path(),
+        protocol::Keep::Head(MAX_SUMMARY_BYTES),
+        cancel,
+    )?;
     let report: serde_json::Value = serde_json::from_slice(&result.stdout).map_err(|error| {
         protocol::failure(
             "unparseable_output",
