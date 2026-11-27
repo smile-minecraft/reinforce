@@ -15,6 +15,7 @@ argon2 = { version = "0.6", features = ["getrandom"] }
 axum = { version = "0.8", features = ["multipart"] }
 clap = { version = "4.6", features = ["derive"] }
 futures-util = "0.3"
+gpui = "0.2.2"
 pulldown-cmark = { version = "0.13", default-features = false }
 rand = "0.10"
 reinforce-core = { path = "crates/reinforce-core", version = "0.1.0" }
@@ -36,8 +37,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 typst = { version = "0.15", default-features = false }
 typst-as-lib = { version = "0.18", default-features = false }
+typst-assets = { version = "0.15", features = ["fonts"] }
 typst-layout = { version = "0.15", default-features = false }
 typst-pdf = { version = "0.15", default-features = false }
+typst-svg = { version = "0.15", default-features = false }
 ttf-parser = "0.25"
 uniffi = "0.33"
 uuid = { version = "1", features = ["serde", "v7"] }
