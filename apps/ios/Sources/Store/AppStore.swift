@@ -31,6 +31,7 @@ final class AppStore {
     let blobsURL: URL
     let userId: String
     let uiTestImportPath: String?
+    let syncManager: SyncManager
 
     var subjects: [SubjectSummary] = []
     var notes: [Note] = []
@@ -45,6 +46,7 @@ final class AppStore {
     var importBannerMessage: String? = nil
     var importErrorMessage: String? = nil
     var activeQuiz: ActiveQuizLaunch? = nil
+    var pendingDeepLink: DeepLinkTarget? = nil
 
     private var blobPathCache: [String: URL] = [:]
 
@@ -52,7 +54,10 @@ final class AppStore {
         databaseURL: URL? = nil,
         blobsURL: URL? = nil,
         userDefaults: UserDefaults = .standard,
-        launchArguments: [String] = ProcessInfo.processInfo.arguments
+        launchArguments: [String] = ProcessInfo.processInfo.arguments,
+        apiClient: ReinforceAPIClient = ReinforceAPIClient(),
+        credentialStore: CredentialStoreProtocol = KeychainCredentialStore(),
+        networkMonitor: NetworkMonitorProtocol = PathNetworkMonitor()
     ) throws {
         let reset = launchArguments.contains("-uitest-reset")
         let resolvedDB: URL
@@ -93,6 +98,31 @@ final class AppStore {
             let created = try database.createUser(displayName: "Local Learner")
             userDefaults.set(created, forKey: Self.localUserIdKey)
             self.userId = created
+        }
+
+        self.syncManager = SyncManager(
+            database: database,
+            blobsURL: resolvedBlobs,
+            localUserId: userId,
+            apiClient: apiClient,
+            credentialStore: credentialStore,
+            networkMonitor: networkMonitor,
+            userDefaults: userDefaults,
+            resetState: reset
+        )
+
+        self.syncManager.onDataMutated = { [weak self] mediaUpdated in
+            guard let self else { return }
+            if mediaUpdated {
+                MediaAssetCache.shared.clear()
+            }
+            self.refreshAll()
+        }
+
+        if let idx = launchArguments.firstIndex(of: "-uitest-open-url"),
+           idx + 1 < launchArguments.count,
+           let url = URL(string: launchArguments[idx + 1]) {
+            self.pendingDeepLink = DeepLinkParser.parse(url)
         }
 
         refreshAll()
@@ -199,6 +229,37 @@ final class AppStore {
 
     func loadKnowledgeCard(id: String) -> KnowledgeCard? {
         try? database.knowledgeCard(id: id)
+    }
+
+    func loadQuestionCard(id: String) -> QuestionCard? {
+        try? database.questionCard(id: id)
+    }
+
+    func saveUserCardMeta(
+        cardId: String,
+        starred: Bool,
+        personalTags: [String],
+        personalNote: String?
+    ) {
+        _ = try? database.saveUserCardMeta(
+            userId: userId,
+            cardId: cardId,
+            starred: starred,
+            personalTags: personalTags,
+            personalNote: personalNote
+        )
+        syncManager.notifyLocalStudyChange()
+    }
+
+    func handleIncomingURL(_ url: URL) {
+        if let target = DeepLinkParser.parse(url) {
+            pendingDeepLink = target
+        }
+    }
+
+    func consumePendingDeepLink() -> DeepLinkTarget? {
+        defer { pendingDeepLink = nil }
+        return pendingDeepLink
     }
 
     func loadNeighbors(cardId: String) -> [GraphNeighbor] {
@@ -351,5 +412,6 @@ final class AppStore {
     func closeQuizAndRefresh() {
         activeQuiz = nil
         refreshAll()
+        syncManager.notifyLocalStudyChange()
     }
 }

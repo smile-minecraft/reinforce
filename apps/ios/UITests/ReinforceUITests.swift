@@ -254,4 +254,54 @@ final class ReinforceUITests: XCTestCase {
 
         XCTAssertTrue(app.staticTexts["quiz-summary-score"].firstMatch.waitForExistence(timeout: 8))
     }
+
+    func testSyncSheetExportPresetsAndDeepLinkCard() throws {
+        let demoPath = try fixturePath("demo")
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-uitest-reset",
+            "-uitest-language", "zh-TW",
+            "-uitest-import-path", demoPath
+        ]
+        app.launch()
+
+        // 1. Import demo content
+        tapButton(app, id: "empty-import-button", timeout: 8)
+        XCTAssertTrue(app.descendants(matching: .any)["import-success-banner"].firstMatch.waitForExistence(timeout: 8))
+
+        // 2. Open Server & Sync sheet and verify inputs
+        if isPad {
+            ensureSidebarVisibleIfPad(app)
+            let sidebarSync = app.buttons["sidebar-sync-button"].firstMatch
+            if sidebarSync.waitForExistence(timeout: 5) {
+                sidebarSync.tap()
+            } else {
+                tapButton(app, id: "toolbar-sync-button", timeout: 6)
+            }
+        } else {
+            tapButton(app, id: "toolbar-sync-button", timeout: 6)
+        }
+        XCTAssertTrue(app.textFields["sync-server-url-field"].firstMatch.waitForExistence(timeout: 6))
+        XCTAssertTrue(app.buttons["sync-sign-in-button"].firstMatch.exists)
+        attachScreenshot("server-sync-sheet")
+        tapButton(app, id: "sync-sheet-done-button")
+
+        // 3. Open note and verify PDF Export sheet shows all three presets
+        tapButton(app, id: "note-row-相位變化入門", timeout: 8)
+        tapButton(app, id: "note-export-pdf-button", timeout: 6)
+        XCTAssertTrue(app.buttons["export-preset-standard"].firstMatch.waitForExistence(timeout: 6))
+        XCTAssertTrue(app.buttons["export-preset-goodnotes"].firstMatch.exists)
+        XCTAssertTrue(app.buttons["export-preset-worksheet"].firstMatch.exists)
+        attachScreenshot("pdf-export-sheet")
+        tapButton(app, id: "export-sheet-close-button")
+
+        // 4. Open reinforce://card/<id> deep link (without -uitest-reset so imported data stays intact)
+        app.launchArguments = ["-uitest-language", "zh-TW"]
+        let deepLinkURL = try XCTUnwrap(URL(string: "reinforce://card/01a21714-c98d-716e-9b53-ead7c8ee810f"))
+        app.open(deepLinkURL)
+
+        XCTAssertTrue(app.staticTexts["水的三態與相變"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.descendants(matching: .any)["card-detail-content"].firstMatch.waitForExistence(timeout: 6))
+        attachScreenshot("deeplink-card")
+    }
 }

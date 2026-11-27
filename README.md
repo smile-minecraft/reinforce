@@ -149,7 +149,12 @@ for every crate, the WebApp package and all documentation.
 
 The native SwiftUI client in `apps/ios/` supports iPhone and iPad from a single
 target and runs completely offline against `reinforce-core` via UniFFI and local
-SQLite. The Xcode project is generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+SQLite. It also supports optional server sync (`Server & Sync`) using session
+cookies stored in iOS Keychain, automatic foreground / reconnect sync with
+offline queuing, server-rendered PDF export (`standard`, `goodnotes`,
+`worksheet`) via `/api/export` and the iOS share sheet, and `reinforce://card/<id>`
+/ `reinforce://question/<id>` / `reinforce://note/<id>` deep links. The Xcode
+project is generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen)
 from `apps/ios/project.yml` and is not committed to git.
 
 Requirements: Xcode (with an iOS Simulator runtime installed), `xcodegen`, and
@@ -166,7 +171,8 @@ CARGO_BUILD_JOBS=4 ./scripts/build-ios-ffi.sh
 xcodebuild test \
   -project apps/ios/Reinforce.xcodeproj \
   -scheme Reinforce \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+  -derivedDataPath apps/ios/build/DerivedData \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro'
 ```
 
 Open `apps/ios/Reinforce.xcodeproj` in Xcode to run interactively on an iPhone

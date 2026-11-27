@@ -4,8 +4,11 @@ struct ReadingHomeView: View {
     let store: AppStore
     let l10n: LocalizationManager
     let onRequestImport: () -> Void
+    let onOpenSyncSheet: () -> Void
+    let onRequestExport: (PDFExportContext) -> Void
     let onOpenNote: (Note) -> Void
     let onOpenCard: (String) -> Void
+    let onOpenQuestion: (String) -> Void
 
     @State private var searchQuery: String = ""
     @State private var launchError: String?
@@ -17,6 +20,8 @@ struct ReadingHomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                syncStatusBannerIfNeeded
+
                 if let banner = store.importBannerMessage {
                     HStack(spacing: 10) {
                         Image(systemName: "checkmark.circle.fill")
@@ -110,19 +115,35 @@ struct ReadingHomeView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 460)
 
-            Button {
-                onRequestImport()
-            } label: {
-                Label(l10n.t("import.button"), systemImage: "square.and.arrow.down")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 22)
-                    .frame(minHeight: 48)
-                    .background(ReinforceTheme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            HStack(spacing: 10) {
+                Button {
+                    onRequestImport()
+                } label: {
+                    Label(l10n.t("import.button"), systemImage: "square.and.arrow.down")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .frame(minHeight: 48)
+                        .background(ReinforceTheme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("empty-import-button")
+
+                Button {
+                    onOpenSyncSheet()
+                } label: {
+                    Label(l10n.t("sync.connectShort"), systemImage: "icloud.and.arrow.down")
+                        .font(.headline)
+                        .foregroundStyle(ReinforceTheme.accent)
+                        .padding(.horizontal, 18)
+                        .frame(minHeight: 48)
+                        .background(ReinforceTheme.accentSoft)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("empty-connect-server-button")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("empty-import-button")
 
             Text(l10n.t("import.hintFolder"))
                 .font(.caption)
@@ -331,22 +352,26 @@ struct ReadingHomeView: View {
                                 let preview = ContentBlock.decodeArray(from: q.stemBlocksJson)
                                     .map(\.plainSummary)
                                     .joined(separator: " ")
-                                HStack {
-                                    Text(preview.isEmpty ? id : preview)
-                                        .font(.subheadline)
-                                        .foregroundStyle(ReinforceTheme.ink)
-                                        .lineLimit(2)
-                                    Spacer()
-                                    Text("Q")
-                                        .font(.caption2.weight(.bold))
-                                        .foregroundStyle(ReinforceTheme.inkMuted)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
-                                        .background(ReinforceTheme.subtle)
-                                        .clipShape(Capsule())
+                                Button { onOpenQuestion(id) } label: {
+                                    HStack {
+                                        Text(preview.isEmpty ? id : preview)
+                                            .font(.subheadline)
+                                            .foregroundStyle(ReinforceTheme.ink)
+                                            .lineLimit(2)
+                                            .multilineTextAlignment(.leading)
+                                        Spacer()
+                                        Text("Q")
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(ReinforceTheme.inkMuted)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3)
+                                            .background(ReinforceTheme.subtle)
+                                            .clipShape(Capsule())
+                                    }
+                                    .padding(12)
+                                    .reinforceCard(padding: 0)
                                 }
-                                .padding(12)
-                                .reinforceCard(padding: 0)
+                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -362,6 +387,17 @@ struct ReadingHomeView: View {
                     .font(.headline)
                     .foregroundStyle(ReinforceTheme.ink)
                 Spacer()
+                if let selectedSubject = store.selectedSubject {
+                    Button {
+                        onRequestExport(.subject(name: selectedSubject))
+                    } label: {
+                        Label(l10n.t("export.shortButton"), systemImage: "square.and.arrow.up")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(ReinforceTheme.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("subject-export-pdf-button")
+                }
                 Text(l10n.t("reading.subjectCount", store.filteredNotes.count))
                     .font(.caption)
                     .foregroundStyle(ReinforceTheme.inkMuted)
@@ -493,6 +529,100 @@ struct ReadingHomeView: View {
                     }
                 }
                 .reinforceCard(padding: 0)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var syncStatusBannerIfNeeded: some View {
+        let sync = store.syncManager
+        switch sync.status {
+        case .signedOut:
+            EmptyView()
+        case .syncing:
+            Button {
+                onOpenSyncSheet()
+            } label: {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(l10n.t("sync.status.syncing"))
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(ReinforceTheme.accent)
+                    Spacer()
+                }
+                .padding(12)
+                .background(ReinforceTheme.accentSoft)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("home-sync-status-banner")
+        case .offlineQueued(let count):
+            Button {
+                onOpenSyncSheet()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "wifi.slash")
+                        .foregroundStyle(ReinforceTheme.warn)
+                    Text(l10n.t("sync.status.offlineQueued", count))
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(ReinforceTheme.warn)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(ReinforceTheme.warn)
+                }
+                .padding(12)
+                .background(ReinforceTheme.warnSoft)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("home-sync-status-banner")
+        case .error(let message), .authExpired(let message):
+            Button {
+                onOpenSyncSheet()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.icloud.fill")
+                        .foregroundStyle(ReinforceTheme.bad)
+                    Text(message)
+                        .font(.subheadline)
+                        .foregroundStyle(ReinforceTheme.bad)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(ReinforceTheme.bad)
+                }
+                .padding(12)
+                .background(ReinforceTheme.badSoft)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("home-sync-status-banner")
+        case .idle:
+            if sync.totalPendingCount > 0 {
+                Button {
+                    onOpenSyncSheet()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "icloud.and.arrow.up")
+                            .foregroundStyle(ReinforceTheme.accent)
+                        Text(l10n.t("sync.banner.pendingCount", sync.totalPendingCount))
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(ReinforceTheme.accent)
+                        Spacer()
+                        Text(l10n.t("sync.syncNow"))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(ReinforceTheme.accent)
+                    }
+                    .padding(12)
+                    .background(ReinforceTheme.accentSoft)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("home-sync-status-banner")
             }
         }
     }

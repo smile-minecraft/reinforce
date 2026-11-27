@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct ReinforceApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var store: AppStore?
     @State private var initError: String?
     @State private var l10n: LocalizationManager
@@ -28,6 +29,12 @@ struct ReinforceApp: App {
         WindowGroup {
             if let store {
                 RootNavigationView(store: store, l10n: l10n)
+                    .onOpenURL { url in
+                        store.handleIncomingURL(url)
+                    }
+                    .onChange(of: scenePhase, initial: true) { _, newPhase in
+                        store.syncManager.handleScenePhaseChange(newPhase)
+                    }
             } else {
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")

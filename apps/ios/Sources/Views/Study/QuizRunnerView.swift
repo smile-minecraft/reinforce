@@ -39,6 +39,11 @@ struct QuizRunnerView: View {
         .onChange(of: scenePhase) { _, newPhase in
             viewModel.handleScenePhaseChange(newPhase)
         }
+        .onChange(of: viewModel.summary != nil) { _, hasSummary in
+            if hasSummary {
+                store.syncManager.notifyLocalStudyChange()
+            }
+        }
         .onDisappear {
             viewModel.stopTimer()
         }

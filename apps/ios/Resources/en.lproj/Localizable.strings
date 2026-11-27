@@ -206,3 +206,71 @@
 "study.runner.summary.reviewHeading" = "Question review";
 "study.runner.summary.backToStudy" = "Back to Study Hub";
 "study.runner.summary.yourAnswer" = "Your answer";
+
+/* Server Sync */
+"sync.title" = "Server & Sync";
+"sync.connectHeading" = "Connect to Reinforce Server";
+"sync.connectSubtitle" = "Sign in to automatically upload offline attempts, pull published content, and export study sheet PDFs.";
+"sync.connectShort" = "Connect Server";
+"sync.serverURL" = "Server URL";
+"sync.checkServer" = "Check";
+"sync.modeSingleHint" = "Single-user mode detected. You can connect directly without a password.";
+"sync.modeInviteHint" = "Invite mode detected. Sign in with your existing account username and password.";
+"sync.username" = "Username";
+"sync.usernamePlaceholder" = "Enter username";
+"sync.password" = "Password";
+"sync.passwordPlaceholder" = "Enter password";
+"sync.connectAndSync" = "Connect & Sync";
+"sync.signInAndSync" = "Sign In & Sync";
+"sync.keychainNotice" = "Session credentials are stored securely in iOS Keychain and cleared on sign out.";
+"sync.keychainBadge" = "Keychain";
+"sync.localPendingNotice" = "Pending local changes ready to upload: %1$d attempt(s), %2$d card note(s).";
+"sync.account" = "Account";
+"sync.authMode" = "Auth mode";
+"sync.authModeSingle" = "Single-user (implicit owner)";
+"sync.authModeInvite" = "Invite (session cookie)";
+"sync.networkState" = "Network";
+"sync.online" = "Online";
+"sync.offline" = "Offline";
+"sync.queueHeading" = "Sync Queue";
+"sync.pendingAttempts" = "Pending attempts";
+"sync.pendingMeta" = "Pending card notes";
+"sync.lastSynced" = "Last synced";
+"sync.lastSummary" = "Last run: uploaded %1$d attempt(s), pulled %2$d attempt(s), applied %3$d content item(s).";
+"sync.syncNow" = "Sync Now";
+"sync.signOut" = "Sign Out";
+"sync.status.signedOut" = "Not Connected";
+"sync.status.syncing" = "Syncing…";
+"sync.status.synced" = "Synced";
+"sync.status.offlineQueued" = "Offline · %d queued";
+"sync.status.error" = "Sync Error";
+"sync.status.authExpired" = "Session Expired";
+"sync.banner.pendingCount" = "%d pending change(s) waiting to upload";
+
+/* PDF Export */
+"export.title" = "Export Study PDF";
+"export.shortButton" = "Export PDF";
+"export.scopeHeading" = "Export Scope";
+"export.scope.note" = "Note: %@";
+"export.scope.subject" = "Subject: %@";
+"export.scope.weakness" = "Weakness review sheet";
+"export.deepLinkHint" = "Generated on your Reinforce server with reinforce:// deep links back to each card.";
+"export.weaknessThreshold" = "Minimum weakness score";
+"export.presetHeading" = "Layout Preset";
+"export.preset.standard.name" = "Standard";
+"export.preset.standard.desc" = "Clean print layout for notes, cards, figures, and citations.";
+"export.preset.goodnotes.name" = "GoodNotes";
+"export.preset.goodnotes.desc" = "Wide handwriting margin and card deep links tailored for GoodNotes annotation.";
+"export.preset.worksheet.name" = "Worksheet";
+"export.preset.worksheet.desc" = "Practice layout with answer spaces for active recall drills on paper or iPad.";
+"export.serverRequiredTitle" = "Server connection required";
+"export.serverRequiredBody" = "PDF study sheets are rendered by your Reinforce server (/api/export). Connect your server first.";
+"export.shareAgain" = "Share";
+"export.generating" = "Generating PDF…";
+"export.generateAndShare" = "Generate & Share PDF";
+
+/* Question Detail */
+"question.detailTitle" = "Question";
+"question.revealAnswer" = "Reveal answer & explanation";
+"question.hideAnswer" = "Hide answer";
+"question.missing" = "Referenced question could not be found locally.";

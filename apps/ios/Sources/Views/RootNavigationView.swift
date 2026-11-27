@@ -12,6 +12,7 @@ enum PrimarySection: String, Hashable, CaseIterable, Identifiable {
 enum ReadingRoute: Hashable {
     case note(String)
     case card(String)
+    case question(String)
 }
 
 struct RootNavigationView: View {
@@ -24,7 +25,10 @@ struct RootNavigationView: View {
     @State private var selectedSplitSection: PrimarySection? = .reading
     @State private var readingPath: [ReadingRoute] = []
     @State private var splitPath: [ReadingRoute] = []
+    @State private var suppressNextSplitReset: Bool = false
     @State private var showFileImporter = false
+    @State private var showSyncSheet = false
+    @State private var activeExportContext: PDFExportContext? = nil
 
     private static var allowedImportTypes: [UTType] {
         var types: [UTType] = [.folder, .json, .plainText]
@@ -56,6 +60,20 @@ struct RootNavigationView: View {
                 store.importErrorMessage = error.localizedDescription
             }
         }
+        .sheet(isPresented: $showSyncSheet) {
+            ServerSyncSheet(store: store, l10n: l10n)
+        }
+        .sheet(item: $activeExportContext) { context in
+            PDFExportSheet(
+                context: context,
+                store: store,
+                l10n: l10n,
+                onRequestServerSetup: {
+                    activeExportContext = nil
+                    showSyncSheet = true
+                }
+            )
+        }
         .fullScreenCover(item: Binding(
             get: { store.activeQuiz },
             set: { if $0 == nil { store.closeQuizAndRefresh() } }
@@ -74,6 +92,40 @@ struct RootNavigationView: View {
                 onClose: { store.closeQuizAndRefresh() }
             )
         }
+        .onAppear {
+            applyPendingDeepLinkIfAny()
+        }
+        .onChange(of: store.pendingDeepLink) { _, _ in
+            applyPendingDeepLinkIfAny()
+        }
+    }
+
+    private func applyPendingDeepLinkIfAny() {
+        guard let target = store.consumePendingDeepLink() else { return }
+
+        showSyncSheet = false
+        activeExportContext = nil
+        if store.activeQuiz != nil {
+            store.closeQuizAndRefresh()
+        }
+
+        let route: ReadingRoute
+        switch target {
+        case .card(let id):
+            route = .card(id)
+        case .question(let id):
+            route = .question(id)
+        case .note(let id):
+            route = .note(id)
+        }
+
+        selectedTab = .reading
+        readingPath = [route]
+        if selectedSplitSection != .reading {
+            suppressNextSplitReset = true
+            selectedSplitSection = .reading
+        }
+        splitPath = [route]
     }
 
     private func triggerImport() {
@@ -99,6 +151,28 @@ struct RootNavigationView: View {
                     Label(l10n.t("nav.practical"), systemImage: "timer")
                         .tag(PrimarySection.practical)
                         .accessibilityIdentifier("sidebar-practical")
+                }
+
+                Section(l10n.t("sync.title")) {
+                    Button {
+                        showSyncSheet = true
+                    } label: {
+                        HStack {
+                            Label(syncSidebarLabel, systemImage: syncIconName)
+                                .foregroundStyle(syncTintColor)
+                            Spacer()
+                            if store.syncManager.totalPendingCount > 0 {
+                                Text("\(store.syncManager.totalPendingCount)")
+                                    .font(.caption2.monospacedDigit().weight(.semibold))
+                                    .foregroundStyle(ReinforceTheme.warn)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(ReinforceTheme.warnSoft)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("sidebar-sync-button")
                 }
 
                 if !store.subjects.isEmpty {
@@ -153,6 +227,7 @@ struct RootNavigationView: View {
             .navigationTitle(l10n.t("app.name"))
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
+                    syncToolbarButton
                     importToolbarButton
                     languageMenu
                 }
@@ -167,13 +242,26 @@ struct RootNavigationView: View {
                             store: store,
                             l10n: l10n,
                             onRequestImport: triggerImport,
+                            onOpenSyncSheet: { showSyncSheet = true },
+                            onRequestExport: { activeExportContext = $0 },
                             onOpenNote: { splitPath.append(.note($0.id)) },
-                            onOpenCard: { splitPath.append(.card($0)) }
+                            onOpenCard: { splitPath.append(.card($0)) },
+                            onOpenQuestion: { splitPath.append(.question($0)) }
                         )
                     case .study:
-                        StudyHubView(store: store, l10n: l10n, defaultMode: .dailyDue)
+                        StudyHubView(
+                            store: store,
+                            l10n: l10n,
+                            defaultMode: .dailyDue,
+                            onRequestExport: { activeExportContext = $0 }
+                        )
                     case .practical:
-                        StudyHubView(store: store, l10n: l10n, defaultMode: .practicalExam)
+                        StudyHubView(
+                            store: store,
+                            l10n: l10n,
+                            defaultMode: .practicalExam,
+                            onRequestExport: { activeExportContext = $0 }
+                        )
                     }
                 }
                 .navigationDestination(for: ReadingRoute.self) { route in
@@ -181,7 +269,11 @@ struct RootNavigationView: View {
                 }
             }
             .onChange(of: selectedSplitSection) { _, _ in
-                splitPath.removeAll()
+                if suppressNextSplitReset {
+                    suppressNextSplitReset = false
+                } else {
+                    splitPath.removeAll()
+                }
             }
         }
         .navigationSplitViewStyle(.balanced)
@@ -196,11 +288,15 @@ struct RootNavigationView: View {
                     store: store,
                     l10n: l10n,
                     onRequestImport: triggerImport,
+                    onOpenSyncSheet: { showSyncSheet = true },
+                    onRequestExport: { activeExportContext = $0 },
                     onOpenNote: { readingPath.append(.note($0.id)) },
-                    onOpenCard: { readingPath.append(.card($0)) }
+                    onOpenCard: { readingPath.append(.card($0)) },
+                    onOpenQuestion: { readingPath.append(.question($0)) }
                 )
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarTrailing) {
+                        syncToolbarButton
                         importToolbarButton
                         languageMenu
                     }
@@ -215,13 +311,19 @@ struct RootNavigationView: View {
             .tag(PrimarySection.reading)
 
             NavigationStack {
-                StudyHubView(store: store, l10n: l10n, defaultMode: .dailyDue)
-                    .toolbar {
-                        ToolbarItemGroup(placement: .topBarTrailing) {
-                            importToolbarButton
-                            languageMenu
-                        }
+                StudyHubView(
+                    store: store,
+                    l10n: l10n,
+                    defaultMode: .dailyDue,
+                    onRequestExport: { activeExportContext = $0 }
+                )
+                .toolbar {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        syncToolbarButton
+                        importToolbarButton
+                        languageMenu
                     }
+                }
             }
             .tabItem {
                 Label(l10n.t("nav.study"), systemImage: "checklist")
@@ -229,13 +331,19 @@ struct RootNavigationView: View {
             .tag(PrimarySection.study)
 
             NavigationStack {
-                StudyHubView(store: store, l10n: l10n, defaultMode: .practicalExam)
-                    .toolbar {
-                        ToolbarItemGroup(placement: .topBarTrailing) {
-                            importToolbarButton
-                            languageMenu
-                        }
+                StudyHubView(
+                    store: store,
+                    l10n: l10n,
+                    defaultMode: .practicalExam,
+                    onRequestExport: { activeExportContext = $0 }
+                )
+                .toolbar {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        syncToolbarButton
+                        importToolbarButton
+                        languageMenu
                     }
+                }
             }
             .tabItem {
                 Label(l10n.t("nav.practical"), systemImage: "timer")
@@ -254,7 +362,8 @@ struct RootNavigationView: View {
                     note: note,
                     store: store,
                     l10n: l10n,
-                    onOpenCard: { path.wrappedValue.append(.card($0)) }
+                    onOpenCard: { path.wrappedValue.append(.card($0)) },
+                    onRequestExport: { activeExportContext = $0 }
                 )
             } else {
                 Text(l10n.t("common.empty"))
@@ -266,7 +375,55 @@ struct RootNavigationView: View {
                 l10n: l10n,
                 onOpenCard: { path.wrappedValue.append(.card($0)) }
             )
+        case .question(let questionId):
+            QuestionCardDetailView(
+                questionId: questionId,
+                store: store,
+                l10n: l10n,
+                onOpenCard: { path.wrappedValue.append(.card($0)) }
+            )
         }
+    }
+
+    private var syncIconName: String {
+        switch store.syncManager.status {
+        case .signedOut: return "icloud"
+        case .syncing: return "arrow.triangle.2.circlepath.icloud"
+        case .idle: return "checkmark.icloud"
+        case .offlineQueued: return "wifi.slash"
+        case .error, .authExpired: return "exclamationmark.icloud"
+        }
+    }
+
+    private var syncTintColor: Color {
+        switch store.syncManager.status {
+        case .signedOut: return ReinforceTheme.inkMuted
+        case .syncing: return ReinforceTheme.accent
+        case .idle: return ReinforceTheme.ok
+        case .offlineQueued: return ReinforceTheme.warn
+        case .error, .authExpired: return ReinforceTheme.bad
+        }
+    }
+
+    private var syncSidebarLabel: String {
+        switch store.syncManager.status {
+        case .signedOut: return l10n.t("sync.status.signedOut")
+        case .syncing: return l10n.t("sync.status.syncing")
+        case .idle: return l10n.t("sync.status.synced")
+        case .offlineQueued(let count): return l10n.t("sync.status.offlineQueued", count)
+        case .error: return l10n.t("sync.status.error")
+        case .authExpired: return l10n.t("sync.status.authExpired")
+        }
+    }
+
+    private var syncToolbarButton: some View {
+        Button {
+            showSyncSheet = true
+        } label: {
+            Label(syncSidebarLabel, systemImage: syncIconName)
+                .foregroundStyle(syncTintColor)
+        }
+        .accessibilityIdentifier("toolbar-sync-button")
     }
 
     private var importToolbarButton: some View {

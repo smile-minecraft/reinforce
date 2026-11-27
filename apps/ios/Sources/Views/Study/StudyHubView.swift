@@ -24,6 +24,7 @@ struct StudyHubView: View {
     let store: AppStore
     let l10n: LocalizationManager
     let defaultMode: StudyModeChoice
+    var onRequestExport: ((PDFExportContext) -> Void)? = nil
 
     @State private var selectedMode: StudyModeChoice
     @State private var questionLimit: Int = 20
@@ -39,10 +40,16 @@ struct StudyHubView: View {
     private static let practicalPresets = [15, 30, 45, 60, 120]
     private static let pinRadii = [0.04, 0.06, 0.08]
 
-    init(store: AppStore, l10n: LocalizationManager, defaultMode: StudyModeChoice = .dailyDue) {
+    init(
+        store: AppStore,
+        l10n: LocalizationManager,
+        defaultMode: StudyModeChoice = .dailyDue,
+        onRequestExport: ((PDFExportContext) -> Void)? = nil
+    ) {
         self.store = store
         self.l10n = l10n
         self.defaultMode = defaultMode
+        self.onRequestExport = onRequestExport
         self._selectedMode = State(initialValue: defaultMode)
     }
 
@@ -380,9 +387,23 @@ struct StudyHubView: View {
 
         case .weaknessDrill:
             VStack(alignment: .leading, spacing: 10) {
-                Text(l10n.t("study.weaknessPreview.heading"))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(ReinforceTheme.ink)
+                HStack {
+                    Text(l10n.t("study.weaknessPreview.heading"))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ReinforceTheme.ink)
+                    Spacer()
+                    if let onRequestExport {
+                        Button {
+                            onRequestExport(.weakness(defaultThreshold: 0.5))
+                        } label: {
+                            Label(l10n.t("export.shortButton"), systemImage: "square.and.arrow.up")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(ReinforceTheme.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("study-export-weakness-pdf-button")
+                    }
+                }
 
                 if let report = store.weaknessReport,
                    (!report.questions.isEmpty || !report.knowledgeCards.isEmpty) {
