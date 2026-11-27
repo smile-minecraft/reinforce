@@ -652,3 +652,62 @@ export interface ExportResult {
   filename: string
   contentType: string
 }
+
+// Device sync (crates/reinforce-server/src/routes/sync.rs)
+export interface UserCardMeta {
+  user_id: string
+  card_id: string
+  starred: boolean
+  personal_tags: string[]
+  personal_note: string | null
+  updated_at: string
+}
+
+export interface SyncPushAttemptsRequest {
+  attempts: AttemptLog[]
+}
+
+export interface SyncPushAttemptsResult {
+  accepted: number
+  duplicates: number
+  cursor: number
+}
+
+export interface SyncPullAttemptsResult {
+  attempts: AttemptLog[]
+  next_cursor: number
+  has_more: boolean
+}
+
+export interface SyncPushUserCardMetaRequest {
+  user_card_meta: UserCardMeta[]
+}
+
+export interface SyncPushUserCardMetaResult {
+  applied: number
+  kept: number
+}
+
+export interface SyncPullUserCardMetaResult {
+  user_card_meta: UserCardMeta[]
+}
+
+export interface SyncContentAsset {
+  resource_id: string
+  sha256: string
+  byte_size: number
+}
+
+export interface SyncContentSnapshot {
+  unchanged: false
+  snapshot_sha256: string
+  bundle_jsonl: string
+  assets: SyncContentAsset[]
+}
+
+export interface SyncContentUnchanged {
+  unchanged: true
+  snapshot_sha256: string
+}
+
+export type SyncContentResponse = SyncContentSnapshot | SyncContentUnchanged

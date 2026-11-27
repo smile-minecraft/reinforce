@@ -5,7 +5,7 @@ use reinforce_core::db::{auth, study as study_store};
 use reinforce_core::db::{content as content_store, quiz as quiz_store, search as search_store};
 use reinforce_core::primitives::AttemptDirection;
 use reinforce_core::proposal::{
-    ApprovalOptions, ApprovalOutcome, SubmitOutcome, approve_batch, submit_batch,
+    ApprovalOptions, ApprovalOutcome, BatchOperation, SubmitOutcome, approve_batch, submit_batch,
 };
 use reinforce_core::quiz::build::{
     build_daily_due, build_full_exam, build_practical_exam, build_topic_drill, build_weakness_drill,
@@ -44,6 +44,41 @@ impl LocalDatabase {
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."))
             .join("blobs")
+    }
+
+    /// Submits validated bundle operations and applies them as the owner.
+    pub(crate) fn publish_operations(
+        &self,
+        operations: Vec<BatchOperation>,
+        blobs_written: u32,
+    ) -> Result<ImportSummary, FfiError> {
+        if operations.is_empty() {
+            return Err(FfiError::invalid("bundle", "no operations found"));
+        }
+        let mut database = locked("database", &self.inner)?;
+        let proposal = match submit_batch(database.connection_mut(), Actor::Owner, operations)? {
+            SubmitOutcome::Accepted { proposal } => proposal,
+            SubmitOutcome::Rejected { errors } => {
+                return Err(FfiError::invalid("bundle", serde_json::to_string(&errors)?));
+            }
+        };
+        match approve_batch(
+            database.connection_mut(),
+            &proposal.id,
+            ApprovalOptions {
+                reviewer: Actor::Owner,
+                promote_verified: true,
+            },
+        )? {
+            ApprovalOutcome::Applied { applied, .. } => Ok(ImportSummary {
+                proposal_id: proposal.id.as_str(),
+                applied: u32::try_from(applied).unwrap_or(u32::MAX),
+                blobs_written,
+            }),
+            ApprovalOutcome::Rejected { errors, .. } => {
+                Err(FfiError::invalid("bundle", serde_json::to_string(&errors)?))
+            }
+        }
     }
 }
 
@@ -106,37 +141,9 @@ impl LocalDatabase {
             }
             let path = Path::new(&bundle_path);
             let operations = crate::bundle::read_operations(path)?;
-            if operations.is_empty() {
-                return Err(FfiError::invalid("bundle", "no operations found"));
-            }
             let blobs_written =
                 crate::bundle::copy_referenced_assets(&self.blobs_dir, path, &operations)?;
-
-            let mut database = locked("database", &self.inner)?;
-            let proposal = match submit_batch(database.connection_mut(), Actor::Owner, operations)?
-            {
-                SubmitOutcome::Accepted { proposal } => proposal,
-                SubmitOutcome::Rejected { errors } => {
-                    return Err(FfiError::invalid("bundle", serde_json::to_string(&errors)?));
-                }
-            };
-            match approve_batch(
-                database.connection_mut(),
-                &proposal.id,
-                ApprovalOptions {
-                    reviewer: Actor::Owner,
-                    promote_verified: true,
-                },
-            )? {
-                ApprovalOutcome::Applied { applied, .. } => Ok(ImportSummary {
-                    proposal_id: proposal.id.as_str(),
-                    applied: u32::try_from(applied).unwrap_or(u32::MAX),
-                    blobs_written,
-                }),
-                ApprovalOutcome::Rejected { errors, .. } => {
-                    Err(FfiError::invalid("bundle", serde_json::to_string(&errors)?))
-                }
-            }
+            self.publish_operations(operations, blobs_written)
         })
     }
 

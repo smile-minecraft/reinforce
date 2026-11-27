@@ -11,6 +11,7 @@ pub mod quiz;
 pub mod schema;
 pub mod search;
 pub mod study;
+pub mod sync;
 
 pub struct Database {
     connection: Connection,
@@ -111,6 +112,9 @@ mod tests {
             "attempt_logs",
             "card_scheduling",
             "user_card_meta",
+            "sync_state",
+            "sync_attempt_uploads",
+            "sync_meta_uploads",
         ] {
             assert!(names.contains(&table.to_owned()), "missing table {table}");
         }

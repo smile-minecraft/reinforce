@@ -14,6 +14,7 @@ mod content;
 mod export;
 mod proposals;
 mod study;
+mod sync;
 
 pub fn router() -> Router<AppState> {
     let api = Router::new()
@@ -23,6 +24,7 @@ pub fn router() -> Router<AppState> {
         .merge(export::router())
         .merge(proposals::router())
         .merge(study::router())
+        .merge(sync::router())
         .fallback(api_not_found);
 
     Router::new()

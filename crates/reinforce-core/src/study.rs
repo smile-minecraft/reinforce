@@ -30,6 +30,10 @@ pub struct AttemptLog {
     pub affects_scheduling: bool,
 }
 
+/// The retention every local and server-side replay uses, so both ends derive
+/// the same FSRS state from the same attempt log.
+pub const DEFAULT_DESIRED_RETENTION: f64 = 0.9;
+
 /// Voided questions stay in the append-only log for auditability but must never
 /// influence grading totals or FSRS. The marker is carried in the payload so no
 /// second column is needed.
