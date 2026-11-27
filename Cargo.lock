@@ -5958,6 +5958,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "reinforce-plugin-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "reinforce-server"
 version = "0.1.0"
 dependencies = [
@@ -5970,6 +5979,7 @@ dependencies = [
  "reinforce-core",
  "reinforce-export",
  "reinforce-ffi",
+ "reinforce-plugin-protocol",
  "rmcp",
  "rusqlite",
  "rust-embed",
@@ -7458,6 +7468,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

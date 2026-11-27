@@ -12,6 +12,7 @@ use crate::state::AppState;
 mod auth;
 mod content;
 mod export;
+mod plugins;
 mod proposals;
 mod study;
 mod sync;
@@ -22,6 +23,7 @@ pub fn router() -> Router<AppState> {
         .merge(auth::router())
         .merge(content::router())
         .merge(export::router())
+        .merge(plugins::router())
         .merge(proposals::router())
         .merge(study::router())
         .merge(sync::router())

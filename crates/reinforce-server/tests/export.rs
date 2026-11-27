@@ -71,6 +71,7 @@ async fn state(dir: &Path, mode: AuthMode, fonts_dir: &Path) -> AppState {
         fonts: fonts_dir.to_path_buf(),
         auth: mode,
         demo: false,
+        plugins: None,
     };
     AppState::open(&config).await.expect("open state")
 }

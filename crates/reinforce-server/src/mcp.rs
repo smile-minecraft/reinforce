@@ -443,6 +443,7 @@ pub async fn run_stdio(args: McpArgs) -> ApiResult<()> {
         fonts: PathBuf::from("./fonts"),
         auth: AuthMode::Single,
         demo: false,
+        plugins: None,
     };
     let state = AppState::open(&config).await?;
     let service = McpServer::new(state, args.agent_name)
@@ -570,6 +571,7 @@ mod tests {
             fonts: root.join("fonts"),
             auth: AuthMode::Single,
             demo: false,
+            plugins: None,
         };
         let state = AppState::open(&config).await.expect("state");
         (state, root)

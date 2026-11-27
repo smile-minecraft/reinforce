@@ -33,6 +33,7 @@ pub enum Command {
     Check(CheckArgs),
     Import(ImportArgs),
     Export(ExportArgs),
+    Plugin(PluginArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -126,6 +127,10 @@ pub struct ServeArgs {
     pub fonts: std::path::PathBuf,
     #[arg(long, value_enum, default_value_t = AuthMode::Single)]
     pub auth: AuthMode,
+    /// Owner-written plugin manifest file. Only this file can declare which
+    /// external programs the server may run.
+    #[arg(long)]
+    pub plugins: Option<std::path::PathBuf>,
     #[arg(long)]
     pub demo: bool,
 }
@@ -144,6 +149,57 @@ impl ServeArgs {
         }
         Ok(host)
     }
+}
+
+/// Owner-facing plugin commands. They operate on the same manifest file and
+/// database the server uses, so a job queued here is picked up by a running
+/// server within one poll interval.
+#[derive(Debug, Clone, Args)]
+pub struct PluginArgs {
+    #[command(subcommand)]
+    pub command: PluginCommand,
+    #[arg(long, default_value = "./reinforce.db", global = true)]
+    pub db: std::path::PathBuf,
+    /// Owner-written plugin manifest file.
+    #[arg(long, global = true)]
+    pub plugins: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum PluginCommand {
+    /// List the plugins declared in the manifest.
+    List,
+    /// Queue one job for a configured plugin.
+    Submit(PluginSubmitArgs),
+    /// Read the status of one job, or list recent jobs.
+    Status(PluginStatusArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct PluginSubmitArgs {
+    #[arg(long)]
+    pub plugin: String,
+    #[arg(long)]
+    pub capability: String,
+    /// JSON object with the job input, `@path` to read a file, or `-` for stdin.
+    #[arg(long)]
+    pub input: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct PluginStatusArgs {
+    /// Job id to inspect. Without it, recent jobs are listed.
+    #[arg(long)]
+    pub job: Option<String>,
+    #[arg(long)]
+    pub plugin: Option<String>,
+    #[arg(long)]
+    pub status: Option<String>,
+    #[arg(long, default_value_t = 20)]
+    pub limit: usize,
+    /// Wait up to this many seconds for the job to reach a terminal state.
+    #[arg(long, default_value_t = 0)]
+    pub wait: u64,
 }
 
 #[cfg(test)]

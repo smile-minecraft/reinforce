@@ -55,6 +55,7 @@ async fn test_state(mode: AuthMode) -> (TestApp, AppState, TestDir) {
         fonts: directory.join("fonts"),
         auth: mode,
         demo: true,
+        plugins: None,
     };
     let state = AppState::open(&config).await.expect("open test state");
     demo::seed(&state).await.expect("seed demo data");

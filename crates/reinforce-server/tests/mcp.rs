@@ -52,6 +52,7 @@ async fn test_state(mode: AuthMode, host: &str, dir: &TestDir) -> (Router<()>, A
         fonts: dir.0.join("fonts"),
         auth: mode,
         demo: false,
+        plugins: None,
     };
     let state = AppState::open(&config).await.expect("open test state");
     (reinforce_server::app(state.clone()), state)
@@ -440,6 +441,7 @@ async fn mcp_batch_proposal_flow_is_validated_approved_and_checks_clean() {
         fonts: dir.0.join("fonts"),
         auth: AuthMode::Single,
         demo: false,
+        plugins: None,
     };
     let state = AppState::open(&config).await.expect("open state");
     let server = McpServer::new(state.clone(), "e2e-agent".to_owned());

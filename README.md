@@ -16,7 +16,9 @@ and human review before it is published.
 | `crates/reinforce-desktop` | Native GPUI desktop reader and quiz runner for a local database |
 | `crates/reinforce-ffi` | Synchronous UniFFI bindings for offline Swift and Kotlin clients |
 | `crates/reinforce-export` | Embedded Typst PDF engine and lossless Markdown export |
+| `crates/reinforce-plugin-protocol` | Versioned JSON messages shared with out-of-process plugins |
 | `crates/reinforce-server` | HTTP/WS API, embedded WebApp, MCP server and the `reinforce` CLI |
+| `plugins/` | Protocol documentation for external worker processes |
 | `web/` | Touch-first WebApp (React, TypeScript, Vite, Tailwind CSS, i18n) |
 | `apps/ios/` | Native offline SwiftUI app for iPhone and iPad using `reinforce-ffi` |
 
@@ -221,6 +223,41 @@ Open `apps/ios/Reinforce.xcodeproj` in Xcode to run interactively on an iPhone
 or iPad simulator (or choose any available iPhone/iPad destination listed by
 `xcrun simctl list devices available`). Pass `--release` to
 `./scripts/build-ios-ffi.sh` when building optimized release libraries.
+
+### External plugins
+
+Heavy work (PDF layout analysis, agent sessions, TikZ rendering) can run in a
+separate worker process. The owner declares the workers in a manifest file —
+
+```json
+{
+  "plugins": [
+    {
+      "name": "mineru",
+      "capabilities": ["ingest_pdf"],
+      "transport": {"type": "stdio", "command": "/usr/local/bin/reinforce-plugin-mineru"}
+    }
+  ]
+}
+```
+
+— and starts the server with `reinforce serve --plugins ./plugins.json`. Only
+that file decides which programs may run: the HTTP API and the CLI can queue
+work for a declared plugin, read its status and cancel it, and nothing more.
+
+```sh
+reinforce plugin list --plugins ./plugins.json
+reinforce plugin submit --db ./reinforce.db --plugins ./plugins.json \
+  --plugin mineru --capability ingest_pdf --input '{"resource_id":"..."}'
+reinforce plugin status --db ./reinforce.db --job <job-id> --wait 120
+```
+
+Workers speak a versioned newline-delimited JSON protocol over stdio and return
+a proposal batch. The batch is submitted as an agent actor, so everything it
+produces stays `unchecked` and pending until the owner reviews it; a worker can
+never publish content directly. Jobs are durable across restarts, with a
+timeout, an output cap and cancellation per job. The trust boundary, the wire
+format and the queue state machine are documented in [`plugins/README.md`](plugins/README.md).
 
 ## License
 
