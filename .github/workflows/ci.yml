@@ -24,8 +24,10 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --locked
-      - run: cargo test --workspace --locked
+      # The GPUI desktop crate needs macOS and a Metal toolchain; it is checked
+      # by scripts/check-desktop.sh on a Mac instead of every Linux run.
+      - run: cargo clippy --workspace --all-targets --exclude reinforce-desktop --locked
+      - run: cargo test --workspace --exclude reinforce-desktop --locked
 
   web:
     name: Web (lint, build)
