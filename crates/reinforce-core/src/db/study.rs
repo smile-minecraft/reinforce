@@ -75,21 +75,47 @@ pub fn attempt_by_id(connection: &Connection, id: &AttemptId) -> Result<Option<A
 }
 
 /// One page of a user's attempts ordered by the stored cursor.
+///
+/// The page never splits a cursor group. One quiz session writes all of its
+/// attempts under a single cursor, so stopping in the middle of such a group
+/// would let a caller that advances to `last.sync_cursor` skip the remaining
+/// rows forever. When the limit lands inside a group, the whole group is
+/// returned and `limit` becomes a soft lower bound.
 pub fn list_attempts_after(
     connection: &Connection,
     user_id: &UserId,
     cursor: i64,
     limit: usize,
 ) -> Result<Vec<AttemptLog>> {
-    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX).max(1);
     let mut statement = connection.prepare(&format!(
         "SELECT {ATTEMPT_COLUMNS} FROM attempt_logs
          WHERE user_id = ?1 AND sync_cursor > ?2
-         ORDER BY sync_cursor, id LIMIT ?3"
+           AND sync_cursor <= COALESCE((
+               SELECT sync_cursor FROM attempt_logs
+               WHERE user_id = ?1 AND sync_cursor > ?2
+               ORDER BY sync_cursor, id LIMIT 1 OFFSET ?3
+           ), 9223372036854775807)
+         ORDER BY sync_cursor, id"
     ))?;
-    let rows = statement.query_map(params![user_id, cursor, limit], attempt_from_row)?;
+    let rows = statement.query_map(params![user_id, cursor, limit - 1], attempt_from_row)?;
     rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
         .map_err(Error::from)
+}
+
+/// Whether any of the user's attempts still sit after `cursor`.
+///
+/// Pages always return a complete cursor group, so the caller only has to ask
+/// whether something exists beyond the last cursor it received.
+pub fn has_attempts_after(connection: &Connection, user_id: &UserId, cursor: i64) -> Result<bool> {
+    let exists: i64 = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM attempt_logs WHERE user_id = ?1 AND sync_cursor > ?2
+         )",
+        params![user_id, cursor],
+        |row| row.get(0),
+    )?;
+    Ok(exists != 0)
 }
 
 pub fn max_attempt_cursor(connection: &Connection, user_id: &UserId) -> Result<i64> {
@@ -104,6 +130,15 @@ pub fn max_attempt_cursor(connection: &Connection, user_id: &UserId) -> Result<i
 /// The only write path for attempt logs. The schema has triggers that reject
 /// UPDATE and DELETE, so this module deliberately exposes no such functions.
 pub fn append_attempt(connection: &Connection, attempt: &AttemptLog) -> Result<()> {
+    // `duration_ms` is the one client-supplied column with a CHECK constraint
+    // that a typed payload can still violate; report it as invalid input
+    // instead of leaking a constraint error from SQLite.
+    if attempt.duration_ms < 0 {
+        return Err(Error::InvalidValue(
+            "duration_ms",
+            "duration must not be negative".to_owned(),
+        ));
+    }
     connection.execute(
         "INSERT INTO attempt_logs (
             id, user_id, card_id, direction, session_mode, submitted_payload,
@@ -195,6 +230,22 @@ pub fn save_scheduling(connection: &Connection, scheduling: &CardScheduling) -> 
         ],
     )?;
     Ok(())
+}
+
+/// Saves derived scheduling unless no attempt contributed to it.
+///
+/// A card whose only attempts are voided or marked as not affecting scheduling
+/// has no schedule at all; storing the empty replay would create a `reps = 0`
+/// row stamped at the Unix epoch and make the card look scheduled.
+pub fn save_scheduling_if_effective(
+    connection: &Connection,
+    scheduling: &CardScheduling,
+) -> Result<bool> {
+    if scheduling.reps == 0 {
+        return Ok(false);
+    }
+    save_scheduling(connection, scheduling)?;
+    Ok(true)
 }
 
 pub fn get_scheduling(

@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use crate::db::auth as auth_store;
 use crate::db::study as study_store;
 use crate::primitives::{AttemptDirection, AttemptId, CardId, Error, Result, UserId};
-use crate::study::{AttemptLog, UserCardMeta};
+use crate::study::{AttemptLog, UserCardMeta, contributes_to_scheduling};
 use crate::timestamp::Timestamp;
 
 fn from_json<T: DeserializeOwned>(value: &str) -> Result<T> {
@@ -193,19 +193,22 @@ pub fn pending_user_card_meta(
 }
 
 /// Records that a server accepted these attempts. Unknown ids are ignored so a
-/// stale acknowledgement cannot fail the whole batch.
+/// stale acknowledgement cannot fail the whole batch. The `user_id` filter
+/// keeps one profile's acknowledgement from marking another profile's rows on
+/// the same device.
 pub fn mark_attempts_uploaded(
     connection: &Connection,
+    user_id: &UserId,
     attempt_ids: &[AttemptId],
     now: Timestamp,
 ) -> Result<()> {
     let mut statement = connection.prepare(
         "INSERT INTO sync_attempt_uploads (attempt_id, uploaded_at)
-         SELECT id, ?2 FROM attempt_logs WHERE id = ?1
+         SELECT id, ?3 FROM attempt_logs WHERE id = ?1 AND user_id = ?2
          ON CONFLICT(attempt_id) DO UPDATE SET uploaded_at = excluded.uploaded_at",
     )?;
     for id in attempt_ids {
-        statement.execute(params![id, now])?;
+        statement.execute(params![id, user_id, now])?;
     }
     Ok(())
 }
@@ -296,7 +299,7 @@ pub fn merge_remote_batch(
             ..attempt.clone()
         };
         study_store::append_attempt(&transaction, &local)?;
-        if local.affects_scheduling {
+        if contributes_to_scheduling(&local) {
             let key = (local.card_id.clone(), local.direction);
             if !affected.contains(&key) {
                 affected.push(key);
@@ -312,14 +315,14 @@ pub fn merge_remote_batch(
             direction,
             desired_retention,
         )?;
-        study_store::save_scheduling(&transaction, &scheduling)?;
+        study_store::save_scheduling_if_effective(&transaction, &scheduling)?;
     }
     // Everything in this batch came from the server, so it is already stored
     // there. Recording that avoids echoing pulled attempts straight back on the
     // next push (for example after an upload whose response was lost).
     let pulled: Vec<AttemptId> = attempts.iter().map(|attempt| attempt.id.clone()).collect();
     if !pulled.is_empty() {
-        mark_attempts_uploaded(&transaction, &pulled, Timestamp::now())?;
+        mark_attempts_uploaded(&transaction, local_user_id, &pulled, Timestamp::now())?;
     }
     for meta in metas {
         let local = UserCardMeta {
@@ -337,6 +340,16 @@ pub fn merge_remote_batch(
                 outcome.applied_meta += 1;
             }
         }
+    }
+    // The server is the source of these rows, so the winning stamps are not
+    // pending. A row the device edited after this pull gets a newer
+    // `updated_at` and becomes pending again.
+    let stamps: Vec<(CardId, Timestamp)> = metas
+        .iter()
+        .map(|meta| (meta.card_id.clone(), meta.updated_at))
+        .collect();
+    if !stamps.is_empty() {
+        mark_user_card_meta_uploaded(&transaction, local_user_id, &stamps)?;
     }
     if outcome.pull_cursor != bound.pull_cursor {
         set_pull_cursor(

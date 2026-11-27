@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use reinforce_core::db::study as study_store;
 use reinforce_core::primitives::AttemptDirection;
-use reinforce_core::study::DEFAULT_DESIRED_RETENTION;
+use reinforce_core::study::{DEFAULT_DESIRED_RETENTION, contributes_to_scheduling};
 use reinforce_core::{AttemptLog, CardId, UserCardMeta};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -114,6 +114,17 @@ async fn push_attempts(
             format!("at most {MAX_ATTEMPTS_PER_PUSH} attempts are accepted per request"),
         ));
     }
+    // Reject values the schema would refuse instead of surfacing a 500 from the
+    // SQLite CHECK constraint. The typed fields (direction, confidence, ...)
+    // already reject unknown values while deserializing.
+    for (index, attempt) in request.attempts.iter().enumerate() {
+        if attempt.duration_ms < 0 {
+            return Err(ApiError::bad_request(
+                format!("attempts[{index}].duration_ms"),
+                "duration must not be negative",
+            ));
+        }
+    }
     let user_id = principal.user_id.clone();
     let (accepted, duplicates, cursor) = state
         .with_db(move |database| {
@@ -121,6 +132,9 @@ async fn push_attempts(
             let mut accepted = 0_usize;
             let mut duplicates = 0_usize;
             let mut affected: Vec<(CardId, AttemptDirection)> = Vec::new();
+            // Allocate the account's next cursor once and hand out consecutive
+            // values, instead of running MAX(...) for every inserted row.
+            let mut next_cursor = study_store::next_user_attempt_cursor(&transaction, &user_id)?;
             for attempt in &request.attempts {
                 if attempt.user_id != user_id {
                     return Err(ApiError::forbidden(
@@ -144,14 +158,12 @@ async fn push_attempts(
                     }
                     None => {
                         let stored = AttemptLog {
-                            sync_cursor: study_store::next_user_attempt_cursor(
-                                &transaction,
-                                &user_id,
-                            )?,
+                            sync_cursor: next_cursor,
                             ..attempt.clone()
                         };
                         study_store::append_attempt(&transaction, &stored)?;
-                        if stored.affects_scheduling {
+                        next_cursor += 1;
+                        if contributes_to_scheduling(&stored) {
                             let key = (stored.card_id.clone(), stored.direction);
                             if !affected.contains(&key) {
                                 affected.push(key);
@@ -169,7 +181,7 @@ async fn push_attempts(
                     direction,
                     DEFAULT_DESIRED_RETENTION,
                 )?;
-                study_store::save_scheduling(&transaction, &scheduling)?;
+                study_store::save_scheduling_if_effective(&transaction, &scheduling)?;
             }
             let cursor = study_store::max_attempt_cursor(&transaction, &user_id)?;
             transaction.commit()?;
@@ -204,10 +216,13 @@ async fn pull_attempts(
     let (attempts, has_more) = state
         .with_db(move |database| {
             let connection = database.connection();
-            let mut attempts =
-                study_store::list_attempts_after(connection, &user_id, cursor, limit + 1)?;
-            let has_more = attempts.len() > limit;
-            attempts.truncate(limit);
+            let attempts = study_store::list_attempts_after(connection, &user_id, cursor, limit)?;
+            let has_more = match attempts.last() {
+                Some(last) => {
+                    study_store::has_attempts_after(connection, &user_id, last.sync_cursor)?
+                }
+                None => false,
+            };
             Ok((attempts, has_more))
         })
         .await?;
@@ -300,12 +315,12 @@ async fn content_snapshot(
     principal: Principal,
 ) -> ApiResult<Json<Value>> {
     let viewer_is_owner = principal.is_owner();
-    let blobs = state.blobs.clone();
-    let snapshot = state
-        .with_db(move |database| {
-            sync_content::snapshot(database.connection(), &blobs, viewer_is_owner)
-        })
+    let mut snapshot = state
+        .with_db(move |database| sync_content::snapshot(database.connection(), viewer_is_owner))
         .await?;
+    // Whether a blob exists is a filesystem question; keep it out of the
+    // database lock so a slow disk does not block other requests.
+    sync_content::retain_stored_assets(&mut snapshot.assets, &state.blobs);
     if query.known.as_deref() == Some(snapshot.snapshot_sha256.as_str()) {
         return Ok(Json(json!({
             "unchanged": true,

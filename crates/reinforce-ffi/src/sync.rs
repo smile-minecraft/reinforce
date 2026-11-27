@@ -227,7 +227,12 @@ impl LocalDatabase {
                 .collect::<Result<Vec<_>, FfiError>>()?;
             let mut database = locked("database", &self.inner)?;
             let transaction = database.transaction()?;
-            sync_store::mark_attempts_uploaded(&transaction, &ids, Timestamp::now())?;
+            sync_store::mark_attempts_uploaded(
+                &transaction,
+                &local_user_id,
+                &ids,
+                Timestamp::now(),
+            )?;
             sync_store::mark_user_card_meta_uploaded(&transaction, &local_user_id, &stamps)?;
             transaction.commit().map_err(|error| FfiError::Core {
                 message: error.to_string(),
@@ -301,7 +306,9 @@ impl LocalDatabase {
                 }
                 _ => 0,
             };
-            self.publish_operations(operations, blobs_written)
+            // Server content keeps the verification state the server stored:
+            // content the owner never checked stays unchecked on the device.
+            self.publish_operations(operations, blobs_written, false)
         })
     }
 }

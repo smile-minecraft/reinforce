@@ -104,6 +104,70 @@ fn per_user_cursor_is_monotonic_and_pages_in_order() {
 }
 
 #[test]
+fn pages_never_split_a_shared_cursor_group() {
+    let mut database = Database::open_in_memory().expect("database");
+    let learner = user(&mut database, "learner");
+    let connection = database.connection();
+
+    // One quiz session commit writes several attempts under a single cursor.
+    let session_cursor =
+        study_store::next_user_attempt_cursor(connection, &learner).expect("cursor");
+    for _ in 0..3 {
+        study_store::append_attempt(
+            connection,
+            &attempt(
+                &learner,
+                CARD_ONE,
+                "2026-01-01T00:00:00.000000Z",
+                true,
+                session_cursor,
+            ),
+        )
+        .expect("append");
+    }
+    let later = study_store::next_user_attempt_cursor(connection, &learner).expect("cursor");
+    study_store::append_attempt(
+        connection,
+        &attempt(
+            &learner,
+            CARD_TWO,
+            "2026-01-01T00:05:00.000000Z",
+            true,
+            later,
+        ),
+    )
+    .expect("append");
+
+    // A limit smaller than the group must return the whole group, or a client
+    // that advances to `last.sync_cursor` would skip the rest forever.
+    let first_page = study_store::list_attempts_after(connection, &learner, 0, 1).expect("page");
+    assert_eq!(first_page.len(), 3, "the shared cursor group is complete");
+    assert!(
+        first_page
+            .iter()
+            .all(|entry| entry.sync_cursor == session_cursor)
+    );
+    assert!(
+        study_store::has_attempts_after(connection, &learner, session_cursor).expect("has more"),
+        "the later attempt is still waiting"
+    );
+
+    let second_page =
+        study_store::list_attempts_after(connection, &learner, session_cursor, 1).expect("page");
+    assert_eq!(second_page.len(), 1);
+    assert_eq!(second_page[0].sync_cursor, later);
+    assert!(!study_store::has_attempts_after(connection, &learner, later).expect("has more"));
+
+    // Paging with a limit larger than the remaining rows is still complete and
+    // never repeats a row.
+    let all = study_store::list_attempts_after(connection, &learner, 0, 100).expect("page");
+    assert_eq!(all.len(), 4);
+    let ids: std::collections::BTreeSet<String> =
+        all.iter().map(|entry| entry.id.as_str()).collect();
+    assert_eq!(ids.len(), 4, "no duplicate rows across the page");
+}
+
+#[test]
 fn pending_uploads_disappear_only_after_acknowledgement() {
     let mut database = Database::open_in_memory().expect("database");
     let learner = user(&mut database, "learner");
@@ -127,11 +191,12 @@ fn pending_uploads_disappear_only_after_acknowledgement() {
     assert_eq!(pending.len(), 2, "the page is capped by the limit");
     assert_eq!(pending[0].id, ids[0]);
 
-    sync_store::mark_attempts_uploaded(connection, &[ids[0].clone()], Timestamp::now())
+    sync_store::mark_attempts_uploaded(connection, &learner, &[ids[0].clone()], Timestamp::now())
         .expect("ack");
     // Acknowledging twice is harmless and an unknown id is ignored.
     sync_store::mark_attempts_uploaded(
         connection,
+        &learner,
         &[ids[0].clone(), AttemptId::generate()],
         Timestamp::now(),
     )
@@ -140,6 +205,36 @@ fn pending_uploads_disappear_only_after_acknowledgement() {
     assert_eq!(pending.len(), 2);
     assert_eq!(pending[0].id, ids[1]);
     assert_eq!(pending[1].id, ids[2]);
+}
+
+#[test]
+fn acknowledgements_only_mark_the_owning_profile() {
+    let mut database = Database::open_in_memory().expect("database");
+    let first = user(&mut database, "first profile");
+    let second = user(&mut database, "second profile");
+    let connection = database.connection();
+    let mut ids = Vec::new();
+    for owner in [&first, &second] {
+        let cursor = study_store::next_attempt_cursor(connection).expect("cursor");
+        let entry = attempt(owner, CARD_ONE, "2026-01-01T00:00:00.000000Z", true, cursor);
+        ids.push(entry.id.clone());
+        study_store::append_attempt(connection, &entry).expect("append");
+    }
+
+    // Acknowledging the second profile's attempt under the first profile must
+    // not mark it, or one device profile would silently drop another's upload.
+    sync_store::mark_attempts_uploaded(connection, &first, &[ids[1].clone()], Timestamp::now())
+        .expect("ack");
+    let pending_first = sync_store::pending_attempts(connection, &first, 10).expect("pending");
+    assert_eq!(pending_first.len(), 1);
+    assert_eq!(pending_first[0].id, ids[0]);
+    let pending_second = sync_store::pending_attempts(connection, &second, 10).expect("pending");
+    assert_eq!(
+        pending_second.len(),
+        1,
+        "the other profile still owes its row"
+    );
+    assert_eq!(pending_second[0].id, ids[1]);
 }
 
 #[test]
@@ -260,6 +355,71 @@ fn merge_keeps_non_scheduling_attempts_out_of_fsrs() {
         .expect("scheduling")
         .is_none(),
         "voided attempts never create FSRS state"
+    );
+}
+
+#[test]
+fn voided_attempts_never_write_an_empty_schedule() {
+    let mut database = Database::open_in_memory().expect("database");
+    let local = user(&mut database, "device profile");
+    let remote = user(&mut database, "server account");
+    let connection = database.connection();
+    sync_store::bind_remote_user(connection, &local, &remote, Timestamp::now()).expect("bind");
+
+    // A client may mark a voided attempt as affecting scheduling; the server
+    // and the merge must still keep it out of FSRS and not store the empty
+    // replay (reps = 0, updated_at = 1970) as a schedule row.
+    let mut voided = attempt(&remote, CARD_ONE, "2026-01-01T10:00:00.000000Z", false, 1);
+    voided.affects_scheduling = true;
+    voided.submitted_payload = json!({"voided": true, "grading_mode": "voided"});
+    let outcome =
+        sync_store::merge_remote_batch(database.connection_mut(), &local, &[voided], &[], 1, 0.9)
+            .expect("merge");
+    assert_eq!(outcome.inserted_attempts, 1);
+    assert!(
+        study_store::get_scheduling(
+            database.connection(),
+            &local,
+            &CARD_ONE.parse().expect("card"),
+            AttemptDirection::Default,
+        )
+        .expect("scheduling")
+        .is_none(),
+        "a voided attempt must not create a schedule row"
+    );
+}
+
+#[test]
+fn pulled_personal_rows_are_not_echoed_back() {
+    let mut database = Database::open_in_memory().expect("database");
+    let local = user(&mut database, "device profile");
+    let remote = user(&mut database, "server account");
+    let connection = database.connection();
+    sync_store::bind_remote_user(connection, &local, &remote, Timestamp::now()).expect("bind");
+
+    let pulled = UserCardMeta {
+        user_id: remote,
+        card_id: CARD_ONE.parse().expect("card"),
+        starred: true,
+        personal_tags: vec!["hard".to_owned()],
+        personal_note: Some("from the server".to_owned()),
+        updated_at: stamp("2026-01-02T00:00:00.000000Z"),
+    };
+    sync_store::merge_remote_batch(
+        database.connection_mut(),
+        &local,
+        &[],
+        std::slice::from_ref(&pulled),
+        0,
+        0.9,
+    )
+    .expect("merge");
+
+    assert!(
+        sync_store::pending_user_card_meta(database.connection(), &local, 10)
+            .expect("pending")
+            .is_empty(),
+        "a row that came from the server is already stored there"
     );
 }
 

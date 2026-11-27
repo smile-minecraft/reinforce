@@ -78,7 +78,7 @@ on every side, so the order of uploads never changes the result.
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /api/sync/attempts` | Upload a batch (`{"attempts": [...]}`). Idempotent by attempt id; the response reports `accepted`, `duplicates` and the account's current `cursor`. |
-| `GET /api/sync/attempts?cursor=N&limit=M` | Pull the account's attempts after server cursor `N`, ordered by that cursor. |
+| `GET /api/sync/attempts?cursor=N&limit=M` | Pull the account's attempts after server cursor `N`, ordered by that cursor. `limit` is a soft bound: a page always carries every row that shares the last cursor, so a caller that advances to `next_cursor` never skips one. |
 | `PUT /api/sync/user-card-meta` | Upload stars, personal tags and notes; last writer wins on `updated_at`. |
 | `GET /api/sync/user-card-meta` | Read every personal row of the account. |
 | `GET /api/sync/content?known=<sha256>` | Published content as a `bundle.jsonl` document plus the blobs to download; `known` short-circuits an unchanged snapshot. |
@@ -113,6 +113,16 @@ server id and pulled attempts are stored under the local profile, so both
 devices end up with the same attempt set and the same FSRS numbers. Retries are
 safe: `confirmUpload` is what marks a batch as sent, and `applyRemoteBatch`
 deduplicates by attempt id and advances the pull cursor in one transaction.
+
+Send `submitted_payload` back exactly as the device produced it. The server
+compares the stored payload with the uploaded one and answers `409` when they
+differ, so re-encoding it on the way out (for example turning `0` into `0.0`)
+would turn a harmless retry into a conflict.
+
+Pulled attempts and personal rows are recorded as already uploaded, so a device
+does not echo back what it just downloaded. Content snapshots never carry the
+title of a `redact` resource, and a note's canvas layout only keeps the cards
+the viewer actually received.
 
 Content snapshots follow the same `export_policy` rules as exports: `allow`
 resources travel with their bytes, `redact` blocks are replaced by a notice, and

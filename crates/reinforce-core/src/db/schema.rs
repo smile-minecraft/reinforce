@@ -211,6 +211,8 @@ CREATE TABLE IF NOT EXISTS attempt_logs (
 
 CREATE INDEX IF NOT EXISTS attempt_logs_replay ON attempt_logs (user_id, card_id, direction, created_at);
 
+CREATE INDEX IF NOT EXISTS attempt_logs_sync ON attempt_logs (user_id, sync_cursor, id);
+
 CREATE TRIGGER IF NOT EXISTS attempt_logs_no_update
 BEFORE UPDATE ON attempt_logs
 BEGIN

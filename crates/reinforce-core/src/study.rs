@@ -50,6 +50,15 @@ pub fn is_voided_attempt(attempt: &AttemptLog) -> bool {
             == Some("voided")
 }
 
+/// Whether an attempt feeds the FSRS replay.
+///
+/// `affects_scheduling` comes from the client, so a voided attempt that still
+/// claims to affect scheduling must not schedule anything: the void marker wins
+/// and keeps the replay identical on both ends.
+pub fn contributes_to_scheduling(attempt: &AttemptLog) -> bool {
+    attempt.affects_scheduling && !is_voided_attempt(attempt)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CardScheduling {
     pub user_id: UserId,
