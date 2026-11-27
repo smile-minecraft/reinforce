@@ -1,0 +1,38 @@
+[package]
+name = "reinforce-desktop"
+description = "Native GPUI desktop client for reading notes and practising against a local database."
+version.workspace = true
+edition.workspace = true
+# GPUI 0.2 and the Typst SVG exporter both need a newer compiler than the
+# server-only crates, so this crate states its own MSRV.
+rust-version = "1.92"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "reinforce_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "reinforce-desktop"
+path = "src/main.rs"
+
+[dependencies]
+gpui.workspace = true
+pulldown-cmark.workspace = true
+reinforce-core.workspace = true
+reinforce-export.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+typst-as-lib.workspace = true
+typst-assets.workspace = true
+typst-layout.workspace = true
+typst-svg.workspace = true
+uuid.workspace = true
