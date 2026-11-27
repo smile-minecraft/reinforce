@@ -77,6 +77,14 @@ fn main() {
         std::process::exit(2);
     }
 
+    if mode == "never_read" {
+        // Never reads stdin, so a handshake that nearly fills the pipe leaves
+        // no room for any further host write.
+        loop {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
     let mut hello = String::new();
     if std::io::stdin().lock().read_line(&mut hello).is_err() {
         std::process::exit(1);

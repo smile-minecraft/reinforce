@@ -376,8 +376,10 @@ async fn send_cancel(stdin: &mut ChildStdin, job: &PluginJob) {
     let cancel = HostMessage::Cancel(Cancel {
         job_id: job.id.as_str(),
     });
-    // The worker may already be gone; a failed write is not an error.
-    let _ = write_message(stdin, &cancel).await;
+    // The worker may already be gone, or may never read stdin again and leave
+    // the pipe full; either way the caller terminates it, so a failed or
+    // stalled write is not an error.
+    let _ = tokio::time::timeout(CANCEL_GRACE, write_message(stdin, &cancel)).await;
 }
 
 async fn capture_stderr(stderr: Option<ChildStderr>) -> String {

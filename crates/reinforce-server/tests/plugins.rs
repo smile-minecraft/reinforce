@@ -691,6 +691,64 @@ async fn cancelling_a_running_job_stops_the_process() {
     server_is_healthy(&fixture).await;
 }
 
+/// Pads the job input so a handshake the plugin never reads leaves less room
+/// in a 64 KiB pipe than the cancel message needs.
+fn input_that_fills_the_pipe(plugin: &str) -> Value {
+    use reinforce_plugin_protocol::{Hello, HostMessage};
+    const PIPE_CAPACITY: usize = 64 * 1024;
+    let unread = |pad: usize| {
+        let input = json!({"pad": "x".repeat(pad)});
+        let hello = HostMessage::Hello(Hello::new(
+            "00000000-0000-0000-0000-000000000000",
+            plugin,
+            "ingest_pdf",
+            input,
+        ));
+        serde_json::to_string(&hello).expect("encode hello").len() + 1
+    };
+    let target = PIPE_CAPACITY - 16;
+    let pad = target - unread(0);
+    assert_eq!(unread(pad), target);
+    json!({"pad": "x".repeat(pad)})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_plugin_that_stopped_reading_stdin_is_prompt() {
+    let mut setup = Setup::new(AuthMode::Single);
+    setup.plugin_with("stall", "never_read", &[], 30, 65_536, 1);
+    let fixture = setup.open().await;
+
+    let response = fixture
+        .submit(
+            "stall",
+            json!({"capability": "ingest_pdf", "input": input_that_fills_the_pipe("stall")}),
+        )
+        .await;
+    let submitted = expect_json(response, StatusCode::ACCEPTED).await;
+    let id = submitted["id"].as_str().expect("job id").to_owned();
+    fixture.wait_status(&id, JobStatus::Running).await;
+    // Let the host finish writing the handshake and start waiting for ready.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let started = Instant::now();
+    let response = json_call(
+        &fixture.app,
+        Method::POST,
+        &format!("/api/plugins/jobs/{id}/cancel"),
+        None,
+        None,
+    )
+    .await;
+    assert!(response.status().is_success(), "{}", response.status());
+    let job = fixture.wait_terminal(&id).await;
+    assert_eq!(job["status"], "cancelled", "{job}");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "cancel must not wait for the 30s timeout"
+    );
+    server_is_healthy(&fixture).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_a_queued_job_never_starts_it() {
     let mut setup = Setup::new(AuthMode::Single);
