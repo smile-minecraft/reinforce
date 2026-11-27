@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -23,10 +23,10 @@ futures-util = "0.3"
 gpui = "0.2.2"
 pulldown-cmark = { version = "0.13", default-features = false }
 rand = "0.10"
-reinforce-core = { path = "crates/reinforce-core", version = "0.1.0" }
-reinforce-ffi = { path = "crates/reinforce-ffi", version = "0.1.0" }
-reinforce-export = { path = "crates/reinforce-export", version = "0.1.0" }
-reinforce-plugin-protocol = { path = "crates/reinforce-plugin-protocol", version = "0.1.0" }
+reinforce-core = { path = "crates/reinforce-core", version = "0.2.0" }
+reinforce-ffi = { path = "crates/reinforce-ffi", version = "0.2.0" }
+reinforce-export = { path = "crates/reinforce-export", version = "0.2.0" }
+reinforce-plugin-protocol = { path = "crates/reinforce-plugin-protocol", version = "0.2.0" }
 rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }
 rust-embed = "8.14"
 serde = { version = "1", features = ["derive"] }

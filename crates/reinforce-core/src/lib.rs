@@ -60,6 +60,6 @@ mod tests {
 
     #[test]
     fn version_follows_workspace() {
-        assert_eq!(VERSION, "0.1.0");
+        assert_eq!(VERSION, "0.2.0");
     }
 }

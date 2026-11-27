@@ -6,7 +6,11 @@ It is built for an **AI-authored, human-reviewed** workflow: agents draft conten
 through the CLI or MCP server, and every draft passes a deterministic validator
 and human review before it is published.
 
-> Status: early development toward `0.1.0`.
+> Status: `0.2.0` — native clients and plugins. On top of the `0.1.0` server,
+> WebApp and CLI, this release adds offline UniFFI bindings, a 2D canvas view
+> for notes, device study sync, a native SwiftUI app for iPhone and iPad, a
+> GPUI desktop reader and quiz runner, an out-of-process plugin queue and the
+> official MinerU, TikZ and ACP plugins. Android is planned for a later release.
 
 ## Repository layout
 
@@ -18,7 +22,7 @@ and human review before it is published.
 | `crates/reinforce-export` | Embedded Typst PDF engine and lossless Markdown export |
 | `crates/reinforce-plugin-protocol` | Versioned JSON messages shared with out-of-process plugins |
 | `crates/reinforce-server` | HTTP/WS API, embedded WebApp, MCP server and the `reinforce` CLI |
-| `plugins/` | Protocol documentation and the official MinerU and TikZ workers |
+| `plugins/` | Protocol documentation and the official MinerU, TikZ and ACP workers |
 | `web/` | Touch-first WebApp (React, TypeScript, Vite, Tailwind CSS, i18n) |
 | `apps/ios/` | Native offline SwiftUI app for iPhone and iPad using `reinforce-ffi` |
 
@@ -27,9 +31,12 @@ and human review before it is published.
 `plugins/reinforce-plugin-mineru` turns a PDF into a resource, page anchors and
 draft cards through an external MinerU CLI.
 `plugins/reinforce-plugin-tikz` renders TikZ source into an SVG resource and a
-diagram card through LaTeX and dvisvgm. Both are standalone stdio binaries that
-speak the protocol in `plugins/README.md`; see each crate's README for tool
-requirements and manifest arguments.
+diagram card through LaTeX and dvisvgm.
+`plugins/reinforce-plugin-acp` hands a resource to an external AI agent over the
+Agent Client Protocol and turns the cards it proposes into a proposal batch.
+All three are standalone stdio binaries that speak the protocol in
+`plugins/README.md`; see each crate's README for tool requirements and manifest
+arguments. Plugin output always arrives as a pending proposal for human review.
 
 ## Development
 
