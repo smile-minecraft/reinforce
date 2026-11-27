@@ -50,6 +50,7 @@ async fn test_state_with_host(mode: AuthMode, host: &str) -> (TestApp, AppState,
         fonts: directory.join("fonts"),
         auth: mode,
         demo: true,
+        plugins: None,
     };
     let state = AppState::open(&config).await.expect("open test state");
     demo::seed(&state).await.expect("seed demo data");

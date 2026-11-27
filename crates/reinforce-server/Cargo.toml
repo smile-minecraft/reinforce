@@ -24,6 +24,7 @@ futures-util.workspace = true
 rand.workspace = true
 reinforce-core.workspace = true
 reinforce-export.workspace = true
+reinforce-plugin-protocol.workspace = true
 rmcp = { version = "3.11", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
 rust-embed.workspace = true
 schemars = "1"

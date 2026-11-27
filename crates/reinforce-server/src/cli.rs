@@ -1,27 +1,32 @@
 //! Offline commands: whole-store validation and standard bundle imports.
 
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::time::{Duration, Instant};
 
 use reinforce_core::content_store;
+use reinforce_core::plugin_store::{self, JobFilter};
 use reinforce_core::proposal::{Preparation, prepare};
 use reinforce_core::validation::{Actor, Snapshot, Staged, ValidationReport, validate_snapshot};
 use reinforce_core::{
-    AnchorId, ApprovalOptions, ApprovalOutcome, Database, EdgeId, ExamSetId, KnowledgeCardId,
-    NoteId, QuestionCardId, QuestionGroupId, ResourceId, SubmitOutcome, approve_batch,
-    submit_batch,
+    AnchorId, ApprovalOptions, ApprovalOutcome, Database, EdgeId, ExamSetId, JobId, JobStatus,
+    KnowledgeCardId, NoteId, PluginJob, QuestionCardId, QuestionGroupId, ResourceId, SubmitOutcome,
+    approve_batch, submit_batch,
 };
 use rusqlite::Connection;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::bundle::{self, AssetFile};
 use crate::config::{
-    CheckArgs, ExportArgs, ExportFormat, ExportPreset, ImportArgs, ImportMode, ServeArgs,
+    CheckArgs, ExportArgs, ExportFormat, ExportPreset, ImportArgs, ImportMode, PluginArgs,
+    PluginCommand, PluginStatusArgs, PluginSubmitArgs, ServeArgs,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::export::{
     ExportJob, empty_export, has_content, render_blocking, write_markdown_directory,
 };
 use crate::export_scope::ExportScope;
+use crate::plugins::{PluginConfig, check_submission};
 use crate::state::AppState;
 
 const IMPORT_AGENT: &str = "cli-import";
@@ -347,6 +352,7 @@ pub async fn export(mut args: ExportArgs) -> ApiResult<()> {
         fonts: std::mem::take(&mut args.fonts),
         auth: crate::config::AuthMode::Single,
         demo: false,
+        plugins: None,
     };
     let state = AppState::open(&config).await?;
     let scope = match scope {
@@ -407,4 +413,112 @@ pub async fn export(mut args: ExportArgs) -> ApiResult<()> {
         out.display()
     );
     Ok(())
+}
+
+fn plugin_input(raw: &str) -> ApiResult<Value> {
+    let text = if raw == "-" {
+        let mut buffer = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buffer)?;
+        buffer
+    } else if let Some(path) = raw.strip_prefix('@') {
+        std::fs::read_to_string(path)?
+    } else {
+        raw.to_owned()
+    };
+    let input: Value = serde_json::from_str(&text)?;
+    if !input.is_object() {
+        return Err(ApiError::bad_request("input", "must be a JSON object"));
+    }
+    Ok(input)
+}
+
+fn plugin_job_id(raw: &str) -> ApiResult<JobId> {
+    JobId::from_str(raw).map_err(|_| ApiError::bad_request("job", "invalid job id"))
+}
+
+async fn insert_plugin_job(db: PathBuf, job: PluginJob) -> ApiResult<PluginJob> {
+    tokio::task::spawn_blocking(move || -> ApiResult<PluginJob> {
+        let database = Database::open(&db)?;
+        plugin_store::insert_job(database.connection(), &job)?;
+        Ok(job)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("plugin task failed: {error}")))?
+}
+
+async fn read_plugin_job(db: PathBuf, id: JobId) -> ApiResult<Option<PluginJob>> {
+    tokio::task::spawn_blocking(move || -> ApiResult<Option<PluginJob>> {
+        let database = Database::open(&db)?;
+        Ok(plugin_store::get_job(database.connection(), &id)?)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("plugin task failed: {error}")))?
+}
+
+async fn read_plugin_jobs(db: PathBuf, filter: JobFilter) -> ApiResult<Vec<PluginJob>> {
+    tokio::task::spawn_blocking(move || -> ApiResult<Vec<PluginJob>> {
+        let database = Database::open(&db)?;
+        Ok(plugin_store::list_jobs(database.connection(), &filter)?)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("plugin task failed: {error}")))?
+}
+
+/// Owner CLI for the plugin queue: list manifests, queue a job, read status.
+///
+/// A queued row is durable, so a running server picks it up within one poll
+/// interval even when the CLI process has already exited.
+pub async fn plugin(args: PluginArgs) -> ApiResult<()> {
+    let config = PluginConfig::load(args.plugins.as_deref())?;
+    match args.command {
+        PluginCommand::List => {
+            println!("{}", serde_json::to_string_pretty(&config.summaries())?);
+            Ok(())
+        }
+        PluginCommand::Submit(submit) => {
+            let PluginSubmitArgs {
+                plugin,
+                capability,
+                input,
+            } = submit;
+            let input = plugin_input(&input)?;
+            let definition = check_submission(&config, &plugin, &capability, &input)?;
+            let job = PluginJob::queued(&plugin, &capability, input, definition.max_attempts);
+            let stored = insert_plugin_job(args.db, job).await?;
+            println!("{}", serde_json::to_string_pretty(&stored)?);
+            Ok(())
+        }
+        PluginCommand::Status(status) => status_command(args.db, status).await,
+    }
+}
+
+async fn status_command(db: PathBuf, status: PluginStatusArgs) -> ApiResult<()> {
+    let id = status.job.as_deref().map(plugin_job_id).transpose()?;
+    let filter = JobFilter {
+        status: match status.status.as_deref() {
+            None => None,
+            Some(value) => Some(
+                JobStatus::from_str(value)
+                    .map_err(|error| ApiError::bad_request("status", error.to_string()))?,
+            ),
+        },
+        plugin: status.plugin.clone(),
+        limit: Some(status.limit),
+    };
+    let deadline = Instant::now() + Duration::from_secs(status.wait);
+    loop {
+        let Some(id) = &id else {
+            let jobs = read_plugin_jobs(db, filter).await?;
+            println!("{}", serde_json::to_string_pretty(&jobs)?);
+            return Ok(());
+        };
+        let job = read_plugin_job(db.clone(), id.clone())
+            .await?
+            .ok_or_else(|| ApiError::not_found("plugin job"))?;
+        if job.is_terminal() || status.wait == 0 || Instant::now() >= deadline {
+            println!("{}", serde_json::to_string_pretty(&job)?);
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
