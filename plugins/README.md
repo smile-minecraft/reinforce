@@ -243,6 +243,17 @@ All endpoints are owner-only.
 
 There is no route that creates, edits or deletes a plugin.
 
+## Official workers
+
+Two workers in this repository implement the protocol above:
+
+- `reinforce-plugin-mineru` — `ingest_pdf`; runs an external MinerU CLI.
+- `reinforce-plugin-tikz` — `tikz_render`; runs LaTeX and dvisvgm.
+
+Both take their external tool paths from fixed manifest arguments. Each crate
+has its own README with installation requirements, input fields and a manifest
+example. They do not install or bundle those tools.
+
 ## Tests
 
 `crates/reinforce-server/tests/plugins.rs` builds

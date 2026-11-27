@@ -18,9 +18,18 @@ and human review before it is published.
 | `crates/reinforce-export` | Embedded Typst PDF engine and lossless Markdown export |
 | `crates/reinforce-plugin-protocol` | Versioned JSON messages shared with out-of-process plugins |
 | `crates/reinforce-server` | HTTP/WS API, embedded WebApp, MCP server and the `reinforce` CLI |
-| `plugins/` | Protocol documentation for external worker processes |
+| `plugins/` | Protocol documentation and the official MinerU and TikZ workers |
 | `web/` | Touch-first WebApp (React, TypeScript, Vite, Tailwind CSS, i18n) |
 | `apps/ios/` | Native offline SwiftUI app for iPhone and iPad using `reinforce-ffi` |
+
+### Official plugins
+
+`plugins/reinforce-plugin-mineru` turns a PDF into a resource, page anchors and
+draft cards through an external MinerU CLI.
+`plugins/reinforce-plugin-tikz` renders TikZ source into an SVG resource and a
+diagram card through LaTeX and dvisvgm. Both are standalone stdio binaries that
+speak the protocol in `plugins/README.md`; see each crate's README for tool
+requirements and manifest arguments.
 
 ## Development
 
