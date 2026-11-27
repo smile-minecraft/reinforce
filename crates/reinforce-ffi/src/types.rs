@@ -37,7 +37,7 @@ fn json(value: &serde_json::Value) -> String {
     value.to_string()
 }
 
-fn stamp(value: &Timestamp) -> String {
+pub(crate) fn stamp(value: &Timestamp) -> String {
     value.as_str()
 }
 
@@ -494,6 +494,8 @@ pub enum SearchHit {
 pub struct ImportSummary {
     pub proposal_id: String,
     pub applied: u32,
+    /// Assets newly copied into the blob directory by this import.
+    pub blobs_written: u32,
 }
 
 // The literals mirror `reinforce_core::quiz::build::BuildOptions::default`.
