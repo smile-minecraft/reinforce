@@ -193,6 +193,26 @@ fn replace_subjects(
     Ok(())
 }
 
+fn with_savepoint<T>(
+    connection: &Connection,
+    name: &str,
+    work: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    connection.execute_batch(&format!("SAVEPOINT {name}"))?;
+    match work() {
+        Ok(value) => {
+            connection.execute_batch(&format!("RELEASE SAVEPOINT {name}"))?;
+            Ok(value)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch(&format!(
+                "ROLLBACK TO SAVEPOINT {name}; RELEASE SAVEPOINT {name}"
+            ));
+            Err(error)
+        }
+    }
+}
+
 pub fn create_subject_group(
     connection: &Connection,
     parent_id: Option<&SubjectGroupId>,
@@ -215,19 +235,22 @@ pub fn create_subject_group(
         created_at: now,
         updated_at: now,
     };
-    connection.execute(
-        "INSERT INTO subject_groups (id, parent_id, name, sort_order, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            group.id,
-            group.parent_id,
-            group.name,
-            group.sort_order,
-            group.created_at,
-            group.updated_at,
-        ],
-    )?;
-    replace_subjects(connection, &group.id, &group.subjects)?;
+    with_savepoint(connection, "create_subject_group", || {
+        connection.execute(
+            "INSERT INTO subject_groups (id, parent_id, name, sort_order, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                group.id,
+                group.parent_id,
+                group.name,
+                group.sort_order,
+                group.created_at,
+                group.updated_at,
+            ],
+        )?;
+        replace_subjects(connection, &group.id, &group.subjects)?;
+        Ok(())
+    })?;
     Ok(group)
 }
 
@@ -247,13 +270,16 @@ pub fn update_subject_group(
         ensure_parent_usable(connection, Some(id), parent_id)?;
     }
     let subjects = normalized_subjects(subjects);
-    connection.execute(
-        "UPDATE subject_groups
-         SET parent_id = ?2, name = ?3, sort_order = ?4, updated_at = ?5
-         WHERE id = ?1",
-        params![id, parent_id, name, sort_order, now],
-    )?;
-    replace_subjects(connection, id, &subjects)?;
+    with_savepoint(connection, "update_subject_group", || {
+        connection.execute(
+            "UPDATE subject_groups
+             SET parent_id = ?2, name = ?3, sort_order = ?4, updated_at = ?5
+             WHERE id = ?1",
+            params![id, parent_id, name, sort_order, now],
+        )?;
+        replace_subjects(connection, id, &subjects)?;
+        Ok(())
+    })?;
     Ok(SubjectGroup {
         id: id.clone(),
         parent_id: parent_id.cloned(),

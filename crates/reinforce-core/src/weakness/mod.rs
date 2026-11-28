@@ -147,16 +147,38 @@ pub fn build_report_scoped(
             "must be greater than zero".to_owned(),
         ));
     }
+    if subjects.is_some_and(|scope| scope.is_empty()) {
+        return Ok(WeaknessReport {
+            knowledge_cards: Vec::new(),
+            questions: Vec::new(),
+            confusable_pairs: Vec::new(),
+        });
+    }
     let attempts = quiz_store::user_attempts(connection, user_id)?;
     let mut questions: HashMap<QuestionCardId, QuestionCard> = HashMap::new();
+    let mut in_scope_knowledge_cards: HashMap<KnowledgeCardId, bool> = HashMap::new();
     for attempt in &attempts {
         let Ok(id) = attempt.card_id.as_str().parse::<QuestionCardId>() else {
             continue;
         };
+        if questions.contains_key(&id) {
+            continue;
+        }
         if let Some(question) = store::get_question_card(connection, &id)? {
-            if subjects.is_none_or(|subjects| subjects.iter().any(|s| s == &question.subject)) {
+            if subjects.is_none_or(|scope| scope.iter().any(|s| s == &question.subject)) {
                 questions.insert(id, question);
             }
+            continue;
+        }
+        if let Ok(card_id) = attempt.card_id.as_str().parse::<KnowledgeCardId>()
+            && !in_scope_knowledge_cards.contains_key(&card_id)
+        {
+            let allowed = match subjects {
+                Some(scope) => store::get_knowledge_card(connection, &card_id)?
+                    .is_some_and(|card| scope.iter().any(|s| s == &card.subject)),
+                None => true,
+            };
+            in_scope_knowledge_cards.insert(card_id, allowed);
         }
     }
     let question_ids: Vec<QuestionCardId> = questions.keys().cloned().collect();
@@ -205,7 +227,12 @@ pub fn build_report_scoped(
                     *pairs.entry(key).or_insert(0) += 1;
                 }
             }
-        } else if let Ok(card_id) = attempt.card_id.as_str().parse::<KnowledgeCardId>() {
+        } else if let Ok(card_id) = attempt.card_id.as_str().parse::<KnowledgeCardId>()
+            && in_scope_knowledge_cards
+                .get(&card_id)
+                .copied()
+                .unwrap_or(false)
+        {
             knowledge_stats.entry(card_id).or_default().observe(attempt);
         }
     }

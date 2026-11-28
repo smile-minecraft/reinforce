@@ -1321,3 +1321,181 @@ fn indexed_submission_requires_a_running_session() {
     assert_eq!(session.state(), SessionState::Submitted);
     assert!(session.submit_answer_at(0, keys(&["A"]), base()).is_err());
 }
+
+#[test]
+fn practical_timeout_and_linear_submit_never_duplicate_answered_indexes() {
+    let questions = vec![choice("one", "A"), choice("two", "B")];
+    let mut session = reinforce_core::quiz::QuizSession::new(
+        SessionMode::PracticalExam,
+        questions,
+        None,
+        Some(30),
+        GradingConfig::default(),
+        false,
+        false,
+    )
+    .unwrap();
+    session.start(base());
+
+    // Answer index 0 via indexed submission; ticking past the 30s limit must not
+    // record a timeout or overwrite/duplicate index 0.
+    let outcome = session
+        .submit_answer_at(0, keys(&["A"]), at(5))
+        .unwrap()
+        .unwrap();
+    assert!(outcome.is_correct);
+    assert!(matches!(
+        session.tick(at(45)).unwrap(),
+        reinforce_core::quiz::TickOutcome::None
+    ));
+    assert_eq!(session.answers().len(), 1);
+    assert_eq!(session.graded().len(), 1);
+    assert!(!session.answer_for(0).unwrap().timed_out);
+
+    // Move to index 1, then select back to already-answered index 0; ticking past
+    // the limit must still not duplicate or overwrite index 0.
+    session.select_index(1, at(50)).unwrap();
+    session.select_index(0, at(55)).unwrap();
+    assert!(matches!(
+        session.tick(at(100)).unwrap(),
+        reinforce_core::quiz::TickOutcome::None
+    ));
+    assert_eq!(session.answers().len(), 1);
+    assert_eq!(session.graded().len(), 1);
+    assert!(session.graded_for(0).unwrap().outcome.is_correct);
+
+    // Mixing linear submit_answer on already-answered index 0 must replace in place
+    // rather than pushing a duplicate entry, then advance to index 1.
+    let replaced = session
+        .submit_answer(keys(&["B"]), at(105))
+        .unwrap()
+        .unwrap();
+    assert!(!replaced.is_correct);
+    assert_eq!(session.state(), SessionState::InProgress { index: 1 });
+    assert_eq!(session.answers().len(), 1);
+    assert_eq!(session.graded().len(), 1);
+
+    // Unanswered index 1 still times out normally and advances to Submitted.
+    let tick_outcome = session.tick(at(140)).unwrap();
+    assert!(matches!(
+        tick_outcome,
+        reinforce_core::quiz::TickOutcome::QuestionTimedOut { index: 1, .. }
+    ));
+    assert_eq!(session.state(), SessionState::Submitted);
+    assert_eq!(session.answers().len(), 2);
+    assert_eq!(session.graded().len(), 2);
+    let score = session.score().unwrap();
+    assert_eq!((score.correct, score.scoreable), (0, 2));
+    assert_eq!(session.attempts(&UserId::generate(), 1).len(), 2);
+}
+
+#[test]
+fn scoped_weakness_report_excludes_other_subject_questions_and_cards() {
+    let database = Database::open_in_memory().unwrap();
+    let connection = database.connection();
+    let user = insert_user(connection);
+
+    let mut physics_card = knowledge("physics concept");
+    physics_card.subject = "physics".to_owned();
+    let mut chemistry_card = knowledge("chemistry concept");
+    chemistry_card.subject = "chemistry".to_owned();
+    store::insert_knowledge_card(connection, &physics_card).unwrap();
+    store::insert_knowledge_card(connection, &chemistry_card).unwrap();
+
+    let physics_q = QuestionSpec::new(
+        "physics q",
+        QuestionType::SingleChoice,
+        GradingMode::Exact,
+        vec!["A".to_owned()],
+    )
+    .subject("physics")
+    .options(vec![option("A"), option("B")])
+    .build();
+    let chemistry_q = QuestionSpec::new(
+        "chemistry q",
+        QuestionType::SingleChoice,
+        GradingMode::Exact,
+        vec!["A".to_owned()],
+    )
+    .subject("chemistry")
+    .options(vec![option("A"), option("B")])
+    .build();
+    store::insert_question_card(connection, &physics_q).unwrap();
+    store::insert_question_card(connection, &chemistry_q).unwrap();
+    store::insert_edge(
+        connection,
+        &tests_edge(
+            EdgeEndpoint::Question {
+                id: physics_q.id.clone(),
+            },
+            physics_card.id.clone(),
+        ),
+    )
+    .unwrap();
+
+    // Physics question: mild weakness (1 wrong, 1 right).
+    // Chemistry question & chemistry card: severe weakness (3 wrong guessed) that would
+    // outrank physics if erroneously included in knowledge_cards.
+    let logs = [
+        attempt(
+            &user,
+            CardId::from(physics_q.id.clone()),
+            false,
+            Confidence::Split,
+            10_000,
+            at(1),
+            json!({"answer": {"kind": "keys", "values": ["B"]}}),
+        ),
+        attempt(
+            &user,
+            CardId::from(physics_q.id.clone()),
+            true,
+            Confidence::Certain,
+            2_000,
+            at(2),
+            json!({"answer": {"kind": "keys", "values": ["A"]}}),
+        ),
+        attempt(
+            &user,
+            CardId::from(chemistry_q.id.clone()),
+            false,
+            Confidence::Guessed,
+            30_000,
+            at(3),
+            json!({"answer": {"kind": "keys", "values": ["B"]}}),
+        ),
+        attempt(
+            &user,
+            CardId::from(chemistry_card.id.clone()),
+            false,
+            Confidence::Guessed,
+            30_000,
+            at(4),
+            json!({"answer": {"kind": "keys", "values": ["B"]}}),
+        ),
+    ];
+    for log in &logs {
+        study_store::append_attempt(connection, log).unwrap();
+    }
+
+    let scope = vec!["physics".to_owned()];
+    let report =
+        reinforce_core::weakness::build_report_scoped(connection, &user.id, 1, Some(&scope))
+            .unwrap();
+    assert_eq!(report.questions.len(), 1);
+    assert_eq!(report.questions[0].question_id, physics_q.id);
+    assert_eq!(
+        report
+            .knowledge_cards
+            .iter()
+            .map(|item| item.card_id.clone())
+            .collect::<Vec<_>>(),
+        vec![physics_card.id.clone()],
+        "out-of-scope chemistry question and card must never appear in physics knowledge_cards"
+    );
+
+    let empty_report =
+        reinforce_core::weakness::build_report_scoped(connection, &user.id, 10, Some(&[])).unwrap();
+    assert!(empty_report.questions.is_empty());
+    assert!(empty_report.knowledge_cards.is_empty());
+}

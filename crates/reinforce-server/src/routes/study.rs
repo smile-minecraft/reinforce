@@ -619,8 +619,11 @@ async fn submit_answer(
             (Some(index), grading, revealed)
         }
         None => {
+            let answered_index = match slot.session.state() {
+                SessionState::InProgress { index } => Some(index),
+                _ => None,
+            };
             let grading = slot.session.submit_answer(answer, now)?;
-            let answered_index = slot.session.answers().last().map(|record| record.index);
             let revealed = if grading.is_some() {
                 answered_index
                     .and_then(|index| slot.session.questions().get(index))

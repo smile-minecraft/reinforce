@@ -3105,4 +3105,102 @@ async fn members_cannot_manage_subject_groups() {
     )
     .await;
     assert_eq!(listed.as_array().expect("groups").len(), 1);
+
+    // Members must not see draft-only question groups through list or get endpoints.
+    let draft_exam_id = reinforce_core::ExamSetId::generate();
+    let draft_group_id = reinforce_core::QuestionGroupId::generate();
+    let draft_exam = reinforce_core::ExamSet {
+        id: draft_exam_id.clone(),
+        subject: "physics".to_owned(),
+        title: "draft exam".to_owned(),
+        source_kind: reinforce_core::primitives::SourceKind::PastExam,
+        exam_year: None,
+        source_resource_id: None,
+        expected_questions: Some(1),
+        metadata: json!({}),
+        is_complete: false,
+    };
+    let draft_group = reinforce_core::QuestionGroup {
+        id: draft_group_id.clone(),
+        exam_set_id: Some(draft_exam_id.clone()),
+        title: Some("Draft-only vignette".to_owned()),
+        shared_stem_blocks: vec![reinforce_core::ContentBlock::Markdown {
+            text: "Hidden draft stem".to_owned(),
+        }],
+    };
+    let draft_question = reinforce_core::QuestionCard {
+        id: reinforce_core::QuestionCardId::generate(),
+        exam_set_id: Some(draft_exam_id.clone()),
+        question_group_id: Some(draft_group_id.clone()),
+        question_no: Some(1),
+        subject: "physics".to_owned(),
+        topics: vec!["draft".to_owned()],
+        stem_blocks: vec![reinforce_core::ContentBlock::Markdown {
+            text: "Draft question".to_owned(),
+        }],
+        anchor_ids: Vec::new(),
+        question_type: reinforce_core::primitives::QuestionType::ShortAnswer,
+        grading_mode: reinforce_core::primitives::GradingMode::Exact,
+        options: Vec::new(),
+        answer: vec!["A".to_owned()],
+        accepted_answers: Vec::new(),
+        answer_source_kind: reinforce_core::primitives::AnswerSourceKind::Official,
+        answer_basis: None,
+        explanation_blocks: Vec::new(),
+        status: reinforce_core::primitives::CardStatus::Draft,
+        verification: reinforce_core::primitives::Verification::Verified,
+        duplicate_question_id: None,
+        unsure_count: 0,
+        metadata: json!({}),
+        created_at: Timestamp::now(),
+        updated_at: Timestamp::now(),
+    };
+    state
+        .with_db(move |database| {
+            content_store::insert_exam_set(database.connection(), &draft_exam)?;
+            content_store::insert_question_group(database.connection(), &draft_group)?;
+            content_store::insert_question_card(database.connection(), &draft_question)?;
+            Ok(())
+        })
+        .await
+        .expect("insert draft group");
+
+    let member_groups = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/question_groups?exam_set_id={draft_exam_id}"),
+            None,
+            Some(&member_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert!(member_groups.as_array().expect("groups").is_empty());
+    assert_eq!(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/question_groups/{draft_group_id}"),
+            None,
+            Some(&member_cookie),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let owner_group = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/question_groups/{draft_group_id}"),
+            None,
+            Some(&owner_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(owner_group["id"], draft_group_id.as_str());
 }

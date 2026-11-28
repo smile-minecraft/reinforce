@@ -301,6 +301,9 @@ impl QuizSession {
             return Ok(TickOutcome::SessionExpired { index });
         }
         if self.question_timer.is_expired(now) {
+            if self.answer_for(index).is_some() {
+                return Ok(TickOutcome::None);
+            }
             let graded = self.record_timeout(now)?;
             return Ok(TickOutcome::QuestionTimedOut { index, graded });
         }
@@ -333,10 +336,7 @@ impl QuizSession {
             timed_out: false,
         };
         let graded = self.grade_record(&record)?;
-        self.answers.push(record);
-        if !self.defer_grading {
-            self.graded.push(graded.clone());
-        }
+        self.store_answer(record, &graded);
         self.advance(now);
         Ok(if self.defer_grading {
             None
@@ -408,25 +408,7 @@ impl QuizSession {
             timed_out: false,
         };
         let graded = self.grade_record(&record)?;
-        match self.answers.iter_mut().find(|record| record.index == index) {
-            Some(existing) => *existing = record,
-            None => self.answers.push(record),
-        }
-        if self.defer_grading {
-            // A timeout recorded for this index before the answer is stale now;
-            // dropping it lets `finish` re-grade the whole paper from answers.
-            self.graded
-                .retain(|existing| existing.record.index != index);
-        } else {
-            match self
-                .graded
-                .iter_mut()
-                .find(|existing| existing.record.index == index)
-            {
-                Some(existing) => *existing = graded.clone(),
-                None => self.graded.push(graded.clone()),
-            }
-        }
+        self.store_answer(record, &graded);
         Ok(if self.defer_grading {
             None
         } else {
@@ -557,6 +539,34 @@ impl QuizSession {
                 .all(|(graded, record)| &graded.record == record)
     }
 
+    fn store_answer(&mut self, record: AnswerRecord, graded: &GradedAnswer) {
+        let index = record.index;
+        let timed_out = record.timed_out;
+        match self
+            .answers
+            .iter_mut()
+            .find(|existing| existing.index == index)
+        {
+            Some(existing) => *existing = record,
+            None => self.answers.push(record),
+        }
+        if self.defer_grading && !timed_out {
+            // A timeout recorded for this index before the answer is stale now;
+            // dropping it lets `finish` re-grade the whole paper from answers.
+            self.graded
+                .retain(|existing| existing.record.index != index);
+        } else {
+            match self
+                .graded
+                .iter_mut()
+                .find(|existing| existing.record.index == index)
+            {
+                Some(existing) => *existing = graded.clone(),
+                None => self.graded.push(graded.clone()),
+            }
+        }
+    }
+
     fn record_timeout(&mut self, now: Timestamp) -> Result<GradedAnswer> {
         let SessionState::InProgress { index } = self.state else {
             return Err(Error::InvalidValue(
@@ -575,8 +585,7 @@ impl QuizSession {
             timed_out: true,
         };
         let graded = self.grade_record(&record)?;
-        self.answers.push(record);
-        self.graded.push(graded.clone());
+        self.store_answer(record, &graded);
         self.advance(now);
         Ok(graded)
     }
