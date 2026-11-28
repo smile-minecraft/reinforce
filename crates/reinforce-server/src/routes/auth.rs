@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, header};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Router, response::IntoResponse};
 use reinforce_core::Timestamp;
 use reinforce_core::auth::{
@@ -12,12 +12,12 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth::{
-    OptionalPrincipal, Principal, SESSION_COOKIE, create_agent_token, expired_cookie,
-    hash_password, hash_token, random_token, revoke_agent_token, session_cookie, session_ttl,
-    verify_password,
+    OptionalPrincipal, Principal, SESSION_COOKIE, create_named_agent_token, expired_cookie,
+    hash_password, hash_token, list_agent_tokens, random_token, revoke_agent_token,
+    revoke_agent_token_by_id, session_cookie, session_ttl, verify_password,
 };
 use crate::config::AuthMode;
-use crate::error::{ApiError, ApiResult, JsonBody};
+use crate::error::{ApiError, ApiResult, JsonBody, PathParam};
 use crate::state::AppState;
 
 const SETUP_TOKEN_SETTING: &str = "owner_setup_token_hash";
@@ -35,7 +35,13 @@ pub fn router() -> Router<AppState> {
         .route("/auth/session", get(current_session))
         .route(
             "/auth/agent-tokens",
-            post(create_agent_token_route).delete(revoke_agent_token_route),
+            get(list_agent_tokens_route)
+                .post(create_agent_token_route)
+                .delete(revoke_agent_token_route),
+        )
+        .route(
+            "/auth/agent-tokens/{id}",
+            delete(revoke_agent_token_by_id_route),
         )
 }
 
@@ -70,9 +76,18 @@ struct Login {
     password: String,
 }
 
+#[derive(Deserialize, Default)]
+struct CreateAgentToken {
+    #[serde(default)]
+    name: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct RevokeAgentToken {
-    token: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    token: Option<String>,
 }
 
 async fn status(
@@ -264,7 +279,7 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<
     ))
 }
 
-async fn create_agent_token_route(
+async fn list_agent_tokens_route(
     State(state): State<AppState>,
     principal: Principal,
 ) -> ApiResult<Json<serde_json::Value>> {
@@ -274,10 +289,39 @@ async fn create_agent_token_route(
         ));
     }
     require_owner(&principal)?;
-    let token = state
-        .with_db(move |database| create_agent_token(database.connection()))
+    let tokens = state
+        .with_db(move |database| list_agent_tokens(database.connection()))
         .await?;
-    Ok(Json(json!({ "token": token })))
+    Ok(Json(json!({ "tokens": tokens })))
+}
+
+async fn create_agent_token_route(
+    State(state): State<AppState>,
+    principal: Principal,
+    body: axum::body::Bytes,
+) -> ApiResult<Json<serde_json::Value>> {
+    if state.auth_mode != AuthMode::Invite {
+        return Err(ApiError::forbidden(
+            "agent tokens are only available in invite auth mode",
+        ));
+    }
+    require_owner(&principal)?;
+    let name = if body.is_empty() {
+        None
+    } else {
+        let parsed: CreateAgentToken = serde_json::from_slice(&body)
+            .map_err(|error| ApiError::bad_request("body", format!("invalid JSON: {error}")))?;
+        parsed.name
+    };
+    let created = state
+        .with_db(move |database| create_named_agent_token(database.connection(), name.as_deref()))
+        .await?;
+    Ok(Json(json!({
+        "id": created.id,
+        "name": created.name,
+        "token": created.token,
+        "created_at": created.created_at,
+    })))
 }
 
 async fn revoke_agent_token_route(
@@ -291,13 +335,42 @@ async fn revoke_agent_token_route(
         ));
     }
     require_owner(&principal)?;
+    if let Some(id) = request.id {
+        let revoked = state
+            .with_db(move |database| revoke_agent_token_by_id(database.connection(), &id))
+            .await?;
+        return Ok(Json(json!({ "ok": true, "revoked": revoked })));
+    }
+    let Some(token) = request.token else {
+        return Err(ApiError::bad_request(
+            "id",
+            "either id or token must be provided",
+        ));
+    };
     state
         .with_db(move |database| {
-            revoke_agent_token(database.connection(), &request.token)?;
+            revoke_agent_token(database.connection(), &token)?;
             Ok(())
         })
         .await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn revoke_agent_token_by_id_route(
+    State(state): State<AppState>,
+    principal: Principal,
+    PathParam(id): PathParam<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if state.auth_mode != AuthMode::Invite {
+        return Err(ApiError::forbidden(
+            "agent tokens are only available in invite auth mode",
+        ));
+    }
+    require_owner(&principal)?;
+    let revoked = state
+        .with_db(move |database| revoke_agent_token_by_id(database.connection(), &id))
+        .await?;
+    Ok(Json(json!({ "ok": true, "revoked": revoked })))
 }
 
 fn require_owner(principal: &Principal) -> ApiResult<()> {

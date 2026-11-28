@@ -11,18 +11,19 @@ use axum::extract::{Request, State};
 use axum::http::header;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use reinforce_core::content::collect_outline_card_ids;
 use reinforce_core::db::search::{self, SearchHit};
-use reinforce_core::primitives::{ProposalStatus, ResourceKind};
+use reinforce_core::primitives::{CardStatus, ProposalStatus, ResourceKind};
 use reinforce_core::proposal::{
     BatchOperation, OperationKind, SubmitOutcome, batch_from_proposal, submit_batch,
 };
 use reinforce_core::validation::Actor;
 use reinforce_core::weakness::build_report;
 use reinforce_core::{
-    AnchorId, EdgeEndpoint, KnowledgeCardId, ProposalId, QuestionCardId, ResourceId, UserId,
+    AnchorId, EdgeEndpoint, KnowledgeCardId, NoteId, ProposalId, QuestionCardId, ResourceId, UserId,
 };
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock};
+use rmcp::model::{CallToolResult, ContentBlock, Extensions};
 use rmcp::schemars::JsonSchema;
 use rmcp::service::ServiceExt;
 use rmcp::transport::streamable_http_server::{
@@ -33,7 +34,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-use crate::auth::verify_agent_token;
+use crate::auth::resolve_agent_token;
 use crate::cli;
 use crate::config::{AuthMode, McpArgs, ServeArgs};
 use crate::error::{ApiError, ApiResult};
@@ -62,6 +63,45 @@ pub struct CardSearchParams {
     /// Maximum number of hits, from 1 to 200 (default 50).
     pub limit: Option<usize>,
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CardGetParams {
+    /// UUIDv7 of the knowledge card to fetch.
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct QuestionGetParams {
+    /// UUIDv7 of the question card to fetch.
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NoteListParams {
+    /// Optional subject filter.
+    pub subject: Option<String>,
+    /// Optional card status filter: draft, published or archived.
+    pub status: Option<String>,
+    /// Maximum number of notes to return, from 1 to 200 (default 50).
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NoteGetParams {
+    /// UUIDv7 of the note to fetch along with its outline cards.
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExamSetListParams {
+    /// Optional subject filter.
+    pub subject: Option<String>,
+    /// Maximum number of exam sets to return, from 1 to 200 (default 50).
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+pub struct SubjectGroupListParams {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GraphParams {
@@ -114,6 +154,9 @@ pub struct ProposalGetParams {
     pub id: String,
 }
 
+#[derive(Debug, Clone)]
+struct AgentIdentity(String);
+
 #[derive(Clone)]
 pub struct McpServer {
     state: AppState,
@@ -125,10 +168,13 @@ impl McpServer {
         Self { state, agent_name }
     }
 
-    fn actor(&self) -> Actor {
-        Actor::Agent {
-            name: self.agent_name.clone(),
-        }
+    fn actor_from_extensions(&self, extensions: &Extensions) -> Actor {
+        let name = extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<AgentIdentity>())
+            .map(|identity| identity.0.clone())
+            .unwrap_or_else(|| self.agent_name.clone());
+        Actor::Agent { name }
     }
 }
 
@@ -265,7 +311,9 @@ impl McpServer {
         success(result)
     }
 
-    #[tool(description = "Search knowledge cards, question cards and notes visible to an agent.")]
+    #[tool(
+        description = "Search knowledge cards and question cards visible to an agent, returning ids and compact previews."
+    )]
     pub async fn card_search(
         &self,
         Parameters(params): Parameters<CardSearchParams>,
@@ -279,21 +327,188 @@ impl McpServer {
             .state
             .with_db(move |database| {
                 let connection = database.connection();
-                Ok(
-                    search::search_cards_visible(connection, &term, limit, false)?
-                        .into_iter()
-                        .map(|hit| match hit {
-                            SearchHit::KnowledgeCard(id) => {
-                                json!({"kind":"knowledge_card","id":id})
-                            }
-                            SearchHit::QuestionCard(id) => json!({"kind":"question_card","id":id}),
-                        })
-                        .collect::<Vec<_>>(),
-                )
+                let mut results = Vec::new();
+                for hit in search::search_cards_visible(connection, &term, limit, false)? {
+                    match hit {
+                        SearchHit::KnowledgeCard(id) => {
+                            let card =
+                                reinforce_core::content_store::get_knowledge_card(connection, &id)?;
+                            results.push(json!({
+                                "kind": "knowledge_card",
+                                "id": id,
+                                "subject": card.as_ref().map(|c| c.subject.as_str()),
+                                "title": card.as_ref().map(|c| c.title.as_str()),
+                                "status": card.as_ref().map(|c| c.status),
+                            }));
+                        }
+                        SearchHit::QuestionCard(id) => {
+                            let card =
+                                reinforce_core::content_store::get_question_card(connection, &id)?;
+                            results.push(json!({
+                                "kind": "question_card",
+                                "id": id,
+                                "subject": card.as_ref().map(|c| c.subject.as_str()),
+                                "question_type": card.as_ref().map(|c| c.question_type),
+                                "status": card.as_ref().map(|c| c.status),
+                            }));
+                        }
+                    }
+                }
+                Ok(results)
             })
             .await
             .map_err(mcp_error)?;
         success(json!({ "hits": hits }))
+    }
+
+    #[tool(
+        description = "Fetch a complete knowledge card by UUIDv7, including all content blocks."
+    )]
+    pub async fn card_get(
+        &self,
+        Parameters(params): Parameters<CardGetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let id = parse_id::<KnowledgeCardId>(&params.id, "id")?;
+        let card = self
+            .state
+            .with_db(move |database| {
+                reinforce_core::content_store::get_knowledge_card(database.connection(), &id)?
+                    .ok_or_else(|| ApiError::not_found("knowledge_card"))
+            })
+            .await
+            .map_err(mcp_error)?;
+        success(json!({ "card": card }))
+    }
+
+    #[tool(
+        description = "Fetch a complete question card by UUIDv7, including stem, options and answer."
+    )]
+    pub async fn question_get(
+        &self,
+        Parameters(params): Parameters<QuestionGetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let id = parse_id::<QuestionCardId>(&params.id, "id")?;
+        let question = self
+            .state
+            .with_db(move |database| {
+                reinforce_core::content_store::get_question_card(database.connection(), &id)?
+                    .ok_or_else(|| ApiError::not_found("question_card"))
+            })
+            .await
+            .map_err(mcp_error)?;
+        success(json!({ "question": question }))
+    }
+
+    #[tool(description = "List notes with optional subject and status filters.")]
+    pub async fn note_list(
+        &self,
+        Parameters(params): Parameters<NoteListParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let status = params
+            .status
+            .as_deref()
+            .map(CardStatus::from_str)
+            .transpose()
+            .map_err(|error| ErrorData::invalid_params(format!("invalid status: {error}"), None))?;
+        let subject = params
+            .subject
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let limit = limit_or(params.limit, 50, 200);
+        let notes = self
+            .state
+            .with_db(move |database| {
+                Ok(reinforce_core::catalog_store::list_notes(
+                    database.connection(),
+                    subject.as_deref(),
+                    status,
+                    limit,
+                )?)
+            })
+            .await
+            .map_err(mcp_error)?;
+        success(json!({ "notes": notes }))
+    }
+
+    #[tool(
+        description = "Fetch a complete note by UUIDv7 along with the knowledge cards referenced in its outline."
+    )]
+    pub async fn note_get(
+        &self,
+        Parameters(params): Parameters<NoteGetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let id = parse_id::<NoteId>(&params.id, "id")?;
+        let result = self
+            .state
+            .with_db(move |database| {
+                let connection = database.connection();
+                let note = reinforce_core::content_store::get_note(connection, &id)?
+                    .ok_or_else(|| ApiError::not_found("note"))?;
+                let card_ids = collect_outline_card_ids(&note.outline);
+                let mut cards = Vec::with_capacity(card_ids.len());
+                for card_id in card_ids {
+                    if let Some(card) =
+                        reinforce_core::content_store::get_knowledge_card(connection, &card_id)?
+                    {
+                        cards.push(card);
+                    }
+                }
+                Ok(json!({ "note": note, "cards": cards }))
+            })
+            .await
+            .map_err(mcp_error)?;
+        success(result)
+    }
+
+    #[tool(description = "List exam sets with question counts and optional subject filter.")]
+    pub async fn exam_set_list(
+        &self,
+        Parameters(params): Parameters<ExamSetListParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let subject = params
+            .subject
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let limit = limit_or(params.limit, 50, 200);
+        let exam_sets = self
+            .state
+            .with_db(move |database| {
+                let summaries = reinforce_core::catalog_store::list_exam_sets(
+                    database.connection(),
+                    subject.as_deref(),
+                    limit,
+                )?;
+                Ok(summaries
+                    .into_iter()
+                    .map(|summary| {
+                        json!({
+                            "exam_set": summary.exam_set,
+                            "question_count": summary.question_count,
+                            "published_question_count": summary.published_question_count,
+                        })
+                    })
+                    .collect::<Vec<_>>())
+            })
+            .await
+            .map_err(mcp_error)?;
+        success(json!({ "exam_sets": exam_sets }))
+    }
+
+    #[tool(description = "List all nested subject groups and their assigned subjects.")]
+    pub async fn subject_group_list(
+        &self,
+        Parameters(_params): Parameters<SubjectGroupListParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let groups = self
+            .state
+            .with_db(move |database| {
+                Ok(reinforce_core::subject_groups_store::list_subject_groups(
+                    database.connection(),
+                )?)
+            })
+            .await
+            .map_err(mcp_error)?;
+        success(json!({ "groups": groups }))
     }
 
     #[tool(description = "Traverse typed semantic edges from a card, question or question option.")]
@@ -366,10 +581,11 @@ impl McpServer {
     )]
     pub async fn proposal_submit_batch(
         &self,
+        extensions: Extensions,
         Parameters(params): Parameters<SubmitBatchParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let operations = batch_lines_to_operations(params.operations)?;
-        let actor = self.actor();
+        let actor = self.actor_from_extensions(&extensions);
         let outcome = self
             .state
             .with_db(move |database| {
@@ -431,7 +647,11 @@ impl McpServer {
     }
 }
 
-#[tool_handler(router = Self::tool_router(), name = "reinforce")]
+#[tool_handler(
+    router = Self::tool_router(),
+    name = "reinforce",
+    instructions = "Reinforce is an AI-authored, human-reviewed study platform. Use read tools first (subject_group_list, note_list, exam_set_list, resource_list, card_search) and fetch full entities with note_get, card_get, question_get, resource_read_page, card_get_graph or study_weakness_report before drafting changes. All writes must go through proposal_submit_batch as ordered operations (op: resource | anchor | knowledge_card | note | exam_set | question_group | question_card | edge) containing complete entity snapshots. Use unique $alias strings in temp_ref and reference them across operations in the same batch; permanent UUIDv7 ids are assigned on commit. Proposals are always staged as pending with verification=unchecked for human review—agents cannot approve or reject proposals. If a proposal is rejected, inspect feedback via proposal_list(status='rejected') and proposal_get, then submit a revised batch."
+)]
 impl ServerHandler for McpServer {}
 
 pub async fn run_stdio(args: McpArgs) -> ApiResult<()> {
@@ -491,7 +711,7 @@ pub fn http_router(state: AppState) -> axum::Router<AppState> {
 
 async fn require_agent_token(
     State(state): State<AppState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     if state.auth_mode != AuthMode::Invite {
@@ -510,12 +730,15 @@ async fn require_agent_token(
     let Some(token) = token else {
         return ApiError::unauthorized().into_response();
     };
-    let valid = state
-        .with_db(move |database| verify_agent_token(database.connection(), &token))
+    let resolved = state
+        .with_db(move |database| resolve_agent_token(database.connection(), &token))
         .await;
-    match valid {
-        Ok(true) => next.run(request).await,
-        Ok(false) => ApiError::unauthorized().into_response(),
+    match resolved {
+        Ok(Some(summary)) => {
+            request.extensions_mut().insert(AgentIdentity(summary.name));
+            next.run(request).await
+        }
+        Ok(None) => ApiError::unauthorized().into_response(),
         Err(error) => error.into_response(),
     }
 }
@@ -528,7 +751,7 @@ mod tests {
     fn tool_schemas_expose_descriptions_and_required_fields() {
         let tools = McpServer::tool_router();
         let tools = tools.list_all();
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 14);
         let submit = tools
             .iter()
             .find(|tool| tool.name == "proposal_submit_batch")
@@ -618,9 +841,12 @@ mod tests {
         let server = McpServer::new(state, "test-agent".to_owned());
 
         let invalid = server
-            .proposal_submit_batch(Parameters(SubmitBatchParams {
-                operations: vec![question_line("$q1", json!(["A", "B"]))],
-            }))
+            .proposal_submit_batch(
+                Extensions::default(),
+                Parameters(SubmitBatchParams {
+                    operations: vec![question_line("$q1", json!(["A", "B"]))],
+                }),
+            )
             .await
             .expect("tool call");
         assert_eq!(invalid.is_error, Some(true));
@@ -632,9 +858,12 @@ mod tests {
         }));
 
         let valid = server
-            .proposal_submit_batch(Parameters(SubmitBatchParams {
-                operations: vec![question_line("$q1", json!(["A"]))],
-            }))
+            .proposal_submit_batch(
+                Extensions::default(),
+                Parameters(SubmitBatchParams {
+                    operations: vec![question_line("$q1", json!(["A"]))],
+                }),
+            )
             .await
             .expect("tool call");
         assert_eq!(valid.is_error, Some(false));

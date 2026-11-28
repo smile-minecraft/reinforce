@@ -9,7 +9,9 @@ use reinforce_core::auth::{
 };
 use reinforce_core::{ContentHash, Timestamp, UserId};
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use tokio::task::spawn_blocking;
+use uuid::Uuid;
 
 use crate::config::AuthMode;
 use crate::error::{ApiError, ApiResult};
@@ -97,48 +99,182 @@ pub fn random_token(byte_count: usize) -> String {
     text
 }
 
-fn stored_agent_tokens(connection: &Connection) -> ApiResult<Vec<String>> {
-    match get_setting(connection, AGENT_TOKENS_SETTING)? {
-        Some(value) => serde_json::from_str(&value)
-            .map_err(|error| ApiError::internal(format!("invalid agent token registry: {error}"))),
-        None => Ok(Vec::new()),
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredAgentToken {
+    id: String,
+    name: String,
+    hash: String,
+    created_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum StoredAgentTokenEntry {
+    Named(StoredAgentToken),
+    LegacyHash(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AgentTokenSummary {
+    pub id: String,
+    pub name: String,
+    pub created_at: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CreatedAgentToken {
+    pub id: String,
+    pub name: String,
+    pub token: String,
+    pub created_at: Timestamp,
+}
+
+const DEFAULT_AGENT_TOKEN_NAME: &str = "mcp-http";
+
+fn legacy_epoch() -> Timestamp {
+    "1970-01-01T00:00:00.000000Z"
+        .parse()
+        .expect("static unix epoch timestamp is valid")
+}
+
+fn validate_agent_token_name(name: Option<&str>) -> ApiResult<String> {
+    let Some(raw) = name else {
+        return Ok(DEFAULT_AGENT_TOKEN_NAME.to_owned());
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(DEFAULT_AGENT_TOKEN_NAME.to_owned());
     }
+    if trimmed.len() > 64
+        || !trimmed.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | ' ')
+        })
+    {
+        return Err(ApiError::bad_request(
+            "name",
+            "must be 1-64 characters of ASCII letters, digits, spaces, '.', '_' or '-'",
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn stored_agent_tokens(connection: &Connection) -> ApiResult<Vec<StoredAgentToken>> {
+    let Some(value) = get_setting(connection, AGENT_TOKENS_SETTING)? else {
+        return Ok(Vec::new());
+    };
+    let entries: Vec<StoredAgentTokenEntry> = serde_json::from_str(&value)
+        .map_err(|error| ApiError::internal(format!("invalid agent token registry: {error}")))?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| match entry {
+            StoredAgentTokenEntry::Named(record) => record,
+            StoredAgentTokenEntry::LegacyHash(hash) => {
+                let prefix = &hash[..hash.len().min(12)];
+                StoredAgentToken {
+                    id: format!("legacy-{prefix}"),
+                    name: DEFAULT_AGENT_TOKEN_NAME.to_owned(),
+                    hash,
+                    created_at: legacy_epoch(),
+                }
+            }
+        })
+        .collect())
+}
+
+fn save_agent_tokens(connection: &Connection, tokens: &[StoredAgentToken]) -> ApiResult<()> {
+    if tokens.is_empty() {
+        delete_setting(connection, AGENT_TOKENS_SETTING)?;
+    } else {
+        set_setting(
+            connection,
+            AGENT_TOKENS_SETTING,
+            &serde_json::to_string(tokens)?,
+        )?;
+    }
+    Ok(())
+}
+
+/// Creates a named owner API token for remote MCP clients. Only its hash is stored.
+pub fn create_named_agent_token(
+    connection: &Connection,
+    name: Option<&str>,
+) -> ApiResult<CreatedAgentToken> {
+    let name = validate_agent_token_name(name)?;
+    let token = random_token(32);
+    let id = Uuid::now_v7().to_string();
+    let created_at = Timestamp::now();
+    let mut records = stored_agent_tokens(connection)?;
+    records.push(StoredAgentToken {
+        id: id.clone(),
+        name: name.clone(),
+        hash: hash_token(&token),
+        created_at,
+    });
+    save_agent_tokens(connection, &records)?;
+    Ok(CreatedAgentToken {
+        id,
+        name,
+        token,
+        created_at,
+    })
 }
 
 /// Creates an owner API token for remote MCP clients. Only its hash is stored.
 pub fn create_agent_token(connection: &Connection) -> ApiResult<String> {
-    let token = random_token(32);
-    let mut hashes = stored_agent_tokens(connection)?;
-    hashes.push(hash_token(&token));
-    set_setting(
-        connection,
-        AGENT_TOKENS_SETTING,
-        &serde_json::to_string(&hashes)?,
-    )?;
-    Ok(token)
+    Ok(create_named_agent_token(connection, None)?.token)
+}
+
+/// Lists configured agent tokens without exposing plaintext secrets or hashes.
+pub fn list_agent_tokens(connection: &Connection) -> ApiResult<Vec<AgentTokenSummary>> {
+    Ok(stored_agent_tokens(connection)?
+        .into_iter()
+        .map(|record| AgentTokenSummary {
+            id: record.id,
+            name: record.name,
+            created_at: record.created_at,
+        })
+        .collect())
 }
 
 /// Removes a token by its plaintext value. A missing or unknown token is a
 /// no-op so revocation is safe to retry.
 pub fn revoke_agent_token(connection: &Connection, token: &str) -> ApiResult<()> {
     let hash = hash_token(token);
-    let mut hashes = stored_agent_tokens(connection)?;
-    hashes.retain(|value| value != &hash);
-    if hashes.is_empty() {
-        delete_setting(connection, AGENT_TOKENS_SETTING)?;
-    } else {
-        set_setting(
-            connection,
-            AGENT_TOKENS_SETTING,
-            &serde_json::to_string(&hashes)?,
-        )?;
+    let mut records = stored_agent_tokens(connection)?;
+    records.retain(|record| record.hash != hash);
+    save_agent_tokens(connection, &records)
+}
+
+/// Removes a token by its stored identifier. Returns whether a matching token
+/// was removed.
+pub fn revoke_agent_token_by_id(connection: &Connection, id: &str) -> ApiResult<bool> {
+    let mut records = stored_agent_tokens(connection)?;
+    let before = records.len();
+    records.retain(|record| record.id != id);
+    let removed = records.len() < before;
+    if removed {
+        save_agent_tokens(connection, &records)?;
     }
-    Ok(())
+    Ok(removed)
+}
+
+pub fn resolve_agent_token(
+    connection: &Connection,
+    token: &str,
+) -> ApiResult<Option<AgentTokenSummary>> {
+    let hash = hash_token(token);
+    Ok(stored_agent_tokens(connection)?
+        .into_iter()
+        .find(|record| record.hash == hash)
+        .map(|record| AgentTokenSummary {
+            id: record.id,
+            name: record.name,
+            created_at: record.created_at,
+        }))
 }
 
 pub fn verify_agent_token(connection: &Connection, token: &str) -> ApiResult<bool> {
-    let hash = hash_token(token);
-    Ok(stored_agent_tokens(connection)?.contains(&hash))
+    Ok(resolve_agent_token(connection, token)?.is_some())
 }
 
 fn hash_password_sync(password: &str) -> ApiResult<String> {
