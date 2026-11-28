@@ -73,6 +73,40 @@ async fn serve(config: config::ServeArgs) -> ApiResult<()> {
         config.auth.as_str()
     );
     axum::serve(listener, app(state))
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|error| error::ApiError::internal(format!("server failed: {error}")))
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!("failed to install Ctrl+C handler: {error}");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::error!("failed to install SIGTERM handler: {error}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {
+            tracing::info!("received SIGINT, shutting down gracefully");
+        }
+        () = terminate => {
+            tracing::info!("received SIGTERM, shutting down gracefully");
+        }
+    }
 }
