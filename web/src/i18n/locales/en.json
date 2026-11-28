@@ -534,5 +534,98 @@
       "fontsMissing": "Server fonts are missing for PDF rendering. Ensure CJK and math fonts are installed in the server's fonts/ directory, or export as Markdown instead.",
       "serverUpdateRequired": "Export endpoint is not available on this server yet. Please update your Reinforce server."
     }
+  },
+  "settings": {
+    "singleMode": "Single-user local mode",
+    "copy": {
+      "copy": "Copy",
+      "copied": "Copied",
+      "failed": "Copy failed",
+      "copyNamed": "Copy {{name}}"
+    },
+    "mcp": {
+      "title": "MCP connection",
+      "subtitle": "Connect AI agents to Reinforce over the Model Context Protocol. Agents can browse content and submit proposals; nothing they send is published without your review.",
+      "stdioTitle": "Local stdio",
+      "stdioHint": "For agents running on this machine. Replace the paths with your binary, database and blob directory.",
+      "httpTitle": "Streamable HTTP",
+      "httpHintInvite": "For remote agents. Every call needs a named agent token as a Bearer token; proposals record the token name as the submitter.",
+      "httpHintSingle": "Single-user mode accepts loopback connections without a token. Use invite mode to expose MCP beyond this machine.",
+      "tokensSingleMode": "Agent tokens are only used in invite mode (reinforce serve --auth invite). In single-user mode, local HTTP clients connect without one.",
+      "tokensOwnerOnly": "Only the owner can create or revoke agent tokens. Ask the owner for a token to connect an agent."
+    },
+    "tokens": {
+      "title": "Agent tokens",
+      "subtitle": "Give each agent its own named token so you can tell submissions apart and revoke access individually.",
+      "nameLabel": "Token name",
+      "namePlaceholder": "Optional name, e.g. claude",
+      "create": "Create token",
+      "creating": "Creating…",
+      "createFailed": "Could not create the token: {{message}}",
+      "createdNotice": "Token “{{name}}” created. Copy it now — it will not be shown again.",
+      "plaintextLabel": "New agent token",
+      "copyToken": "Copy token",
+      "copyConfig": "Copy HTTP config with this token",
+      "dismiss": "Dismiss the new token",
+      "unnamed": "Unnamed token",
+      "createdAt": "Created {{time}}",
+      "empty": "No agent tokens yet.",
+      "listLabel": "Agent tokens",
+      "loadFailed": "Could not load agent tokens: {{message}}",
+      "revoke": "Revoke",
+      "revokeNamed": "Revoke token {{name}}",
+      "revoking": "Revoking…",
+      "confirmRevoke": "Confirm revoking token {{name}}",
+      "confirmRevokeShort": "Agents using it lose access.",
+      "revokeFailed": "Could not revoke the token: {{message}}",
+      "alreadyRevoked": "That token was already revoked."
+    },
+    "plugins": {
+      "title": "Plugins",
+      "subtitle": "Queue work for the plugins declared in the owner manifest. Results arrive as pending proposals for review.",
+      "loadFailed": "Could not load plugins: {{message}}",
+      "listLabel": "Configured plugins",
+      "capabilities": "Capabilities",
+      "limits": "Timeout {{timeout}}s · up to {{attempts}} attempts",
+      "emptyTitle": "No plugins are configured on this server.",
+      "emptyManifest": "Write a manifest file such as plugins.json that declares each plugin and its capabilities:",
+      "emptyServe": "Then restart the server with the manifest:",
+      "emptyBoundary": "Plugins can only be added or changed by editing that file; this page can queue work but never edit the manifest.",
+      "submitTitle": "Queue a job",
+      "plugin": "Plugin",
+      "capability": "Capability",
+      "input": "Input (JSON)",
+      "inputHint": "A JSON object passed to the plugin, e.g. {\"resource_id\": \"…\"}.",
+      "input_empty": "Enter a JSON object.",
+      "input_notObject": "The input must be a JSON object, not an array or a plain value.",
+      "inputInvalid": "Invalid JSON: {{message}}",
+      "submit": "Queue job",
+      "submitting": "Queueing…",
+      "submitted": "Job {{id}} queued.",
+      "submitFailed": "Could not queue the job: {{message}}"
+    },
+    "jobs": {
+      "title": "Job queue",
+      "polling": "Refreshing automatically while jobs are active.",
+      "idle": "No active jobs.",
+      "refresh": "Refresh",
+      "empty": "No jobs yet.",
+      "listLabel": "Plugin jobs",
+      "loadFailed": "Could not load jobs: {{message}}",
+      "meta": "Queued {{time}} · attempt {{attempts}}/{{max}}",
+      "cancelRequested": "Cancel requested",
+      "cancelNamed": "Cancel job {{name}}",
+      "cancelling": "Cancelling…",
+      "cancelFailed": "Could not cancel the job: {{message}}",
+      "progressLabel": "Progress of {{name}}",
+      "viewProposal": "Review proposal",
+      "status": {
+        "queued": "Queued",
+        "running": "Running",
+        "succeeded": "Succeeded",
+        "failed": "Failed",
+        "cancelled": "Cancelled"
+      }
+    }
   }
 }
