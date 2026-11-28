@@ -153,6 +153,12 @@ describe('workspaceLogic: question groups and sidebar', () => {
     assert.equal(buckets[1].subject, 'biology')
     assert.equal(buckets[1].exams[0].label, '生物練習')
   })
+
+  it('preserves real server index via indexOffset for legacy single-question snapshots', () => {
+    const units = buildQuestionUnits([q2], groups, examSets, 4)
+    assert.equal(units.length, 1)
+    assert.equal(units[0].items[0].sessionIndex, 4)
+  })
 })
 
 describe('workspaceLogic: 5-level confidence mapping', () => {

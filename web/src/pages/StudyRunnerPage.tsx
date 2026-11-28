@@ -37,6 +37,7 @@ import type {
   Pin,
   PinClick,
   QuestionCard,
+  SessionState,
 } from '../api/types'
 import { BlockRenderer } from '../blocks/BlockRenderer'
 import { AnchorDrawer } from '../components/AnchorDrawer'
@@ -106,8 +107,18 @@ interface SubmittedFeedback {
   timedOut?: boolean
 }
 
+interface LegacyReviewingState {
+  sessionIndex: number
+  question: QuestionCard
+  nextState: SessionState
+}
+
 export function StudyRunnerPage() {
   const { id: sessionId = '' } = useParams()
+  return <StudyRunnerContent key={sessionId} sessionId={sessionId} />
+}
+
+function StudyRunnerContent({ sessionId }: { sessionId: string }) {
   const location = useLocation()
   const { t } = useTranslation()
   const { openTab, setMobileRightOpen } = useWorkspace()
@@ -143,6 +154,7 @@ export function StudyRunnerPage() {
   const [localFeedbackByIndex, setLocalFeedbackByIndex] = useState<
     Record<number, SubmittedFeedback>
   >({})
+  const [legacyReviewing, setLegacyReviewing] = useState<LegacyReviewingState | null>(null)
   const [confidence5, setConfidence5] = useState<ConfidenceLevel5>('certain')
   const [activeUnitIdx, setActiveUnitIdx] = useState(0)
 
@@ -172,24 +184,55 @@ export function StudyRunnerPage() {
   const sessionState = snapshot?.state
   const isPaused = sessionState?.status === 'paused'
   const isExpired = sessionState?.status === 'expired'
+  const isSubmitted = sessionState?.status === 'submitted'
+
+  const isFullListMode = Boolean(snapshot?.questions && snapshot.questions.length > 0)
+  const serverIndex =
+    sessionState && (sessionState.status === 'in_progress' || sessionState.status === 'paused')
+      ? sessionState.index
+      : 0
 
   // Build QuestionUnits from snapshot.questions (or fallback to single snapshot.question for older servers)
   const allQuestions = useMemo<QuestionCard[]>(() => {
-    if (snapshot?.questions && snapshot.questions.length > 0) {
+    if (isFullListMode && snapshot?.questions) {
       return snapshot.questions
     }
+    if (legacyReviewing) {
+      return [legacyReviewing.question]
+    }
     return snapshot?.question ? [snapshot.question] : []
-  }, [snapshot])
+  }, [isFullListMode, snapshot, legacyReviewing])
 
-  const units = useMemo<QuestionUnit[]>(
-    () =>
-      buildQuestionUnits(
+  const units = useMemo<QuestionUnit[]>(() => {
+    if (isFullListMode) {
+      return buildQuestionUnits(
         allQuestions,
         snapshot?.question_groups ?? {},
         snapshot?.exam_sets ?? {},
-      ),
-    [allQuestions, snapshot?.question_groups, snapshot?.exam_sets],
-  )
+      )
+    }
+    if (legacyReviewing) {
+      return buildQuestionUnits(
+        [legacyReviewing.question],
+        snapshot?.question_groups ?? {},
+        snapshot?.exam_sets ?? {},
+        legacyReviewing.sessionIndex,
+      )
+    }
+    return buildQuestionUnits(
+      allQuestions,
+      snapshot?.question_groups ?? {},
+      snapshot?.exam_sets ?? {},
+      serverIndex,
+    )
+  }, [
+    isFullListMode,
+    allQuestions,
+    legacyReviewing,
+    snapshot?.question_groups,
+    snapshot?.exam_sets,
+    serverIndex,
+  ])
 
   const sidebarBuckets = useMemo(
     () => buildGroupedQuestionSidebar(units, t('workspace.sidebar.ungroupedExam')),
@@ -199,46 +242,59 @@ export function StudyRunnerPage() {
   // Derive merged server + local feedback & drafts (no setState inside useEffect)
   const feedbackByIndex = useMemo<Record<number, SubmittedFeedback>>(() => {
     const merged: Record<number, SubmittedFeedback> = {}
-    const answers = snapshot?.answers ?? []
-    const graded = snapshot?.graded ?? []
-    for (const ans of answers) {
-      const matchedGraded = graded.find((g) => g.record.index === ans.index)
-      const q = allQuestions[ans.index]
-      if (q) {
-        merged[ans.index] = {
-          question: q,
-          submission: ans.submission,
-          grading: matchedGraded?.outcome ?? null,
-          timedOut: ans.timed_out,
+    if (isFullListMode) {
+      const answers = snapshot?.answers ?? []
+      const graded = snapshot?.graded ?? []
+      for (const ans of answers) {
+        const matchedGraded = graded.find((g) => g.record.index === ans.index)
+        const q = allQuestions[ans.index]
+        if (q) {
+          merged[ans.index] = {
+            question: q,
+            submission: ans.submission,
+            grading: matchedGraded?.outcome ?? null,
+            timedOut: ans.timed_out,
+          }
         }
       }
     }
     return { ...merged, ...localFeedbackByIndex }
-  }, [snapshot, allQuestions, localFeedbackByIndex])
+  }, [isFullListMode, snapshot, allQuestions, localFeedbackByIndex])
 
   const draftsByIndex = useMemo<Record<number, QuestionDraft>>(() => {
     const merged: Record<number, QuestionDraft> = {}
-    for (const ans of snapshot?.answers ?? []) {
-      if (ans.submission.kind === 'keys') {
-        merged[ans.index] = { ...EMPTY_DRAFT, selectedKeys: ans.submission.values }
-      } else if (ans.submission.kind === 'text') {
-        merged[ans.index] = { ...EMPTY_DRAFT, textAnswer: ans.submission.value }
-      } else if (ans.submission.kind === 'pin_clicks') {
-        merged[ans.index] = { ...EMPTY_DRAFT, pinClicks: ans.submission.clicks }
+    if (isFullListMode) {
+      for (const ans of snapshot?.answers ?? []) {
+        if (ans.submission.kind === 'keys') {
+          merged[ans.index] = { ...EMPTY_DRAFT, selectedKeys: ans.submission.values }
+        } else if (ans.submission.kind === 'text') {
+          merged[ans.index] = { ...EMPTY_DRAFT, textAnswer: ans.submission.value }
+        } else if (ans.submission.kind === 'pin_clicks') {
+          merged[ans.index] = { ...EMPTY_DRAFT, pinClicks: ans.submission.clicks }
+        }
       }
     }
     return { ...merged, ...localDraftsByIndex }
-  }, [snapshot, localDraftsByIndex])
+  }, [isFullListMode, snapshot, localDraftsByIndex])
 
   // Keep activeUnitIdx clamped
-  const clampedUnitIdx = Math.min(activeUnitIdx, Math.max(0, units.length - 1))
+  const clampedUnitIdx = isFullListMode
+    ? Math.min(activeUnitIdx, Math.max(0, units.length - 1))
+    : 0
   const currentUnit: QuestionUnit | null = units[clampedUnitIdx] ?? null
+
+  const currentUnitFullyGraded = Boolean(
+    currentUnit &&
+      currentUnit.items.length > 0 &&
+      currentUnit.items.every((item) => Boolean(feedbackByIndex[item.sessionIndex]?.grading)),
+  )
 
   const answeredCount = Object.keys(feedbackByIndex).length
   const totalQuestionCount = snapshot?.question_count ?? allQuestions.length
 
   const navigateToUnit = useCallback(
     async (targetUnitIndex: number) => {
+      if (!isFullListMode) return
       if (targetUnitIndex < 0 || targetUnitIndex >= units.length) return
       const targetUnit = units[targetUnitIndex]
       setActiveUnitIdx(targetUnitIndex)
@@ -260,8 +316,38 @@ export function StudyRunnerPage() {
         }
       }
     },
-    [units, perQuestionLimitSecs, sessionState?.status, selectMutation, setMobileRightOpen],
+    [
+      isFullListMode,
+      units,
+      perQuestionLimitSecs,
+      sessionState?.status,
+      selectMutation,
+      setMobileRightOpen,
+    ],
   )
+
+  const handleNextUnit = useCallback(async () => {
+    if (isFullListMode) {
+      await navigateToUnit(clampedUnitIdx + 1)
+      return
+    }
+    if (legacyReviewing) {
+      setLegacyReviewing(null)
+      setActionError(null)
+      scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+      if (perQuestionLimitSecs !== null) {
+        setQuestionRemainingSecs(perQuestionLimitSecs)
+      }
+      await refetchSession()
+    }
+  }, [
+    isFullListMode,
+    navigateToUnit,
+    clampedUnitIdx,
+    legacyReviewing,
+    perQuestionLimitSecs,
+    refetchSession,
+  ])
 
   const handleFinish = useCallback(async () => {
     setActionError(null)
@@ -281,22 +367,40 @@ export function StudyRunnerPage() {
       lastSyncRef.current = Date.now()
 
       if (outcome.type === 'question_timed_out') {
-        const revealed = outcome.revealed_question ?? allQuestions[outcome.index]
-        if (revealed) {
-          setLocalFeedbackByIndex((prev) => ({
-            ...prev,
-            [outcome.index]: {
-              question: revealed,
-              submission: { kind: 'timed_out' },
-              grading: outcome.graded.outcome,
-              timedOut: true,
-            },
-          }))
+        const revealed =
+          outcome.revealed_question ??
+          (isFullListMode ? allQuestions[outcome.index] : snapshot?.question) ??
+          null
+        const alreadyGraded = Boolean(feedbackByIndex[outcome.index]?.grading)
+        if (revealed && !alreadyGraded) {
+          setLocalFeedbackByIndex((prev) => {
+            if (prev[outcome.index]?.grading) return prev
+            return {
+              ...prev,
+              [outcome.index]: {
+                question: revealed,
+                submission: { kind: 'timed_out' },
+                grading: outcome.graded.outcome,
+                timedOut: true,
+              },
+            }
+          })
         }
         const refreshed = await refetchSession()
         const st = refreshed.data?.state
-        if (st && (st.status === 'in_progress' || st.status === 'paused')) {
-          setActiveUnitIdx(findUnitIndexBySessionIndex(units, st.index))
+        if (isFullListMode) {
+          if (!alreadyGraded && st && (st.status === 'in_progress' || st.status === 'paused')) {
+            setActiveUnitIdx(findUnitIndexBySessionIndex(units, st.index))
+            if (perQuestionLimitSecs !== null) {
+              setQuestionRemainingSecs(perQuestionLimitSecs)
+            }
+          }
+        } else if (revealed && !alreadyGraded) {
+          setLegacyReviewing({
+            sessionIndex: outcome.index,
+            question: revealed,
+            nextState: st ?? { status: 'submitted' },
+          })
         }
       } else if (outcome.type === 'session_expired') {
         await refetchSession()
@@ -306,11 +410,28 @@ export function StudyRunnerPage() {
     } finally {
       tickInFlightRef.current = false
     }
-  }, [sessionId, finishResult, tickMutation, allQuestions, refetchSession, units])
+  }, [
+    sessionId,
+    finishResult,
+    tickMutation,
+    isFullListMode,
+    allQuestions,
+    snapshot,
+    feedbackByIndex,
+    refetchSession,
+    units,
+    perQuestionLimitSecs,
+  ])
 
-  // Countdown timer loop
+  const shouldRunTimer =
+    isTimedMode &&
+    sessionState?.status === 'in_progress' &&
+    !finishResult &&
+    !(isPractical && (currentUnitFullyGraded || legacyReviewing !== null))
+
+  // Countdown timer loop (stops automatically in practical_exam once current unit is graded)
   useEffect(() => {
-    if (!isTimedMode || !sessionState || sessionState.status !== 'in_progress' || finishResult) {
+    if (!shouldRunTimer) {
       return
     }
     let lastFrame = performance.now()
@@ -339,7 +460,7 @@ export function StudyRunnerPage() {
       }
     }, 250)
     return () => window.clearInterval(timer)
-  }, [isTimedMode, sessionState, finishResult, perQuestionLimitSecs, totalExamLimitSecs, runServerTick])
+  }, [shouldRunTimer, perQuestionLimitSecs, totalExamLimitSecs, runServerTick])
 
   // Visibility auto-pause
   useEffect(() => {
@@ -395,14 +516,16 @@ export function StudyRunnerPage() {
 
   // Can submit if at least one question in currentUnit has a valid draft
   const submittableItems = useMemo(() => {
-    if (!currentUnit || sessionState?.status !== 'in_progress') return []
+    if (!currentUnit || sessionState?.status !== 'in_progress' || legacyReviewing !== null) {
+      return []
+    }
     return currentUnit.items.filter(({ sessionIndex, question }) => {
       const sub = buildSubmissionFor(question, draftsByIndex[sessionIndex] ?? EMPTY_DRAFT)
       if (!sub) return false
       if (!isFullExam && feedbackByIndex[sessionIndex]?.grading) return false
       return true
     })
-  }, [currentUnit, draftsByIndex, feedbackByIndex, isFullExam, sessionState?.status])
+  }, [currentUnit, draftsByIndex, feedbackByIndex, isFullExam, sessionState?.status, legacyReviewing])
 
   async function handleSubmitCurrentUnit() {
     if (!currentUnit || submittableItems.length === 0) return
@@ -411,16 +534,21 @@ export function StudyRunnerPage() {
     const errorTags = impliedErrorTag ? [impliedErrorTag] : undefined
 
     try {
+      let lastRes: Awaited<ReturnType<typeof submitMutation.mutateAsync>> | null = null
+      let lastSubmitted: { sessionIndex: number; question: QuestionCard } | null = null
+
       for (const { sessionIndex, question } of submittableItems) {
         const submission = buildSubmissionFor(question, draftsByIndex[sessionIndex] ?? EMPTY_DRAFT)
         if (!submission) continue
 
         const res = await submitMutation.mutateAsync({
-          index: snapshot?.questions ? sessionIndex : undefined,
+          index: isFullListMode ? sessionIndex : undefined,
           submission,
           confidence,
           error_tags: errorTags,
         })
+        lastRes = res
+        lastSubmitted = { sessionIndex, question }
 
         setLocalFeedbackByIndex((prev) => ({
           ...prev,
@@ -432,11 +560,27 @@ export function StudyRunnerPage() {
         }))
       }
 
-      if (isFullExam) {
-        setStatusToast(t('study.runner.recorded'))
-        window.setTimeout(() => setStatusToast(null), 1600)
+      if (isFullListMode) {
+        if (isFullExam) {
+          setStatusToast(t('study.runner.recorded'))
+          window.setTimeout(() => setStatusToast(null), 1600)
+        }
+        await refetchSession()
+      } else if (lastRes && lastSubmitted) {
+        if (lastRes.grading !== null) {
+          // Legacy single-question server already advanced state.index; keep feedback visible until user clicks Next
+          setLegacyReviewing({
+            sessionIndex: lastSubmitted.sessionIndex,
+            question: lastRes.revealed_question ?? lastSubmitted.question,
+            nextState: lastRes.state,
+          })
+        } else {
+          // Legacy full_exam deferred grading: advance to next question cleanly
+          setStatusToast(t('study.runner.recorded'))
+          window.setTimeout(() => setStatusToast(null), 1600)
+          await refetchSession()
+        }
       }
-      await refetchSession()
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : t('common.errorGeneric'))
     }
@@ -445,17 +589,26 @@ export function StudyRunnerPage() {
   // Summary entries built from finishResult + local feedback
   const summaryEntries = useMemo<SessionReviewEntry[]>(() => {
     if (!finishResult) return []
-    const revealed = finishResult.revealed_questions ?? allQuestions
+    const revealed = finishResult.revealed_questions ?? []
     const gradedList = finishResult.graded ?? []
     if (gradedList.length > 0) {
-      return gradedList.map((g) => ({
-        index: g.record.index,
-        question: revealed[g.record.index] ?? allQuestions[g.record.index],
-        submission: g.record.submission,
-        confidence: g.record.confidence,
-        errorTags: [],
-        grading: g.outcome,
-      }))
+      const entries: SessionReviewEntry[] = []
+      for (const g of gradedList) {
+        const question =
+          revealed[g.record.index] ??
+          feedbackByIndex[g.record.index]?.question ??
+          (isFullListMode ? allQuestions[g.record.index] : undefined)
+        if (!question) continue
+        entries.push({
+          index: g.record.index,
+          question,
+          submission: g.record.submission,
+          confidence: g.record.confidence,
+          errorTags: [],
+          grading: g.outcome,
+        })
+      }
+      return entries
     }
     return Object.entries(feedbackByIndex)
       .map(([idxStr, fb]) => ({
@@ -467,7 +620,7 @@ export function StudyRunnerPage() {
         grading: fb.grading,
       }))
       .sort((a, b) => a.index - b.index)
-  }, [finishResult, allQuestions, feedbackByIndex, confidence5])
+  }, [finishResult, isFullListMode, allQuestions, feedbackByIndex, confidence5])
 
   if (isLoading) {
     return (
@@ -532,11 +685,17 @@ export function StudyRunnerPage() {
     : []
 
   const timerWarning =
-    (perQuestionLimitSecs !== null && questionRemainingSecs <= 5) ||
+    (perQuestionLimitSecs !== null && !currentUnitFullyGraded && questionRemainingSecs <= 5) ||
     (totalExamLimitSecs !== null && totalRemainingSecs <= 60)
 
-  const hasPrevUnit = clampedUnitIdx > 0
-  const hasNextUnit = clampedUnitIdx < units.length - 1
+  const hasPrevUnit = isFullListMode && clampedUnitIdx > 0
+  const hasNextUnit = isFullListMode
+    ? clampedUnitIdx < units.length - 1
+    : Boolean(
+        legacyReviewing &&
+          legacyReviewing.nextState.status !== 'submitted' &&
+          legacyReviewing.nextState.status !== 'expired',
+      )
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-surface">
@@ -757,6 +916,20 @@ export function StudyRunnerPage() {
               <AlertTriangle className="mx-auto h-10 w-10 text-warn" />
               <h2 className="mt-3 text-lg font-semibold text-ink">{t('study.runner.expiredTitle')}</h2>
               <p className="mt-1 text-sm text-ink-muted">{t('study.runner.expiredDesc')}</p>
+              <button
+                type="button"
+                onClick={() => void handleFinish()}
+                disabled={finishMutation.isPending}
+                className="mt-5 inline-flex h-11 items-center gap-2 rounded-full bg-accent px-6 text-sm font-semibold text-white hover:bg-accent-hover"
+              >
+                <Flag className="h-4 w-4" />
+                <span>{t('study.runner.finish')}</span>
+              </button>
+            </section>
+          ) : !legacyReviewing && isSubmitted ? (
+            <section className="rounded-2xl border border-accent/30 bg-canvas/50 p-8 text-center">
+              <CheckCircle2 className="mx-auto h-10 w-10 text-ok" />
+              <h2 className="mt-3 text-lg font-semibold text-ink">{t('study.runner.recorded')}</h2>
               <button
                 type="button"
                 onClick={() => void handleFinish()}
@@ -1193,7 +1366,7 @@ export function StudyRunnerPage() {
             {hasNextUnit ? (
               <button
                 type="button"
-                onClick={() => void navigateToUnit(clampedUnitIdx + 1)}
+                onClick={() => void handleNextUnit()}
                 className="inline-flex h-10 items-center gap-1 rounded-full border border-border bg-canvas px-4 text-xs font-medium text-ink transition-colors hover:bg-subtle"
               >
                 <span>{t('workspace.sidebar.nextQuestion')}</span>

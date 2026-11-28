@@ -880,6 +880,9 @@ export async function handleMockRequest(
         }
       }
       if (s.secondsPerQuestion !== null) {
+        if (s.answers.some((a) => a.index === idx)) {
+          return { status: 200, body: 'None' }
+        }
         const qElapsed = s.questionElapsedMs + (now - s.questionStartedAt)
         if (qElapsed >= s.secondsPerQuestion * 1000) {
           const question = s.questions[idx]
@@ -905,7 +908,10 @@ export async function handleMockRequest(
           s.state = next < s.questions.length ? { status: 'in_progress', index: next } : { status: 'submitted' }
           s.questionStartedAt = now
           s.questionElapsedMs = 0
-          return { status: 200, body: { QuestionTimedOut: { index: idx, graded } } }
+          return {
+            status: 200,
+            body: { QuestionTimedOut: { index: idx, graded }, revealed_question: structuredClone(question) },
+          }
         }
       }
       return { status: 200, body: 'None' }
@@ -986,6 +992,7 @@ export async function handleMockRequest(
           attempts_written: s.graded.length,
           score: computeScore(s),
           graded: s.graded,
+          revealed_questions: structuredClone(s.questions),
         },
       }
     }

@@ -33,6 +33,11 @@ interface LayoutPrefs {
   rightWidth: number
 }
 
+interface TabState {
+  tabs: WorkspaceTab[]
+  activeTabId: string
+}
+
 const DEFAULT_LAYOUT: LayoutPrefs = {
   leftOpen: true,
   rightOpen: true,
@@ -67,6 +72,25 @@ function loadDisplayName(): string {
     return window.localStorage.getItem(STORAGE_USER_NAME_KEY)?.trim() || 'Learner'
   } catch {
     return 'Learner'
+  }
+}
+
+function localizedBuiltinTitle(tabId: string, t: (key: string) => string): string | null {
+  switch (tabId) {
+    case 'home':
+      return t('workspace.tabs.home')
+    case 'study':
+      return t('workspace.tabs.study')
+    case 'analytics':
+      return t('workspace.tabs.analytics')
+    case 'export':
+      return t('workspace.tabs.export')
+    case 'settings':
+      return t('workspace.tabs.settings')
+    case 'login':
+      return t('nav.signIn')
+    default:
+      return null
   }
 }
 
@@ -149,15 +173,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     [t],
   )
 
-  const [tabs, setTabs] = useState<WorkspaceTab[]>(() => {
+  const [tabState, setTabState] = useState<TabState>(() => {
     const initial = routeToTabDescriptor(location.pathname, t)
     const saved = loadSavedTabs(homeFallback)
-    return openOrFocusTab(saved, initial).tabs
-  })
-
-  const [activeTabId, setActiveTabId] = useState<string>(() => {
-    const initial = routeToTabDescriptor(location.pathname, t)
-    return initial.id
+    const result = openOrFocusTab(saved, initial)
+    return { tabs: result.tabs, activeTabId: result.activeId }
   })
 
   const [layout, setLayout] = useState<LayoutPrefs>(loadLayoutPrefs)
@@ -171,7 +191,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const pendingTabTitleRef = useRef<Map<string, string>>(new Map())
 
-  // Persist layout prefs
   useEffect(() => {
     try {
       window.localStorage.setItem(STORAGE_LAYOUT_KEY, JSON.stringify(layout))
@@ -180,16 +199,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [layout])
 
-  // Persist tabs across soft reloads in the same browser tab
   useEffect(() => {
     try {
-      window.sessionStorage.setItem(STORAGE_TABS_KEY, JSON.stringify(tabs))
+      window.sessionStorage.setItem(STORAGE_TABS_KEY, JSON.stringify(tabState.tabs))
     } catch {
       // Ignore quota errors
     }
-  }, [tabs])
+  }, [tabState.tabs])
 
-  // Sync URL navigation -> tabs
+  // Sync URL navigation -> atomic { tabs, activeTabId } update
   useEffect(() => {
     const descriptor = routeToTabDescriptor(location.pathname, t)
     const navState = location.state as { tabTitle?: string } | null
@@ -198,15 +216,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       pendingTabTitleRef.current.delete(descriptor.id)
     }
 
-    setTabs((prev) => {
-      const existing = prev.find((item) => item.id === descriptor.id || item.path === descriptor.path)
+    setTabState((prev) => {
+      const existing = prev.tabs.find(
+        (item) => item.id === descriptor.id || item.path === descriptor.path,
+      )
       const resolvedTitle =
         navState?.tabTitle ||
         pendingTitle ||
         (existing ? existing.title : descriptor.title)
-      const result = openOrFocusTab(prev, { ...descriptor, title: resolvedTitle })
-      setActiveTabId(result.activeId)
-      return result.tabs
+      const result = openOrFocusTab(prev.tabs, { ...descriptor, title: resolvedTitle })
+      return { tabs: result.tabs, activeTabId: result.activeId }
     })
   }, [location.pathname, location.state, t])
 
@@ -219,15 +238,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       navState?: unknown
     }) => {
       pendingTabTitleRef.current.set(tab.id, tab.title)
-      setTabs((prev) => {
-        const result = openOrFocusTab(prev, {
+      setTabState((prev) => {
+        const result = openOrFocusTab(prev.tabs, {
           id: tab.id,
           kind: tab.kind,
           path: tab.path,
           title: tab.title,
         })
-        setActiveTabId(result.activeId)
-        return result.tabs
+        return { tabs: result.tabs, activeTabId: result.activeId }
       })
       setMobileLeftOpen(false)
       void navigate(tab.path, {
@@ -242,30 +260,32 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const activateTab = useCallback(
     (tabId: string) => {
-      const target = tabs.find((item) => item.id === tabId)
+      const target = tabState.tabs.find((item) => item.id === tabId)
       if (!target) return
-      setActiveTabId(target.id)
+      setTabState((prev) => ({ ...prev, activeTabId: target.id }))
       if (location.pathname !== target.path) {
         void navigate(target.path)
       }
     },
-    [tabs, location.pathname, navigate],
+    [tabState.tabs, location.pathname, navigate],
   )
 
   const closeTab = useCallback(
     (tabId: string) => {
-      const result = closeWorkspaceTab(tabs, activeTabId, tabId, homeFallback)
-      setTabs(result.tabs)
-      setActiveTabId(result.activeId)
+      const result = closeWorkspaceTab(tabState.tabs, tabState.activeTabId, tabId, homeFallback)
+      setTabState({ tabs: result.tabs, activeTabId: result.activeId })
       if (location.pathname !== result.activePath) {
         void navigate(result.activePath)
       }
     },
-    [tabs, activeTabId, homeFallback, location.pathname, navigate],
+    [tabState.tabs, tabState.activeTabId, homeFallback, location.pathname, navigate],
   )
 
   const setTabTitle = useCallback((tabId: string, title: string) => {
-    setTabs((prev) => updateWorkspaceTabTitle(prev, tabId, title))
+    setTabState((prev) => {
+      const nextTabs = updateWorkspaceTabTitle(prev.tabs, tabId, title)
+      return nextTabs === prev.tabs ? prev : { ...prev, tabs: nextTabs }
+    })
   }, [])
 
   const setLeftOpen = useCallback((open: boolean | ((v: boolean) => boolean)) => {
@@ -305,10 +325,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => setRightSidebarCount((c) => Math.max(0, c - 1))
   }, [])
 
+  // Derive localized built-in tab titles at render time (no setState inside useEffect)
+  const displayTabs = useMemo<WorkspaceTab[]>(
+    () =>
+      tabState.tabs.map((tab) => {
+        const localized = localizedBuiltinTitle(tab.id, t)
+        return localized && tab.title !== localized ? { ...tab, title: localized } : tab
+      }),
+    [tabState.tabs, t],
+  )
+
   const value = useMemo<WorkspaceContextValue>(
     () => ({
-      tabs,
-      activeTabId,
+      tabs: displayTabs,
+      activeTabId: tabState.activeTabId,
       openTab,
       activateTab,
       closeTab,
@@ -335,8 +365,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       registerRightSidebar,
     }),
     [
-      tabs,
-      activeTabId,
+      displayTabs,
+      tabState.activeTabId,
       openTab,
       activateTab,
       closeTab,
@@ -360,10 +390,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>
 }
 
-/**
- * Declaratively renders page-specific content into the workbench's Right Sidebar
- * (both desktop pinned sidebar and mobile slide-over drawer).
- */
 export function RightSidebarSlot({ children }: { children: ReactNode }) {
   const { rightPortalNode, mobileRightPortalNode, mobileRightOpen, registerRightSidebar } =
     useWorkspace()

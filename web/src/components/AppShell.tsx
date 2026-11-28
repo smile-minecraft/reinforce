@@ -511,6 +511,33 @@ export function AppShell() {
               ref={setMobileRightPortalNode}
               className="flex min-h-0 flex-1 flex-col overflow-hidden"
             />
+            {!hasCustomRightSidebar && (
+              <div className="flex flex-1 flex-col p-4 text-xs text-ink-muted">
+                <div className="font-semibold text-ink">
+                  {t('workspace.sidebar.quickOverview')}
+                </div>
+                <p className="mt-2 leading-relaxed">{t('app.tagline')}</p>
+                <div className="mt-4 space-y-1.5 border-t border-border pt-3">
+                  {tabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => {
+                        activateTab(tab.id)
+                        setMobileRightOpen(false)
+                      }}
+                      className={`block w-full truncate rounded-md px-2 py-1.5 text-left transition-colors ${
+                        tab.id === activeTabId
+                          ? 'bg-accent-soft font-medium text-accent'
+                          : 'hover:bg-subtle hover:text-ink'
+                      }`}
+                    >
+                      {tab.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </aside>
         </div>
       )}

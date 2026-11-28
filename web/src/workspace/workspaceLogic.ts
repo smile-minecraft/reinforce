@@ -233,11 +233,13 @@ export function buildQuestionUnits(
   questions: QuestionCard[],
   questionGroups: Record<string, QuestionGroup> = {},
   examSets: Record<string, ExamSetMeta> = {},
+  indexOffset = 0,
 ): QuestionUnit[] {
   const units: QuestionUnit[] = []
   const groupUnitMap = new Map<string, QuestionUnit>()
 
-  questions.forEach((question, sessionIndex) => {
+  questions.forEach((question, idx) => {
+    const sessionIndex = indexOffset + idx
     const groupId = question.question_group_id
     if (groupId && groupUnitMap.has(groupId)) {
       groupUnitMap.get(groupId)!.items.push({ sessionIndex, question })

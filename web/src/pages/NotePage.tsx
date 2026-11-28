@@ -137,6 +137,10 @@ function flattenOutlineIntoChapters(
 
 export function NotePage() {
   const { id } = useParams()
+  return <NotePageContent key={id ?? ''} id={id} />
+}
+
+function NotePageContent({ id }: { id: string | undefined }) {
   const { t } = useTranslation()
   const { openTab, setTabTitle, setMobileRightOpen } = useWorkspace()
   const { data: note, isLoading, error } = useNote(id)
@@ -516,6 +520,7 @@ export function NotePage() {
                           id={`note-entry-${entry.key}`}
                           className="rf-collapse-item scroll-mt-4"
                           data-collapsed={isCollapsed}
+                          inert={isCollapsed}
                         >
                           <div className="rf-collapse-inner">
                             {!queryEntry || queryEntry.loading ? (

@@ -175,6 +175,15 @@ export function StudyHubPage({ defaultMode }: { defaultMode?: SessionMode }) {
               setSelectedGroupId(gid)
               setSelectedExamSetId('')
               setErrorMsg(null)
+              if (gid) {
+                const allowed = new Set(resolveGroupSubjects(subjectGroups, gid))
+                setSelectedCardIds((prev) =>
+                  prev.filter((cid) => {
+                    const card = cards.find((c) => c.id === cid)
+                    return card ? allowed.has(card.subject) : false
+                  }),
+                )
+              }
             }}
             editable
           />

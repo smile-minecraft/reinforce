@@ -60,6 +60,7 @@ export function SubjectGroupTree({
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set())
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const tree = useMemo(() => buildSubjectGroupTree(groups), [groups])
   const flatNodes = useMemo(() => flattenSubjectGroupTree(tree), [tree])
@@ -141,9 +142,14 @@ export function SubjectGroupTree({
 
   async function handleDelete(group: SubjectGroup) {
     if (!window.confirm(t('workspace.groups.deleteConfirm'))) return
-    await deleteGroup.mutateAsync(group.id)
-    if (selectedGroupId === group.id) {
-      onSelectGroup(null)
+    setActionError(null)
+    try {
+      await deleteGroup.mutateAsync(group.id)
+      if (selectedGroupId && isDescendantOrSelf(groups, selectedGroupId, group.id)) {
+        onSelectGroup(null)
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : t('common.errorGeneric'))
     }
   }
 
@@ -270,6 +276,10 @@ export function SubjectGroupTree({
           </button>
         )}
       </div>
+
+      {actionError && (
+        <div className="rounded-lg bg-bad-soft px-2.5 py-2 text-[11px] text-bad">{actionError}</div>
+      )}
 
       {/* All subjects root pill */}
       <button
