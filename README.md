@@ -281,6 +281,49 @@ never publish content directly. Jobs are durable across restarts, with a
 timeout, an output cap and cancellation per job. The trust boundary, the wire
 format and the queue state machine are documented in [`plugins/README.md`](plugins/README.md).
 
+### MCP server
+
+`reinforce` ships with a built-in Model Context Protocol (MCP) server over both
+stdio (for local agents) and Streamable HTTP at `/mcp` (when running
+`reinforce serve`).
+
+Available tools:
+- **Browse & read**: `subject_group_list`, `note_list`, `note_get`, `exam_set_list`,
+  `resource_list`, `resource_read_page`, `card_search`, `card_get`, `question_get`,
+  `card_get_graph`
+- **Diagnosis**: `study_weakness_report`
+- **Proposals**: `proposal_submit_batch`, `proposal_list`, `proposal_get`
+
+Local stdio client configuration:
+
+```json
+{
+  "mcpServers": {
+    "reinforce": {
+      "command": "/usr/local/bin/reinforce",
+      "args": ["mcp", "--db", "/path/to/reinforce.db", "--blobs", "/path/to/blobs", "--agent-name", "claude"]
+    }
+  }
+}
+```
+
+Remote Streamable HTTP configuration (in `--auth invite` mode, create a named
+agent token as the owner via `POST /api/auth/agent-tokens` with `{"name": "claude"}`
+and pass it as a Bearer token; proposals record `submitted_by` as `agent:<name>`):
+
+```json
+{
+  "mcpServers": {
+    "reinforce": {
+      "url": "https://reinforce.example.org/mcp",
+      "headers": {
+        "Authorization": "Bearer <agent-token>"
+      }
+    }
+  }
+}
+```
+
 ## License
 
 Licensed under either of

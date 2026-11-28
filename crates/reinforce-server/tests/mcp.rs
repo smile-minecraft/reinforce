@@ -3,14 +3,22 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use reinforce_core::auth::set_setting;
 use reinforce_core::primitives::ProposalStatus;
-use reinforce_core::{Actor, ApprovalOptions, ApprovalOutcome, ProposalId, approve_batch};
+use reinforce_core::subject_groups_store::create_subject_group;
+use reinforce_core::{
+    Actor, ApprovalOptions, ApprovalOutcome, ProposalId, Timestamp, approve_batch,
+};
 use reinforce_server::auth::hash_token;
 use reinforce_server::cli;
 use reinforce_server::config::{AuthMode, CheckArgs, ServeArgs};
 use reinforce_server::error::ApiError;
-use reinforce_server::mcp::{BatchLine, McpServer, SubmitBatchParams};
+use reinforce_server::mcp::{
+    BatchLine, CardGetParams, CardSearchParams, ExamSetListParams, GraphParams, McpServer,
+    NoteGetParams, NoteListParams, ProposalGetParams, QuestionGetParams, ResourceListParams,
+    ResourcePageParams, SubjectGroupListParams, SubmitBatchParams, WeaknessParams,
+};
 use reinforce_server::state::AppState;
 use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::Extensions;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tower::ServiceExt;
@@ -333,7 +341,7 @@ async fn mcp_http_requires_and_verifies_agent_tokens_in_invite_mode() {
 
     let listed = expect_json(tools_list(&app, Some(&token)).await, StatusCode::OK).await;
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 14);
     assert!(
         tools
             .iter()
@@ -391,7 +399,7 @@ async fn mcp_http_rejects_foreign_host_in_single_mode() {
     let listed = expect_json(tools_list(&app, None).await, StatusCode::OK).await;
     assert_eq!(
         listed["result"]["tools"].as_array().expect("tools").len(),
-        8
+        14
     );
 }
 
@@ -447,9 +455,12 @@ async fn mcp_batch_proposal_flow_is_validated_approved_and_checks_clean() {
     let server = McpServer::new(state.clone(), "e2e-agent".to_owned());
 
     let invalid = server
-        .proposal_submit_batch(Parameters(SubmitBatchParams {
-            operations: vec![question_line("$question", json!(["A", "B"]))],
-        }))
+        .proposal_submit_batch(
+            Extensions::default(),
+            Parameters(SubmitBatchParams {
+                operations: vec![question_line("$question", json!(["A", "B"]))],
+            }),
+        )
         .await
         .expect("invalid submit");
     assert_eq!(invalid.is_error, Some(true));
@@ -462,9 +473,12 @@ async fn mcp_batch_proposal_flow_is_validated_approved_and_checks_clean() {
     }));
 
     let valid = server
-        .proposal_submit_batch(Parameters(SubmitBatchParams {
-            operations: vec![question_line("$question", json!(["A"]))],
-        }))
+        .proposal_submit_batch(
+            Extensions::default(),
+            Parameters(SubmitBatchParams {
+                operations: vec![question_line("$question", json!(["A"]))],
+            }),
+        )
         .await
         .expect("corrected submit");
     assert_eq!(valid.is_error, Some(false));
@@ -540,7 +554,7 @@ async fn invite_mode_mcp_accepts_public_hostnames_behind_a_proxy() {
         StatusCode::OK,
     )
     .await;
-    assert_eq!(listed["result"]["tools"].as_array().map(Vec::len), Some(8));
+    assert_eq!(listed["result"]["tools"].as_array().map(Vec::len), Some(14));
 }
 
 #[test]
@@ -620,4 +634,546 @@ fn stdio_binary_writes_only_json_rpc_to_stdout() {
             .unwrap_or_else(|error| panic!("stdout line is not JSON-RPC ({error}): {line:?}"));
     }
     assert!(status.success(), "reinforce mcp exited with {status}");
+}
+
+#[tokio::test]
+async fn named_agent_tokens_list_revoke_by_id_and_attribute_http_proposals() {
+    let dir = TestDir::new();
+    let (app, state) = test_state(AuthMode::Invite, "127.0.0.1", &dir).await;
+    let owner_cookie = setup_owner(&app, &state).await;
+
+    let created = expect_json(
+        request(
+            &app,
+            Method::POST,
+            "/api/auth/agent-tokens",
+            json!({ "name": "claude-writer" }),
+            &[(header::COOKIE.as_str(), owner_cookie.clone())],
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let token_id = created["id"].as_str().expect("token id").to_owned();
+    let token = created["token"].as_str().expect("token").to_owned();
+    assert_eq!(created["name"], "claude-writer");
+    assert!(created["created_at"].is_string());
+
+    let listed = expect_json(
+        request(
+            &app,
+            Method::GET,
+            "/api/auth/agent-tokens",
+            json!({}),
+            &[(header::COOKIE.as_str(), owner_cookie.clone())],
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let tokens = listed["tokens"].as_array().expect("tokens array");
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens[0]["id"], token_id);
+    assert_eq!(tokens[0]["name"], "claude-writer");
+    assert!(tokens[0].get("token").is_none());
+    assert!(tokens[0].get("hash").is_none());
+
+    let init = mcp_post(
+        &app,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "claude-writer", "version": "1.0"}
+            }
+        }),
+        Some(&token),
+        None,
+        "127.0.0.1",
+    )
+    .await;
+    assert_eq!(init.status(), StatusCode::OK);
+    let session = init
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("session id")
+        .to_owned();
+    let init_body = json_body(init).await;
+    let instructions = init_body["result"]["instructions"]
+        .as_str()
+        .expect("server instructions");
+    assert!(instructions.contains("proposal_submit_batch"));
+
+    let submit = expect_json(
+        mcp_post(
+            &app,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "proposal_submit_batch",
+                    "arguments": {
+                        "operations": [{
+                            "op": "question_card",
+                            "temp_ref": "$q1",
+                            "data": question_line("$q1", json!(["A"])).data
+                        }]
+                    }
+                }
+            }),
+            Some(&token),
+            Some(&session),
+            "127.0.0.1",
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let proposal = &submit["result"]["structuredContent"]["proposal"];
+    assert_eq!(proposal["submitted_by"], "agent:claude-writer");
+
+    let revoked = expect_json(
+        request(
+            &app,
+            Method::DELETE,
+            &format!("/api/auth/agent-tokens/{token_id}"),
+            json!({}),
+            &[(header::COOKIE.as_str(), owner_cookie.clone())],
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(revoked["revoked"], true);
+
+    let after_revoke = expect_json(
+        mcp_post(
+            &app,
+            json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}),
+            Some(&token),
+            None,
+            "127.0.0.1",
+        )
+        .await,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    assert_eq!(after_revoke["error"]["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn legacy_hash_only_agent_tokens_remain_usable_and_revocable() {
+    let dir = TestDir::new();
+    let (app, state) = test_state(AuthMode::Invite, "127.0.0.1", &dir).await;
+    let owner_cookie = setup_owner(&app, &state).await;
+    let legacy_token = "legacy-plain-secret-token";
+    let legacy_hash = hash_token(legacy_token);
+    state
+        .with_db(move |database| {
+            set_setting(
+                database.connection(),
+                "agent_token_hashes",
+                &serde_json::to_string(&vec![legacy_hash])?,
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed legacy token hash");
+
+    let listed_tools =
+        expect_json(tools_list(&app, Some(legacy_token)).await, StatusCode::OK).await;
+    assert_eq!(
+        listed_tools["result"]["tools"].as_array().map(Vec::len),
+        Some(14)
+    );
+
+    let listed = expect_json(
+        request(
+            &app,
+            Method::GET,
+            "/api/auth/agent-tokens",
+            json!({}),
+            &[(header::COOKIE.as_str(), owner_cookie.clone())],
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let tokens = listed["tokens"].as_array().expect("tokens");
+    assert_eq!(tokens.len(), 1);
+    let legacy_id = tokens[0]["id"].as_str().expect("legacy id").to_owned();
+    assert!(legacy_id.starts_with("legacy-"));
+    assert_eq!(tokens[0]["name"], "mcp-http");
+
+    expect_json(
+        request(
+            &app,
+            Method::DELETE,
+            &format!("/api/auth/agent-tokens/{legacy_id}"),
+            json!({}),
+            &[(header::COOKIE.as_str(), owner_cookie)],
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+
+    expect_json(
+        mcp_post(
+            &app,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}),
+            Some(legacy_token),
+            None,
+            "127.0.0.1",
+        )
+        .await,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn mcp_read_tools_return_full_entities_and_previews() {
+    let dir = TestDir::new();
+    let config = ServeArgs {
+        host: "127.0.0.1".to_owned(),
+        port: 0,
+        db: dir.db(),
+        blobs: dir.0.join("blobs"),
+        fonts: dir.0.join("fonts"),
+        auth: AuthMode::Single,
+        demo: false,
+        plugins: None,
+    };
+    let state = AppState::open(&config).await.expect("open state");
+    let server = McpServer::new(state.clone(), "reader-agent".to_owned());
+
+    let resource_hash = reinforce_core::ContentHash::from_bytes(b"pdf-bytes")
+        .as_str()
+        .to_owned();
+    let operations = vec![
+        BatchLine {
+            op: "resource".to_owned(),
+            temp_ref: Some("$res1".to_owned()),
+            data: json!({
+                "id": "$res1",
+                "kind": "pdf",
+                "title": "Mechanics Textbook",
+                "sha256": resource_hash,
+                "byte_size": 9,
+                "width": null,
+                "height": null,
+                "page_count": 10,
+                "license": "CC0-1.0",
+                "attribution_url": null,
+                "attribution_notice": null,
+                "sensitivity": "normal",
+                "export_policy": "allow",
+                "created_at": "2026-01-01T00:00:00.000000Z"
+            }),
+        },
+        BatchLine {
+            op: "anchor".to_owned(),
+            temp_ref: Some("$anc1".to_owned()),
+            data: json!({
+                "id": "$anc1",
+                "resource_id": "$res1",
+                "anchor_kind": "pdf_page",
+                "pdf_page": 3,
+                "printed_page": 3,
+                "legend_pdf_page": null,
+                "rect": null,
+                "media_span": null
+            }),
+        },
+        BatchLine {
+            op: "knowledge_card".to_owned(),
+            temp_ref: Some("$card1".to_owned()),
+            data: json!({
+                "id": "$card1",
+                "subject": "physics",
+                "title": "Newton Second Law",
+                "topics": ["mechanics"],
+                "blocks": [{"type": "markdown", "text": "F = m a"}],
+                "anchor_ids": ["$anc1"],
+                "status": "published",
+                "verification": "unchecked",
+                "unsure_count": 0,
+                "metadata": {},
+                "created_at": "2026-01-01T00:00:00.000000Z",
+                "updated_at": "2026-01-01T00:00:00.000000Z"
+            }),
+        },
+        BatchLine {
+            op: "note".to_owned(),
+            temp_ref: Some("$note1".to_owned()),
+            data: json!({
+                "id": "$note1",
+                "subject": "physics",
+                "title": "Classical Mechanics Notes",
+                "outline": [
+                    {"type": "section", "heading": "Dynamics", "intro_markdown": null, "children": [
+                        {"type": "card_ref", "card_id": "$card1"}
+                    ]}
+                ],
+                "view_settings": {},
+                "status": "published",
+                "created_at": "2026-01-01T00:00:00.000000Z",
+                "updated_at": "2026-01-01T00:00:00.000000Z"
+            }),
+        },
+        BatchLine {
+            op: "exam_set".to_owned(),
+            temp_ref: Some("$exam1".to_owned()),
+            data: json!({
+                "id": "$exam1",
+                "subject": "physics",
+                "title": "Midterm Practice",
+                "source_kind": "original",
+                "exam_year": null,
+                "source_resource_id": "$res1",
+                "expected_questions": null,
+                "is_complete": false,
+                "metadata": {}
+            }),
+        },
+        BatchLine {
+            op: "question_card".to_owned(),
+            temp_ref: Some("$q1".to_owned()),
+            data: json!({
+                "id": "$q1",
+                "exam_set_id": "$exam1",
+                "question_group_id": null,
+                "question_no": null,
+                "subject": "physics",
+                "topics": ["mechanics"],
+                "stem_blocks": [{"type": "markdown", "text": "Which law states F = ma?"}],
+                "explanation_blocks": [],
+                "anchor_ids": ["$anc1"],
+                "question_type": "single_choice",
+                "grading_mode": "exact",
+                "options": [
+                    {"key": "A", "content": "Newton Second Law", "explanation": null, "linked_card_ids": ["$card1"]},
+                    {"key": "B", "content": "Ohm Law", "explanation": null, "linked_card_ids": []}
+                ],
+                "answer": ["A"],
+                "accepted_answers": [],
+                "answer_source_kind": "original_authored",
+                "answer_basis": "Standard definition of Newton's second law.",
+                "duplicate_question_id": null,
+                "status": "published",
+                "verification": "unchecked",
+                "unsure_count": 0,
+                "metadata": {},
+                "created_at": "2026-01-01T00:00:00.000000Z",
+                "updated_at": "2026-01-01T00:00:00.000000Z"
+            }),
+        },
+        BatchLine {
+            op: "edge".to_owned(),
+            temp_ref: Some("$edge1".to_owned()),
+            data: json!({
+                "id": "$edge1",
+                "edge_type": "tests",
+                "from": {"kind": "question", "id": "$q1"},
+                "to": {"kind": "card", "id": "$card1"},
+                "created_at": "2026-01-01T00:00:00.000000Z"
+            }),
+        },
+    ];
+
+    let submitted = server
+        .proposal_submit_batch(
+            Extensions::default(),
+            Parameters(SubmitBatchParams { operations }),
+        )
+        .await
+        .expect("submit batch");
+    assert_eq!(submitted.is_error, Some(false), "{submitted:?}");
+    let proposal_id_str = submitted.structured_content.expect("proposal")["proposal"]["id"]
+        .as_str()
+        .expect("proposal id")
+        .to_owned();
+    let proposal_id = proposal_id_str.parse::<ProposalId>().expect("parse id");
+
+    let fetched_proposal = server
+        .proposal_get(Parameters(ProposalGetParams {
+            id: proposal_id_str.clone(),
+        }))
+        .await
+        .expect("proposal_get")
+        .structured_content
+        .expect("proposal_get content");
+    assert_eq!(
+        fetched_proposal["operations"].as_array().map(Vec::len),
+        Some(7)
+    );
+
+    state
+        .with_db(move |database| {
+            approve_batch(
+                database.connection_mut(),
+                &proposal_id,
+                ApprovalOptions {
+                    reviewer: Actor::Owner,
+                    promote_verified: true,
+                },
+            )?;
+            create_subject_group(
+                database.connection(),
+                None,
+                "STEM",
+                &["physics".to_owned()],
+                0,
+                Timestamp::now(),
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("approve and seed subject group");
+
+    let resources = server
+        .resource_list(Parameters(ResourceListParams {
+            kind: Some("pdf".to_owned()),
+            limit: None,
+        }))
+        .await
+        .expect("resource_list")
+        .structured_content
+        .expect("resources");
+    let resource_id = resources["resources"][0]["id"]
+        .as_str()
+        .expect("resource id")
+        .to_owned();
+
+    let page = server
+        .resource_read_page(Parameters(ResourcePageParams {
+            resource_id,
+            page: 3,
+        }))
+        .await
+        .expect("resource_read_page")
+        .structured_content
+        .expect("page");
+    assert_eq!(page["anchors"].as_array().map(Vec::len), Some(1));
+
+    let search = server
+        .card_search(Parameters(CardSearchParams {
+            q: "Newton".to_owned(),
+            limit: None,
+        }))
+        .await
+        .expect("card_search")
+        .structured_content
+        .expect("search");
+    let hits = search["hits"].as_array().expect("hits");
+    let card_hit = hits
+        .iter()
+        .find(|hit| hit["kind"] == "knowledge_card")
+        .expect("knowledge card hit");
+    assert_eq!(card_hit["title"], "Newton Second Law");
+    assert_eq!(card_hit["subject"], "physics");
+    let card_id = card_hit["id"].as_str().expect("card id").to_owned();
+    let question_hit = hits
+        .iter()
+        .find(|hit| hit["kind"] == "question_card")
+        .expect("question card hit");
+    assert_eq!(question_hit["question_type"], "single_choice");
+    let question_id = question_hit["id"].as_str().expect("question id").to_owned();
+
+    let card = server
+        .card_get(Parameters(CardGetParams {
+            id: card_id.clone(),
+        }))
+        .await
+        .expect("card_get")
+        .structured_content
+        .expect("card");
+    assert_eq!(card["card"]["title"], "Newton Second Law");
+
+    let question = server
+        .question_get(Parameters(QuestionGetParams {
+            id: question_id.clone(),
+        }))
+        .await
+        .expect("question_get")
+        .structured_content
+        .expect("question");
+    assert_eq!(question["question"]["answer"], json!(["A"]));
+
+    let notes = server
+        .note_list(Parameters(NoteListParams {
+            subject: Some("physics".to_owned()),
+            status: Some("published".to_owned()),
+            limit: None,
+        }))
+        .await
+        .expect("note_list")
+        .structured_content
+        .expect("notes");
+    assert_eq!(notes["notes"].as_array().map(Vec::len), Some(1));
+    let note_id = notes["notes"][0]["id"]
+        .as_str()
+        .expect("note id")
+        .to_owned();
+
+    let note = server
+        .note_get(Parameters(NoteGetParams { id: note_id }))
+        .await
+        .expect("note_get")
+        .structured_content
+        .expect("note");
+    assert_eq!(note["note"]["title"], "Classical Mechanics Notes");
+    assert_eq!(note["cards"].as_array().map(Vec::len), Some(1));
+    assert_eq!(note["cards"][0]["id"], card_id);
+
+    let exam_sets = server
+        .exam_set_list(Parameters(ExamSetListParams {
+            subject: Some("physics".to_owned()),
+            limit: None,
+        }))
+        .await
+        .expect("exam_set_list")
+        .structured_content
+        .expect("exam_sets");
+    assert_eq!(exam_sets["exam_sets"].as_array().map(Vec::len), Some(1));
+    assert_eq!(exam_sets["exam_sets"][0]["question_count"], 1);
+
+    let groups = server
+        .subject_group_list(Parameters(SubjectGroupListParams {}))
+        .await
+        .expect("subject_group_list")
+        .structured_content
+        .expect("groups");
+    assert_eq!(groups["groups"].as_array().map(Vec::len), Some(1));
+    assert_eq!(groups["groups"][0]["name"], "STEM");
+
+    let graph = server
+        .card_get_graph(Parameters(GraphParams {
+            kind: "question".to_owned(),
+            id: question_id,
+            depth: Some(1),
+            key: None,
+        }))
+        .await
+        .expect("card_get_graph")
+        .structured_content
+        .expect("graph");
+    assert_eq!(graph["nodes"].as_array().map(Vec::len), Some(1));
+
+    let weakness = server
+        .study_weakness_report(Parameters(WeaknessParams {
+            user_id: None,
+            limit: None,
+        }))
+        .await
+        .expect("study_weakness_report")
+        .structured_content
+        .expect("weakness");
+    assert!(weakness["report"].is_object());
 }
