@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 pub const SCHEMA: &str = r#"
 -- Content Store: shared, source-grounded entities.
@@ -84,6 +84,28 @@ CREATE TABLE IF NOT EXISTS question_groups (
     title TEXT,
     shared_stem_blocks_json TEXT NOT NULL DEFAULT '[]'
 );
+
+-- Nested subject folders for the library view. A group owns a sorted set of
+-- subject names; bundles inherit every subject of their descendants so a drill
+-- can be scoped to one folder at any depth.
+CREATE TABLE IF NOT EXISTS subject_groups (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT REFERENCES subject_groups(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS subject_groups_parent ON subject_groups (parent_id, sort_order, name);
+
+CREATE TABLE IF NOT EXISTS subject_group_subjects (
+    group_id TEXT NOT NULL REFERENCES subject_groups(id) ON DELETE CASCADE,
+    subject TEXT NOT NULL,
+    PRIMARY KEY (group_id, subject)
+);
+
+CREATE INDEX IF NOT EXISTS subject_group_subjects_subject ON subject_group_subjects (subject);
 
 CREATE TABLE IF NOT EXISTS question_cards (
     id TEXT PRIMARY KEY,

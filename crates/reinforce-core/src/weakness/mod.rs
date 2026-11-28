@@ -129,6 +129,18 @@ pub fn build_report(
     user_id: &UserId,
     limit: usize,
 ) -> Result<WeaknessReport> {
+    build_report_scoped(connection, user_id, limit, None)
+}
+
+/// Weakness report narrowed to a subject scope: questions outside the scope are
+/// dropped before scoring, so `limit` rows can still be filled from matching
+/// questions instead of being cut after the fact.
+pub fn build_report_scoped(
+    connection: &Connection,
+    user_id: &UserId,
+    limit: usize,
+    subjects: Option<&[String]>,
+) -> Result<WeaknessReport> {
     if limit == 0 {
         return Err(Error::InvalidValue(
             "report limit",
@@ -142,7 +154,9 @@ pub fn build_report(
             continue;
         };
         if let Some(question) = store::get_question_card(connection, &id)? {
-            questions.insert(id, question);
+            if subjects.is_none_or(|subjects| subjects.iter().any(|s| s == &question.subject)) {
+                questions.insert(id, question);
+            }
         }
     }
     let question_ids: Vec<QuestionCardId> = questions.keys().cloned().collect();

@@ -17,6 +17,15 @@ fn bounded(limit: usize) -> i64 {
     i64::try_from(limit.clamp(1, 1_000)).unwrap_or(1_000)
 }
 
+/// Appends `AND q.subject IN (...)` to a question query. Callers must reject an
+/// empty subject list first: an empty `IN ()` would be a SQL syntax error, and
+/// an empty scope means "no questions", never "every question".
+fn append_subject_filter(sql: &mut String, values: &mut Vec<Value>, subjects: &[String]) {
+    let placeholders = subjects.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    sql.push_str(&format!(" AND q.subject IN ({placeholders})"));
+    values.extend(subjects.iter().cloned().map(Value::Text));
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DueQuestion {
     pub id: QuestionCardId,
@@ -30,16 +39,44 @@ pub fn due_questions(
     new_card_limit: usize,
     question_limit: usize,
 ) -> Result<Vec<DueQuestion>> {
-    let mut statement = connection.prepare(
+    due_questions_scoped(
+        connection,
+        user_id,
+        now,
+        new_card_limit,
+        question_limit,
+        None,
+    )
+}
+
+/// Due questions narrowed to a subject scope, filtered in SQL so `question_limit`
+/// counts only matching questions.
+pub fn due_questions_scoped(
+    connection: &Connection,
+    user_id: &UserId,
+    now: Timestamp,
+    new_card_limit: usize,
+    question_limit: usize,
+    subjects: Option<&[String]>,
+) -> Result<Vec<DueQuestion>> {
+    if subjects.is_some_and(|subjects| subjects.is_empty()) {
+        return Ok(Vec::new());
+    }
+    let mut sql = String::from(
         "SELECT q.id, s.due_at IS NULL AS is_new
          FROM question_cards q
          LEFT JOIN card_scheduling s
            ON s.user_id = ?1 AND s.card_id = q.id AND s.direction = 'default'
          WHERE q.status = 'published'
-           AND ((s.due_at IS NOT NULL AND s.due_at <= ?2) OR s.due_at IS NULL)
-         ORDER BY is_new, s.due_at, q.id",
-    )?;
-    let rows = statement.query_map(params![user_id, now], |row| {
+           AND ((s.due_at IS NOT NULL AND s.due_at <= ?2) OR s.due_at IS NULL)",
+    );
+    let mut values: Vec<Value> = vec![Value::Text(user_id.as_str()), Value::Text(now.as_str())];
+    if let Some(subjects) = subjects {
+        append_subject_filter(&mut sql, &mut values, subjects);
+    }
+    sql.push_str(" ORDER BY is_new, s.due_at, q.id");
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(values), |row| {
         Ok((row.get::<_, QuestionCardId>(0)?, row.get::<_, i64>(1)? != 0))
     })?;
 
@@ -68,13 +105,33 @@ pub fn exam_question_ids(
     exam_set_id: &crate::ExamSetId,
     limit: usize,
 ) -> Result<Vec<QuestionCardId>> {
-    let mut statement = connection.prepare(
-        "SELECT id FROM question_cards
-         WHERE exam_set_id = ?1 AND status = 'published'
-         ORDER BY CASE WHEN question_no IS NULL THEN 1 ELSE 0 END, question_no, id
-         LIMIT ?2",
-    )?;
-    let rows = statement.query_map(params![exam_set_id, bounded(limit)], |row| row.get(0))?;
+    exam_question_ids_scoped(connection, exam_set_id, limit, None)
+}
+
+pub fn exam_question_ids_scoped(
+    connection: &Connection,
+    exam_set_id: &crate::ExamSetId,
+    limit: usize,
+    subjects: Option<&[String]>,
+) -> Result<Vec<QuestionCardId>> {
+    if subjects.is_some_and(|subjects| subjects.is_empty()) {
+        return Ok(Vec::new());
+    }
+    let mut sql = String::from(
+        "SELECT q.id FROM question_cards q
+         WHERE q.exam_set_id = ?1 AND q.status = 'published'",
+    );
+    let mut values: Vec<Value> = vec![Value::Text(exam_set_id.as_str())];
+    if let Some(subjects) = subjects {
+        append_subject_filter(&mut sql, &mut values, subjects);
+    }
+    values.push(Value::Integer(bounded(limit)));
+    sql.push_str(&format!(
+        " ORDER BY CASE WHEN q.question_no IS NULL THEN 1 ELSE 0 END, q.question_no, q.id LIMIT ?{}",
+        values.len()
+    ));
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(values), |row| row.get(0))?;
     rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
         .map_err(Into::into)
 }
@@ -84,7 +141,16 @@ pub fn topic_question_ids(
     knowledge_card_ids: &[KnowledgeCardId],
     limit: usize,
 ) -> Result<Vec<QuestionCardId>> {
-    if knowledge_card_ids.is_empty() {
+    topic_question_ids_scoped(connection, knowledge_card_ids, limit, None)
+}
+
+pub fn topic_question_ids_scoped(
+    connection: &Connection,
+    knowledge_card_ids: &[KnowledgeCardId],
+    limit: usize,
+    subjects: Option<&[String]>,
+) -> Result<Vec<QuestionCardId>> {
+    if knowledge_card_ids.is_empty() || subjects.is_some_and(|subjects| subjects.is_empty()) {
         return Ok(Vec::new());
     }
     let placeholders = knowledge_card_ids
@@ -92,7 +158,7 @@ pub fn topic_question_ids(
         .map(|_| "?")
         .collect::<Vec<_>>()
         .join(", ");
-    let sql = format!(
+    let mut sql = format!(
         "SELECT DISTINCT q.id
          FROM edges e
          JOIN knowledge_cards k ON k.id = e.to_id AND k.status = 'published'
@@ -101,16 +167,17 @@ pub fn topic_question_ids(
            AND e.to_kind = 'card'
            AND e.from_kind IN ('question', 'option')
            AND e.to_id IN ({placeholders})
-           AND q.status = 'published'
-         ORDER BY q.id
-         LIMIT ?{}",
-        knowledge_card_ids.len() + 1
+           AND q.status = 'published'"
     );
     let mut values: Vec<Value> = knowledge_card_ids
         .iter()
         .map(|id| Value::Text(id.as_str()))
         .collect();
+    if let Some(subjects) = subjects {
+        append_subject_filter(&mut sql, &mut values, subjects);
+    }
     values.push(Value::Integer(bounded(limit)));
+    sql.push_str(&format!(" ORDER BY q.id LIMIT ?{}", values.len()));
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(params_from_iter(values), |row| row.get(0))?;
     rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
@@ -121,14 +188,54 @@ pub fn practical_question_ids(
     connection: &Connection,
     limit: usize,
 ) -> Result<Vec<QuestionCardId>> {
-    let mut statement = connection.prepare(
-        "SELECT id FROM question_cards
-         WHERE status = 'published'
-           AND question_type IN ('pin_identify', 'pin_locate', 'image_qa')
-         ORDER BY id
-         LIMIT ?1",
-    )?;
-    let rows = statement.query_map(params![bounded(limit)], |row| row.get(0))?;
+    practical_question_ids_scoped(connection, limit, None)
+}
+
+pub fn practical_question_ids_scoped(
+    connection: &Connection,
+    limit: usize,
+    subjects: Option<&[String]>,
+) -> Result<Vec<QuestionCardId>> {
+    if subjects.is_some_and(|subjects| subjects.is_empty()) {
+        return Ok(Vec::new());
+    }
+    let mut sql = String::from(
+        "SELECT q.id FROM question_cards q
+         WHERE q.status = 'published'
+           AND q.question_type IN ('pin_identify', 'pin_locate', 'image_qa')",
+    );
+    let mut values: Vec<Value> = Vec::new();
+    if let Some(subjects) = subjects {
+        append_subject_filter(&mut sql, &mut values, subjects);
+    }
+    values.push(Value::Integer(bounded(limit)));
+    sql.push_str(&format!(" ORDER BY q.id LIMIT ?{}", values.len()));
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(values), |row| row.get(0))?;
+    rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+        .map_err(Into::into)
+}
+
+/// Every published question of the given subjects, ordered the way a combined
+/// mock exam is printed: by subject, then exam set, then question number.
+pub fn subject_question_ids(
+    connection: &Connection,
+    subjects: &[String],
+    limit: usize,
+) -> Result<Vec<QuestionCardId>> {
+    if subjects.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut sql = String::from("SELECT q.id FROM question_cards q WHERE q.status = 'published'");
+    let mut values: Vec<Value> = Vec::new();
+    append_subject_filter(&mut sql, &mut values, subjects);
+    values.push(Value::Integer(bounded(limit)));
+    sql.push_str(&format!(
+        " ORDER BY q.subject, q.exam_set_id, q.question_no IS NULL, q.question_no, q.id LIMIT ?{}",
+        values.len()
+    ));
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(values), |row| row.get(0))?;
     rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
         .map_err(Into::into)
 }

@@ -117,6 +117,7 @@ string_id!(QuestionGroupId, "question group id");
 string_id!(QuestionCardId, "question card id");
 string_id!(EdgeId, "edge id");
 string_id!(ProposalId, "proposal id");
+string_id!(SubjectGroupId, "subject group id");
 string_id!(UserId, "user id");
 string_id!(AttemptId, "attempt id");
 string_id!(CardId, "card id");

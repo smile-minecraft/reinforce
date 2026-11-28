@@ -217,6 +217,18 @@ impl QuizSession {
         &self.graded
     }
 
+    /// Returns the stored answer for one question index, if it was answered.
+    pub fn answer_for(&self, index: usize) -> Option<&AnswerRecord> {
+        self.answers.iter().find(|record| record.index == index)
+    }
+
+    /// Returns the grading result for one question index, if it is known yet.
+    pub fn graded_for(&self, index: usize) -> Option<&GradedAnswer> {
+        self.graded
+            .iter()
+            .find(|graded| graded.record.index == index)
+    }
+
     pub fn grading(&self) -> GradingConfig {
         self.grading
     }
@@ -333,6 +345,95 @@ impl QuizSession {
         })
     }
 
+    /// Switches the active question without submitting or advancing.
+    ///
+    /// A running session restarts the per-question timer on the new index; a
+    /// paused session only moves the paused index and stays paused.
+    pub fn select_index(&mut self, index: usize, now: Timestamp) -> Result<()> {
+        if index >= self.questions.len() {
+            return Err(Error::InvalidValue("question index", index.to_string()));
+        }
+        match self.state {
+            SessionState::InProgress { .. } => {
+                self.state = SessionState::InProgress { index };
+                self.question_timer.start(now);
+                Ok(())
+            }
+            SessionState::Paused { .. } => {
+                self.state = SessionState::Paused { index };
+                Ok(())
+            }
+            _ => Err(Error::InvalidValue(
+                "session state",
+                "only a running or paused session can select a question".to_owned(),
+            )),
+        }
+    }
+
+    /// Grades and stores an answer for any question index without advancing.
+    ///
+    /// Re-answering the same index replaces the stored answer (and its immediate
+    /// grading) instead of appending, so `score` and `attempts` never count the
+    /// same question twice. Completion always stays with `finish`.
+    pub fn submit_answer_at(
+        &mut self,
+        index: usize,
+        answer: QuizAnswer,
+        now: Timestamp,
+    ) -> Result<Option<GradingOutcome>> {
+        if !matches!(self.state, SessionState::InProgress { .. }) {
+            return Err(Error::InvalidValue(
+                "session state",
+                "no question is in progress".to_owned(),
+            ));
+        }
+        let question_id = self
+            .questions
+            .get(index)
+            .ok_or_else(|| Error::InvalidValue("question index", index.to_string()))?
+            .id
+            .clone();
+        let duration_ms = self
+            .question_timer
+            .elapsed_ms(now)
+            .min(self.question_timer.limit_ms()) as i64;
+        let record = AnswerRecord {
+            index,
+            question_id,
+            submission: answer.submission,
+            confidence: answer.confidence,
+            error_tags: answer.error_tags,
+            duration_ms,
+            created_at: now,
+            timed_out: false,
+        };
+        let graded = self.grade_record(&record)?;
+        match self.answers.iter_mut().find(|record| record.index == index) {
+            Some(existing) => *existing = record,
+            None => self.answers.push(record),
+        }
+        if self.defer_grading {
+            // A timeout recorded for this index before the answer is stale now;
+            // dropping it lets `finish` re-grade the whole paper from answers.
+            self.graded
+                .retain(|existing| existing.record.index != index);
+        } else {
+            match self
+                .graded
+                .iter_mut()
+                .find(|existing| existing.record.index == index)
+            {
+                Some(existing) => *existing = graded.clone(),
+                None => self.graded.push(graded.clone()),
+            }
+        }
+        Ok(if self.defer_grading {
+            None
+        } else {
+            Some(graded.outcome)
+        })
+    }
+
     pub fn finish(&mut self, _now: Timestamp) -> Result<Vec<GradedAnswer>> {
         if self.state == SessionState::NotStarted {
             return Err(Error::InvalidValue(
@@ -340,7 +441,7 @@ impl QuizSession {
                 "session has not started".to_owned(),
             ));
         }
-        if self.defer_grading && self.graded.len() < self.answers.len() {
+        if self.defer_grading && !self.graded_matches_answers() {
             self.graded = self
                 .answers
                 .iter()
@@ -443,6 +544,17 @@ impl QuizSession {
                 self.affects_scheduling,
             )?,
         })
+    }
+
+    /// A deferred session only skips re-grading when its graded list is exactly
+    /// the stored answers in the same order.
+    fn graded_matches_answers(&self) -> bool {
+        self.graded.len() == self.answers.len()
+            && self
+                .graded
+                .iter()
+                .zip(self.answers.iter())
+                .all(|(graded, record)| &graded.record == record)
     }
 
     fn record_timeout(&mut self, now: Timestamp) -> Result<GradedAnswer> {

@@ -10,13 +10,18 @@ use std::collections::HashMap;
 use reinforce_core::content::{
     EdgeEndpoint as CoreEdgeEndpoint, GraphNode as CoreGraphNode, OutlineNode as CoreOutlineNode,
 };
-use reinforce_core::db::{catalog as catalog_store, search as search_store};
+use reinforce_core::db::{
+    catalog as catalog_store, quiz as quiz_store, search as search_store,
+    subject_groups as subject_groups_store,
+};
 use reinforce_core::primitives::CardStatus;
-use reinforce_core::{ExamSetId, KnowledgeCard, KnowledgeCardId, NoteId};
+use reinforce_core::{ExamSetId, KnowledgeCard, KnowledgeCardId, NoteId, SubjectGroupId};
 
 use crate::database::LocalDatabase;
 use crate::error::{FfiError, guard, locked, parse_id, usize_field};
-use crate::types::{CardStatus as FfiCardStatus, ExamSet, KnowledgeCard as FfiKnowledgeCard};
+use crate::types::{
+    CardStatus as FfiCardStatus, ExamSet, KnowledgeCard as FfiKnowledgeCard, SubjectGroup,
+};
 use crate::types::{Note, QuestionCard, QuestionGroup, Verification};
 
 /// Published-content totals for one subject.
@@ -325,6 +330,55 @@ impl LocalDatabase {
             .into_iter()
             .map(QuestionCard::from)
             .collect())
+        })
+    }
+
+    /// Lists nested subject folders with their directly assigned subjects.
+    pub fn subject_groups(&self) -> Result<Vec<SubjectGroup>, FfiError> {
+        guard("list subject groups", || {
+            let database = locked("database", &self.inner)?;
+            Ok(
+                subject_groups_store::list_subject_groups(database.connection())?
+                    .into_iter()
+                    .map(SubjectGroup::from)
+                    .collect(),
+            )
+        })
+    }
+
+    /// Every subject of one group and of its descendants, deduplicated and
+    /// sorted; a missing group is an invalid input rather than an empty scope.
+    pub fn resolve_group_subjects(&self, group_id: String) -> Result<Vec<String>, FfiError> {
+        guard("resolve subject group subjects", || {
+            let group_id: SubjectGroupId = parse_id("subject group id", &group_id)?;
+            let database = locked("database", &self.inner)?;
+            Ok(subject_groups_store::resolve_group_subjects(
+                database.connection(),
+                &group_id,
+            )?)
+        })
+    }
+
+    /// Question ids linked to the given knowledge cards through `tests` edges,
+    /// in id order and limited the same way the server route limits them.
+    pub fn topic_question_ids(
+        &self,
+        card_ids: Vec<String>,
+        limit: u32,
+    ) -> Result<Vec<String>, FfiError> {
+        guard("list topic question ids", || {
+            let mut ids = Vec::with_capacity(card_ids.len());
+            for id in &card_ids {
+                ids.push(parse_id::<KnowledgeCardId>("knowledge card id", id)?);
+            }
+            let limit = usize_field("limit", limit)?;
+            let database = locked("database", &self.inner)?;
+            Ok(
+                quiz_store::topic_question_ids(database.connection(), &ids, limit)?
+                    .into_iter()
+                    .map(|id| id.as_str())
+                    .collect(),
+            )
         })
     }
 

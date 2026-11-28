@@ -12,6 +12,7 @@ pub mod quiz;
 pub mod schema;
 pub mod search;
 pub mod study;
+pub mod subject_groups;
 pub mod sync;
 
 pub struct Database {
@@ -102,6 +103,8 @@ mod tests {
             "notes",
             "exam_sets",
             "question_groups",
+            "subject_groups",
+            "subject_group_subjects",
             "question_cards",
             "edges",
             "proposals",
@@ -123,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn version_two_database_upgrades_to_three() {
+    fn version_two_database_upgrades_to_current() {
         let mut database = Database::open_in_memory().unwrap();
         // A v2 store predates the plugin queue: same schema minus that table,
         // with the marker rolled back the way an older binary left it.
@@ -166,6 +169,53 @@ mod tests {
         plugins::insert_job(database.connection(), &job).expect("insert after upgrade");
         assert!(
             plugins::get_job(database.connection(), &job.id)
+                .expect("read")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn version_three_database_upgrades_to_four() {
+        let mut database = Database::open_in_memory().unwrap();
+        // A v3 store predates nested subject groups: same schema minus those
+        // tables, with the marker rolled back the way an older binary left it.
+        database
+            .connection()
+            .execute_batch(
+                "DROP TABLE subject_group_subjects;
+                 DROP TABLE subject_groups;
+                 PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        assert_eq!(database.schema_version().unwrap(), 3);
+
+        database.migrate().unwrap();
+        assert_eq!(database.schema_version().unwrap(), schema::SCHEMA_VERSION);
+
+        let indexes: Vec<String> = database
+            .connection()
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|name| name.unwrap())
+            .collect();
+        assert!(indexes.contains(&"subject_groups_parent".to_owned()));
+        assert!(indexes.contains(&"subject_group_subjects_subject".to_owned()));
+
+        let now: crate::Timestamp = "2026-01-01T00:00:00.000000Z".parse().unwrap();
+        let group = subject_groups::create_subject_group(
+            database.connection(),
+            None,
+            "自然科",
+            &["physics".to_owned()],
+            0,
+            now,
+        )
+        .expect("create after upgrade");
+        assert_eq!(group.subjects, vec!["physics".to_owned()]);
+        assert!(
+            subject_groups::get_subject_group(database.connection(), &group.id)
                 .expect("read")
                 .is_some()
         );

@@ -28,7 +28,7 @@ use reinforce_core::weakness::{
 use reinforce_core::{
     AnchorId, CardId, ExamSet as CoreExamSet, KnowledgeCard as CoreKnowledgeCard, KnowledgeCardId,
     Note as CoreNote, QuestionCard as CoreQuestionCard, QuestionGroup as CoreQuestionGroup,
-    Timestamp, UserId,
+    SubjectGroup as CoreSubjectGroup, Timestamp, UserId,
 };
 
 use crate::error::{FfiError, finite, parse_id, parse_timestamp, u32_field, usize_field};
@@ -401,6 +401,31 @@ impl From<CoreQuestionGroup> for QuestionGroup {
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
+pub struct SubjectGroup {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub sort_order: i32,
+    pub subjects: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<CoreSubjectGroup> for SubjectGroup {
+    fn from(value: CoreSubjectGroup) -> Self {
+        Self {
+            id: value.id.as_str(),
+            parent_id: value.parent_id.map(|id| id.as_str()),
+            name: value.name,
+            sort_order: value.sort_order,
+            subjects: value.subjects,
+            created_at: stamp(&value.created_at),
+            updated_at: stamp(&value.updated_at),
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
 pub struct QuestionOption {
     pub key: String,
     pub content: String,
@@ -518,6 +543,9 @@ pub struct BuildOptions {
     pub pin_radius: f64,
     #[uniffi(default = None)]
     pub pin_aspect_ratio: Option<f64>,
+    /// Restricts every session mode to the listed subjects; `None` keeps all.
+    #[uniffi(default = None)]
+    pub subjects: Option<Vec<String>>,
 }
 
 impl Default for BuildOptions {
@@ -530,6 +558,7 @@ impl Default for BuildOptions {
             affects_scheduling: true,
             pin_radius: 0.05,
             pin_aspect_ratio: None,
+            subjects: None,
         }
     }
 }
@@ -565,6 +594,7 @@ impl BuildOptions {
                 .pin_aspect_ratio
                 .map(|value| finite("pin aspect ratio", value))
                 .transpose()?,
+            subjects: self.subjects,
         })
     }
 }
@@ -640,6 +670,55 @@ impl QuizAnswer {
             confidence: self.confidence.into(),
             error_tags: self.error_tags,
         })
+    }
+}
+
+impl From<CoreAnswerSubmission> for AnswerSubmission {
+    fn from(value: CoreAnswerSubmission) -> Self {
+        match value {
+            CoreAnswerSubmission::Keys { values } => Self::Keys { values },
+            CoreAnswerSubmission::Text { value } => Self::Text { value },
+            CoreAnswerSubmission::PinClicks { clicks } => Self::PinClicks {
+                clicks: clicks
+                    .into_iter()
+                    .map(|click| PinClick {
+                        no: click.no,
+                        point: NormalizedPoint {
+                            x: click.point.x,
+                            y: click.point.y,
+                        },
+                    })
+                    .collect(),
+            },
+            CoreAnswerSubmission::TimedOut => Self::TimedOut,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AnswerRecord {
+    pub index: u32,
+    pub question_id: String,
+    pub submission: AnswerSubmission,
+    pub confidence: Confidence,
+    pub error_tags: Vec<String>,
+    pub duration_ms: i64,
+    pub created_at: String,
+    pub timed_out: bool,
+}
+
+impl From<CoreAnswerRecord> for AnswerRecord {
+    fn from(value: CoreAnswerRecord) -> Self {
+        Self {
+            index: u32_field("index", value.index).unwrap_or(u32::MAX),
+            question_id: value.question_id.as_str(),
+            submission: value.submission.into(),
+            confidence: value.confidence.into(),
+            error_tags: value.error_tags,
+            duration_ms: value.duration_ms,
+            created_at: stamp(&value.created_at),
+            timed_out: value.timed_out,
+        }
     }
 }
 
@@ -1027,6 +1106,7 @@ mod tests {
         assert_eq!(ffi.affects_scheduling, core.affects_scheduling);
         assert_eq!(ffi.pin_radius, core.pin_radius);
         assert_eq!(ffi.pin_aspect_ratio, core.pin_aspect_ratio);
+        assert_eq!(ffi.subjects, core.subjects);
 
         let converted = ffi.into_core().expect("defaults must be valid");
         assert_eq!(converted.question_limit, core.question_limit);
@@ -1034,5 +1114,6 @@ mod tests {
         assert_eq!(converted.seconds_per_question, core.seconds_per_question);
         assert_eq!(converted.affects_scheduling, core.affects_scheduling);
         assert_eq!(converted.pin_radius, core.pin_radius);
+        assert_eq!(converted.subjects, core.subjects);
     }
 }

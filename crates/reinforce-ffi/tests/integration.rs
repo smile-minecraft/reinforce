@@ -899,3 +899,89 @@ fn sync_helpers_paginate_and_guard_identity() {
     assert!(!page.has_more_attempts);
     assert_eq!(page.attempts[0].id, ids[2]);
 }
+
+#[test]
+fn subject_groups_topic_links_and_indexed_answers_round_trip() {
+    let temp = TempDir::new();
+    let database = temp.open();
+    database
+        .import_bundle(bundle_path().to_string_lossy().into_owned())
+        .unwrap();
+
+    let root = database
+        .create_subject_group(None, "自然科".to_owned(), vec!["physics".to_owned()], 0)
+        .unwrap();
+    let child = database
+        .create_subject_group(
+            Some(root.id.clone()),
+            "力學".to_owned(),
+            vec!["physics".to_owned(), "mechanics".to_owned()],
+            1,
+        )
+        .unwrap();
+    assert_eq!(
+        child.subjects,
+        vec!["mechanics".to_owned(), "physics".to_owned()]
+    );
+    assert_eq!(database.subject_groups().unwrap().len(), 2);
+    assert_eq!(
+        database.resolve_group_subjects(root.id.clone()).unwrap(),
+        vec!["mechanics".to_owned(), "physics".to_owned()]
+    );
+
+    let detached = database
+        .update_subject_group(
+            child.id.clone(),
+            None,
+            "力學".to_owned(),
+            vec!["mechanics".to_owned()],
+            2,
+        )
+        .unwrap();
+    assert!(detached.parent_id.is_none());
+    assert_eq!(detached.sort_order, 2);
+    assert_eq!(
+        database.resolve_group_subjects(root.id.clone()).unwrap(),
+        vec!["physics".to_owned()]
+    );
+    assert!(database.delete_subject_group(child.id.clone()).unwrap());
+    assert!(!database.delete_subject_group(child.id.clone()).unwrap());
+    assert!(database.resolve_group_subjects(child.id).is_err());
+
+    let linked = database
+        .topic_question_ids(vec![KNOWLEDGE_CARD_ID.to_owned()], 10)
+        .unwrap();
+    assert_eq!(linked, vec![QUESTION_ID.to_owned()]);
+
+    let exam = database
+        .create_subject_exam_session(vec!["physics".to_owned()], options())
+        .unwrap();
+    assert_eq!(exam.questions().unwrap().len(), 4);
+    exam.start(NOW.to_owned()).unwrap();
+    let state = exam.select_index(1, NOW.to_owned()).unwrap();
+    assert!(matches!(state, SessionState::InProgress { index: 1 }));
+    assert!(
+        exam.submit_answer_at(1, keys(&["A"]), NOW.to_owned())
+            .unwrap()
+            .is_none(),
+        "subject exams defer grading"
+    );
+    assert!(
+        exam.submit_answer_at(1, keys(&["C"]), NOW.to_owned())
+            .unwrap()
+            .is_none()
+    );
+    let answers = exam.answers().unwrap();
+    assert_eq!(answers.len(), 1, "re-answering must replace");
+    assert_eq!(answers[0].index, 1);
+    match &answers[0].submission {
+        AnswerSubmission::Keys { values } => assert_eq!(values, &vec!["C".to_owned()]),
+        other => panic!("unexpected submission: {other:?}"),
+    }
+    assert_eq!(exam.finish(NOW.to_owned()).unwrap().len(), 1);
+    assert_eq!(exam.score().unwrap().scoreable, 1);
+    assert!(matches!(
+        exam.select_index(0, NOW.to_owned()),
+        Err(FfiError::InvalidInput { .. })
+    ));
+}

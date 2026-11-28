@@ -11,7 +11,7 @@ use reinforce_core::primitives::{
 use reinforce_core::quiz::{
     AnswerSubmission, BuildOptions, GradingConfig, NormalizedPoint, PinClick, QuizAnswer,
     SessionState, TickOutcome, build_daily_due, build_full_exam, build_practical_exam,
-    build_topic_drill, build_weakness_drill, grade_question, normalize_term,
+    build_subject_exam, build_topic_drill, build_weakness_drill, grade_question, normalize_term,
 };
 use reinforce_core::study::{AttemptLog, is_voided_attempt};
 use reinforce_core::weakness::build_report;
@@ -50,6 +50,7 @@ fn option(key: &str) -> QuestionOption {
 
 struct QuestionSpec {
     label: String,
+    subject: String,
     exam_set_id: Option<ExamSetId>,
     question_no: Option<u32>,
     question_type: QuestionType,
@@ -69,6 +70,7 @@ impl QuestionSpec {
     ) -> Self {
         Self {
             label: label.to_owned(),
+            subject: "biology".to_owned(),
             exam_set_id: None,
             question_no: None,
             question_type,
@@ -78,6 +80,11 @@ impl QuestionSpec {
             options: vec![],
             stem_blocks: vec![],
         }
+    }
+
+    fn subject(mut self, subject: &str) -> Self {
+        self.subject = subject.to_owned();
+        self
     }
 
     fn exam(mut self, exam_set_id: ExamSetId, question_no: u32) -> Self {
@@ -114,7 +121,7 @@ impl QuestionSpec {
             exam_set_id: self.exam_set_id,
             question_group_id: None,
             question_no: self.question_no,
-            subject: "biology".to_owned(),
+            subject: self.subject,
             topics: vec![self.label],
             stem_blocks,
             explanation_blocks: vec![],
@@ -983,4 +990,334 @@ fn submitted_error_tags_reach_attempt_logs() {
         attempts[0].error_tags,
         vec!["incorrect".to_owned(), "概念混淆".to_owned()]
     );
+}
+
+fn keys(values: &[&str]) -> QuizAnswer {
+    QuizAnswer {
+        submission: AnswerSubmission::Keys {
+            values: values.iter().map(|value| (*value).to_owned()).collect(),
+        },
+        confidence: Confidence::Certain,
+        error_tags: Vec::new(),
+    }
+}
+
+fn subject_pin(label: &str, subject: &str) -> QuestionCard {
+    QuestionSpec::new(
+        label,
+        QuestionType::PinIdentify,
+        GradingMode::Exact,
+        vec!["1".to_owned()],
+    )
+    .subject(subject)
+    .stem(pin_stem(pin("鈉幫浦", None)))
+    .build()
+}
+
+#[test]
+fn subject_scope_limits_every_build_mode_and_an_empty_scope_builds_nothing() {
+    let database = Database::open_in_memory().unwrap();
+    let connection = database.connection();
+    let user = insert_user(connection);
+    let exam_set = ExamSet {
+        id: ExamSetId::generate(),
+        subject: "physics".to_owned(),
+        title: "mixed".to_owned(),
+        source_kind: SourceKind::PastExam,
+        exam_year: Some(2025),
+        source_resource_id: None,
+        expected_questions: None,
+        metadata: json!({}),
+        is_complete: true,
+    };
+    store::insert_exam_set(connection, &exam_set).unwrap();
+
+    let physics = QuestionSpec::new(
+        "physics",
+        QuestionType::SingleChoice,
+        GradingMode::Exact,
+        vec!["A".to_owned()],
+    )
+    .subject("physics")
+    .exam(exam_set.id.clone(), 2)
+    .options(vec![option("A"), option("B")])
+    .build();
+    let chemistry = QuestionSpec::new(
+        "chemistry",
+        QuestionType::SingleChoice,
+        GradingMode::Exact,
+        vec!["B".to_owned()],
+    )
+    .subject("chemistry")
+    .exam(exam_set.id.clone(), 1)
+    .options(vec![option("A"), option("B")])
+    .build();
+    let physics_pin = subject_pin("physics pin", "physics");
+    let chemistry_pin = subject_pin("chemistry pin", "chemistry");
+    for question in [&physics, &chemistry, &physics_pin, &chemistry_pin] {
+        store::insert_question_card(connection, question).unwrap();
+    }
+    let card = knowledge("weak card");
+    store::insert_knowledge_card(connection, &card).unwrap();
+    for question in [&physics, &chemistry] {
+        store::insert_edge(
+            connection,
+            &tests_edge(
+                EdgeEndpoint::Question {
+                    id: question.id.clone(),
+                },
+                card.id.clone(),
+            ),
+        )
+        .unwrap();
+    }
+
+    let physics_only = BuildOptions {
+        subjects: Some(vec!["physics".to_owned()]),
+        question_limit: 10,
+        ..BuildOptions::default()
+    };
+    let daily = build_daily_due(connection, &user.id, base(), &physics_only).unwrap();
+    assert_eq!(
+        daily
+            .questions()
+            .iter()
+            .map(|q| q.id.clone())
+            .collect::<Vec<_>>(),
+        vec![physics.id.clone(), physics_pin.id.clone()],
+        "daily due must only contain physics questions"
+    );
+    let empty_scope = BuildOptions {
+        subjects: Some(Vec::new()),
+        ..BuildOptions::default()
+    };
+    assert!(
+        build_daily_due(connection, &user.id, base(), &empty_scope)
+            .unwrap()
+            .questions()
+            .is_empty(),
+        "an empty subject scope must not fall back to every question"
+    );
+
+    let exam = build_full_exam(connection, &exam_set.id, &physics_only).unwrap();
+    assert_eq!(
+        exam.questions()
+            .iter()
+            .map(|q| q.id.clone())
+            .collect::<Vec<_>>(),
+        vec![physics.id.clone()]
+    );
+    let topic =
+        build_topic_drill(connection, std::slice::from_ref(&card.id), &physics_only).unwrap();
+    assert_eq!(
+        topic
+            .questions()
+            .iter()
+            .map(|q| q.id.clone())
+            .collect::<Vec<_>>(),
+        vec![physics.id.clone()]
+    );
+    let practical = build_practical_exam(connection, &[], &physics_only).unwrap();
+    assert_eq!(
+        practical
+            .questions()
+            .iter()
+            .map(|q| q.id.clone())
+            .collect::<Vec<_>>(),
+        vec![physics_pin.id.clone()]
+    );
+
+    for (question, created_at) in [(&physics, at(1)), (&chemistry, at(2))] {
+        let record = attempt(
+            &user,
+            CardId::from(question.id.clone()),
+            false,
+            Confidence::Guessed,
+            30_000,
+            created_at,
+            json!({"answer": {"kind": "keys", "values": ["C"]}}),
+        );
+        study_store::append_attempt(connection, &record).unwrap();
+    }
+    let weakness_drill = build_weakness_drill(connection, &user.id, &physics_only).unwrap();
+    assert_eq!(
+        weakness_drill
+            .questions()
+            .iter()
+            .map(|q| q.id.clone())
+            .collect::<Vec<_>>(),
+        vec![physics.id.clone()]
+    );
+
+    let subject_exam = build_subject_exam(
+        connection,
+        &["physics".to_owned(), "chemistry".to_owned()],
+        &BuildOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(subject_exam.mode(), SessionMode::FullExam);
+    assert_eq!(
+        subject_exam
+            .questions()
+            .iter()
+            .map(|q| q.id.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            chemistry_pin.id.clone(),
+            chemistry.id.clone(),
+            physics_pin.id.clone(),
+            physics.id.clone()
+        ],
+        "combined exams order by subject, then exam set, then question number"
+    );
+    let mut subject_exam = subject_exam;
+    subject_exam.start(base());
+    assert!(
+        subject_exam
+            .submit_answer(keys(&["A"]), base())
+            .unwrap()
+            .is_none(),
+        "combined subject exams defer grading"
+    );
+    assert_eq!(subject_exam.finish(base()).unwrap().len(), 1);
+
+    assert!(
+        build_subject_exam(connection, &[], &BuildOptions::default())
+            .unwrap()
+            .questions()
+            .is_empty()
+    );
+}
+
+#[test]
+fn free_selection_and_reanswering_replace_answers_without_double_counting() {
+    let questions = vec![choice("one", "A"), choice("two", "B"), choice("three", "C")];
+    let mut session = reinforce_core::quiz::QuizSession::new(
+        SessionMode::DailyDue,
+        questions,
+        None,
+        None,
+        GradingConfig::default(),
+        false,
+        false,
+    )
+    .unwrap();
+    session.start(base());
+
+    session.select_index(2, at(5)).unwrap();
+    assert_eq!(session.state(), SessionState::InProgress { index: 2 });
+    let outcome = session
+        .submit_answer_at(2, keys(&["C"]), at(10))
+        .unwrap()
+        .unwrap();
+    assert!(outcome.is_correct);
+    assert_eq!(
+        session.state(),
+        SessionState::InProgress { index: 2 },
+        "indexed answers must not advance the session"
+    );
+    assert_eq!(session.answers().len(), 1);
+    assert!(session.answer_for(2).is_some());
+    assert!(session.graded_for(2).is_some());
+
+    let outcome = session
+        .submit_answer_at(2, keys(&["A"]), at(20))
+        .unwrap()
+        .unwrap();
+    assert!(!outcome.is_correct);
+    assert_eq!(session.answers().len(), 1, "re-answering must replace");
+    assert_eq!(session.graded().len(), 1);
+    assert!(!session.graded_for(2).unwrap().outcome.is_correct);
+
+    session.select_index(0, at(30)).unwrap();
+    assert_eq!(session.state(), SessionState::InProgress { index: 0 });
+    session.submit_answer_at(0, keys(&["A"]), at(40)).unwrap();
+    assert_eq!(session.answers().len(), 2);
+    let score = session.score().unwrap();
+    assert_eq!((score.correct, score.scoreable), (1, 2));
+
+    session.pause(at(50)).unwrap();
+    assert_eq!(session.state(), SessionState::Paused { index: 0 });
+    session.select_index(1, at(60)).unwrap();
+    assert_eq!(
+        session.state(),
+        SessionState::Paused { index: 1 },
+        "a paused session only moves its index"
+    );
+    assert!(
+        session.submit_answer_at(1, keys(&["B"]), at(65)).is_err(),
+        "paused sessions do not accept answers"
+    );
+    session.resume(at(70)).unwrap();
+    assert_eq!(session.state(), SessionState::InProgress { index: 1 });
+
+    assert!(session.select_index(3, at(80)).is_err());
+    assert!(session.submit_answer_at(3, keys(&["A"]), at(80)).is_err());
+    assert!(session.select_index(1, at(80)).is_ok());
+
+    session.finish(at(90)).unwrap();
+    assert_eq!(session.state(), SessionState::Submitted);
+    assert_eq!(
+        session.attempts(&UserId::generate(), 1).len(),
+        2,
+        "attempts must count each answered index once"
+    );
+    assert!(session.select_index(0, at(100)).is_err());
+    assert!(session.submit_answer_at(0, keys(&["A"]), at(100)).is_err());
+}
+
+#[test]
+fn deferred_grading_uses_the_final_answer_after_an_overwrite() {
+    let questions = vec![choice("one", "A"), choice("two", "B")];
+    let mut session = reinforce_core::quiz::QuizSession::new(
+        SessionMode::FullExam,
+        questions,
+        Some(600),
+        None,
+        GradingConfig::default(),
+        false,
+        true,
+    )
+    .unwrap();
+    session.start(base());
+    assert!(
+        session
+            .submit_answer_at(1, keys(&["C"]), at(10))
+            .unwrap()
+            .is_none()
+    );
+    assert!(session.graded().is_empty());
+    assert!(
+        session
+            .submit_answer_at(1, keys(&["B"]), at(20))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(session.answers().len(), 1);
+    let graded = session.finish(at(30)).unwrap();
+    assert_eq!(graded.len(), 1);
+    assert!(graded[0].outcome.is_correct);
+    assert_eq!(session.attempts(&UserId::generate(), 1).len(), 1);
+    assert_eq!(session.score().unwrap().correct, 1);
+}
+
+#[test]
+fn indexed_submission_requires_a_running_session() {
+    let questions = vec![choice("one", "A")];
+    let mut session = reinforce_core::quiz::QuizSession::new(
+        SessionMode::DailyDue,
+        questions,
+        None,
+        None,
+        GradingConfig::default(),
+        false,
+        false,
+    )
+    .unwrap();
+    assert!(session.submit_answer_at(0, keys(&["A"]), base()).is_err());
+    assert!(session.select_index(0, base()).is_err());
+    session.start(base());
+    session.submit_answer(keys(&["A"]), base()).unwrap();
+    assert_eq!(session.state(), SessionState::Submitted);
+    assert!(session.submit_answer_at(0, keys(&["A"]), base()).is_err());
 }
