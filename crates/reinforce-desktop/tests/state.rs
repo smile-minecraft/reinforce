@@ -389,6 +389,84 @@ fn nested_subject_groups_filter_library_and_build_scoped_exam() {
     )
     .unwrap();
     assert!(empty_quiz.is_empty());
+
+    // TopicDrill with a selected nested subject group uses that group's knowledge cards,
+    // even if a note from another subject was previously opened in library.outline().
+    library.select(&store, 0).unwrap();
+    let chem_card = reinforce_core::KnowledgeCard {
+        id: reinforce_core::KnowledgeCardId::generate(),
+        subject: "chemistry".to_owned(),
+        topics: vec!["acids".to_owned()],
+        title: "酸鹼中和".to_owned(),
+        blocks: vec![reinforce_core::ContentBlock::Markdown {
+            text: "酸與鹼反應生成鹽與水".to_owned(),
+        }],
+        anchor_ids: Vec::new(),
+        status: reinforce_core::primitives::CardStatus::Published,
+        verification: reinforce_core::primitives::Verification::Verified,
+        unsure_count: 0,
+        metadata: serde_json::json!({}),
+        created_at: now(),
+        updated_at: now(),
+    };
+    let chem_question = reinforce_core::QuestionCard {
+        id: reinforce_core::QuestionCardId::generate(),
+        exam_set_id: None,
+        question_group_id: None,
+        question_no: Some(1),
+        subject: "chemistry".to_owned(),
+        topics: vec!["acids".to_owned()],
+        stem_blocks: vec![reinforce_core::ContentBlock::Markdown {
+            text: "HCl + NaOH 產物為？".to_owned(),
+        }],
+        anchor_ids: Vec::new(),
+        question_type: reinforce_core::primitives::QuestionType::ShortAnswer,
+        grading_mode: reinforce_core::primitives::GradingMode::Exact,
+        options: Vec::new(),
+        answer: vec!["NaCl".to_owned()],
+        accepted_answers: Vec::new(),
+        answer_source_kind: reinforce_core::primitives::AnswerSourceKind::Official,
+        answer_basis: None,
+        explanation_blocks: Vec::new(),
+        status: reinforce_core::primitives::CardStatus::Published,
+        verification: reinforce_core::primitives::Verification::Verified,
+        duplicate_question_id: None,
+        unsure_count: 0,
+        metadata: serde_json::json!({}),
+        created_at: now(),
+        updated_at: now(),
+    };
+    let chem_edge = reinforce_core::Edge {
+        id: reinforce_core::EdgeId::generate(),
+        edge_type: reinforce_core::primitives::EdgeType::Tests,
+        from: reinforce_core::EdgeEndpoint::Question {
+            id: chem_question.id.clone(),
+        },
+        to: reinforce_core::EdgeEndpoint::Card {
+            id: chem_card.id.clone(),
+        },
+        created_at: now(),
+    };
+    reinforce_core::db::content::insert_knowledge_card(store.connection(), &chem_card).unwrap();
+    reinforce_core::db::content::insert_question_card(store.connection(), &chem_question).unwrap();
+    reinforce_core::db::content::insert_edge(store.connection(), &chem_edge).unwrap();
+
+    let mut reloaded = Library::load(&store).unwrap();
+    reloaded.select(&store, 0).unwrap(); // open physics note
+    reloaded.selected_group_id = Some(other.id.clone()); // select chemistry group
+    let chem_targets = reloaded.targets();
+    assert_eq!(chem_targets.cards, vec![chem_card.id.clone()]);
+    let topic_quiz = Quiz::start(
+        &store,
+        QuizMode::TopicDrill,
+        &chem_targets,
+        &desktop_options(),
+        &user.id,
+        now(),
+    )
+    .unwrap();
+    assert_eq!(topic_quiz.total(), 1);
+    assert_eq!(topic_quiz.questions()[0].id, chem_question.id);
 }
 
 #[test]

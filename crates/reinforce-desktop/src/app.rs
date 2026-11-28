@@ -314,24 +314,21 @@ impl DesktopApp {
         }
         self.error = None;
         self.status_notice = None;
+        self.text_focus = TextFocus::None;
         self.tabs.open_or_focus(WorkspaceTab::note(note_id, title));
     }
 
     fn open_card_tab(&mut self, card_id: KnowledgeCardId, title: String) {
         self.error = None;
+        self.text_focus = TextFocus::None;
         self.tabs.open_or_focus(WorkspaceTab::card(card_id, title));
     }
 
     fn close_tab(&mut self, tab_id: &str) {
+        self.text_focus = TextFocus::None;
         if let Some(WorkspaceTabKind::Quiz(session_key)) = self.tabs.close(tab_id) {
             self.quizzes.remove(&session_key);
             self.summaries.remove(&session_key);
-            if matches!(
-                self.text_focus,
-                TextFocus::QuizAnswer { session_key: k, .. } if k == session_key
-            ) {
-                self.text_focus = TextFocus::None;
-            }
         }
     }
 
@@ -369,6 +366,7 @@ impl DesktopApp {
                 self.summaries.remove(&key);
                 self.error = None;
                 self.status_notice = None;
+                self.text_focus = TextFocus::None;
                 self.tabs.open_or_focus(WorkspaceTab::quiz(key, title));
                 Some(key)
             }
@@ -422,6 +420,7 @@ impl DesktopApp {
             Ok(0) => {}
             Ok(count) => {
                 self.error = None;
+                self.text_focus = TextFocus::None;
                 if deferred {
                     self.status_notice = Some(format!("已暫存 {count} 題作答，交卷後統一計分"));
                 } else {
@@ -436,6 +435,7 @@ impl DesktopApp {
         let Some(mut quiz) = self.quizzes.remove(&session_key) else {
             return;
         };
+        self.text_focus = TextFocus::None;
         let now = Timestamp::now();
         let mode = quiz.mode();
         let written = match quiz.commit(&mut self.store, &self.user.id, now) {
@@ -584,18 +584,28 @@ impl DesktopApp {
             .selected_group_id
             .as_ref()
             .is_some_and(|sel| is_descendant_or_self(&self.library.subject_groups, sel, id));
+        let editor_editing_deleted = self
+            .group_editor
+            .as_ref()
+            .and_then(|e| e.editing_id.as_ref())
+            .is_some_and(|eid| is_descendant_or_self(&self.library.subject_groups, eid, id));
+        let editor_parent_deleted = self
+            .group_editor
+            .as_ref()
+            .and_then(|e| e.parent_id.as_ref())
+            .is_some_and(|pid| is_descendant_or_self(&self.library.subject_groups, pid, id));
         match self.store.delete_subject_group(id) {
             Ok(_) => {
                 if should_clear_selected {
                     self.library.selected_group_id = None;
                 }
-                if self
-                    .group_editor
-                    .as_ref()
-                    .and_then(|e| e.editing_id.as_ref())
-                    == Some(id)
-                {
+                if editor_editing_deleted {
                     self.group_editor = None;
+                    if self.text_focus == TextFocus::GroupName {
+                        self.text_focus = TextFocus::None;
+                    }
+                } else if editor_parent_deleted && let Some(editor) = self.group_editor.as_mut() {
+                    editor.parent_id = None;
                 }
                 self.error = None;
                 let _ = self.library.reload_subject_groups(&self.store);
@@ -617,6 +627,7 @@ impl DesktopApp {
             let _ = self.store.set_setting(PRACTICAL_SETTING, "");
             self.status_notice = Some("設定已儲存".to_owned());
             self.error = None;
+            self.text_focus = TextFocus::None;
         } else {
             match PracticalCountdown::parse(date_trimmed) {
                 Ok(parsed) => {
@@ -624,6 +635,7 @@ impl DesktopApp {
                     let _ = self.store.set_setting(PRACTICAL_SETTING, date_trimmed);
                     self.status_notice = Some("設定已儲存".to_owned());
                     self.error = None;
+                    self.text_focus = TextFocus::None;
                 }
                 Err(error) => {
                     self.error = Some(format!("日期格式錯誤（需 YYYY-MM-DD）：{error}"));
@@ -641,6 +653,11 @@ impl DesktopApp {
         let Some(handle) = self.dragging else {
             return;
         };
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.dragging = None;
+            cx.notify();
+            return;
+        }
         let mouse_x: f32 = event.position.x.into();
         let viewport_w: f32 = window.viewport_size().width.into();
         match handle {
@@ -660,11 +677,40 @@ impl DesktopApp {
         }
     }
 
+    fn is_text_focus_valid(&self) -> bool {
+        match &self.text_focus {
+            TextFocus::None => false,
+            TextFocus::GroupName => {
+                self.right_open
+                    && self.group_editor.is_some()
+                    && !matches!(
+                        self.tabs.active().kind,
+                        WorkspaceTabKind::Note(_) | WorkspaceTabKind::Quiz(_)
+                    )
+            }
+            TextFocus::DisplayName | TextFocus::PracticalDate => {
+                matches!(self.tabs.active().kind, WorkspaceTabKind::Settings)
+            }
+            TextFocus::QuizAnswer { session_key, index } => {
+                matches!(self.tabs.active().kind, WorkspaceTabKind::Quiz(k) if k == *session_key)
+                    && self.quizzes.get(session_key).is_some_and(|quiz| {
+                        quiz.current_unit()
+                            .is_some_and(|unit| unit.session_indices.contains(index))
+                            && (quiz.mode().deferred() || quiz.graded_for(*index).is_none())
+                    })
+            }
+        }
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
         if keystroke.modifiers.platform || keystroke.modifiers.control {
             return;
+        }
+
+        if !self.is_text_focus_valid() {
+            self.text_focus = TextFocus::None;
         }
 
         // Handle focused text inputs first (group name, settings, short-answer quiz field)
@@ -807,6 +853,19 @@ impl DesktopApp {
                     self.submit_active_quiz_unit();
                 }
             }
+            "backspace" => {
+                if let Some(quiz) = self.quizzes.get_mut(&session_key)
+                    && let Some(&first_idx) = quiz
+                        .current_unit()
+                        .and_then(|unit| unit.session_indices.first())
+                    && quiz
+                        .questions()
+                        .get(first_idx)
+                        .is_some_and(|q| q.options.is_empty() && accepts_text(q.question_type))
+                {
+                    quiz.backspace_at(first_idx);
+                }
+            }
             "1" | "2" | "3" | "4" | "5" => {
                 if let Some(idx) = digit(key)
                     && let Some(&level) = ConfidenceLevel5::ALL.get(idx)
@@ -827,7 +886,7 @@ impl DesktopApp {
                     if quiz
                         .questions()
                         .get(first_idx)
-                        .is_some_and(|q| accepts_text(q.question_type))
+                        .is_some_and(|q| q.options.is_empty() && accepts_text(q.question_type))
                     {
                         if !ch.is_control() {
                             quiz.push_char_at(first_idx, ch);
@@ -893,6 +952,7 @@ impl DesktopApp {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |app, _: &gpui::MouseDownEvent, _, cx| {
+                            app.text_focus = TextFocus::None;
                             app.tabs.activate(&tab_id_activate);
                             cx.notify();
                         }),
@@ -1166,6 +1226,7 @@ impl DesktopApp {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |app, _: &gpui::MouseDownEvent, _, cx| {
+                            app.text_focus = TextFocus::None;
                             app.tabs.open_or_focus(target.clone());
                             cx.notify();
                         }),
@@ -1596,6 +1657,7 @@ impl DesktopApp {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |app, _: &gpui::MouseDownEvent, _, cx| {
+                                    app.text_focus = TextFocus::None;
                                     if let Some(quiz) = app.quizzes.get_mut(&session_key) {
                                         let _ = quiz.select_unit(unit_idx, Timestamp::now());
                                     }
@@ -3249,6 +3311,7 @@ impl DesktopApp {
                                                               _: &gpui::MouseDownEvent,
                                                               _,
                                                               cx| {
+                                                            app.text_focus = TextFocus::None;
                                                             if let Some(q) =
                                                                 app.quizzes.get_mut(&session_key)
                                                             {
@@ -3314,6 +3377,7 @@ impl DesktopApp {
                                                 MouseButton::Left,
                                                 cx.listener(
                                                     move |app, _: &gpui::MouseDownEvent, _, cx| {
+                                                        app.text_focus = TextFocus::None;
                                                         if let Some(q) =
                                                             app.quizzes.get_mut(&session_key)
                                                         {
@@ -3445,6 +3509,7 @@ impl DesktopApp {
                             this.cursor_pointer().on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |app, _: &gpui::MouseDownEvent, _, cx| {
+                                    app.text_focus = TextFocus::None;
                                     if let Some(q) = app.quizzes.get_mut(&session_key) {
                                         q.toggle_option_at(session_idx, &opt_key);
                                     }

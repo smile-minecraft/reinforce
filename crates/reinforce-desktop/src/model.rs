@@ -647,12 +647,27 @@ impl Library {
         } else {
             self.exam_sets.first().map(|set| set.exam_set.id.clone())
         };
-        QuizTargets {
-            exam_set,
-            cards: self
+        let cards = if let Some(ref allowed) = subjects {
+            let allowed_set: HashSet<&str> = allowed.iter().map(String::as_str).collect();
+            self.cards
+                .iter()
+                .filter(|card| allowed_set.contains(card.subject.as_str()))
+                .map(|card| card.id.clone())
+                .collect()
+        } else {
+            let from_outline: Vec<KnowledgeCardId> = self
                 .outline()
                 .map(|outline| outline.cards.iter().map(|card| card.id.clone()).collect())
-                .unwrap_or_default(),
+                .unwrap_or_default();
+            if from_outline.is_empty() {
+                self.cards.iter().map(|card| card.id.clone()).collect()
+            } else {
+                from_outline
+            }
+        };
+        QuizTargets {
+            exam_set,
+            cards,
             subjects,
         }
     }
@@ -1110,7 +1125,7 @@ impl Quiz {
             return None;
         }
         let draft = self.drafts.get(&session_idx);
-        if accepts_text(question.question_type) {
+        if question.options.is_empty() && accepts_text(question.question_type) {
             let text = draft.map(|d| d.typed.trim()).unwrap_or("");
             if text.is_empty() {
                 (question.grading_mode == GradingMode::Voided).then_some(AnswerSubmission::TimedOut)
