@@ -21,40 +21,40 @@
 }
 
 :root {
-  --rf-canvas: #f8f9fa;
+  --rf-canvas: #f7f6f3;
   --rf-surface: #ffffff;
-  --rf-subtle: #f1f3f6;
-  --rf-border: #dde2ea;
-  --rf-ink: #141923;
-  --rf-ink-muted: #525c6e;
-  --rf-accent: #1d4ed8;
-  --rf-accent-hover: #1e40af;
-  --rf-accent-soft: #eff6ff;
-  --rf-ok: #15803d;
-  --rf-ok-soft: #ecfdf5;
-  --rf-bad: #b91c1c;
-  --rf-bad-soft: #fef2f2;
-  --rf-warn: #b45309;
-  --rf-warn-soft: #fffbeb;
+  --rf-subtle: #efede8;
+  --rf-border: #e2dfd7;
+  --rf-ink: #1e1c19;
+  --rf-ink-muted: #6f6a61;
+  --rf-accent: #1e6b58;
+  --rf-accent-hover: #175445;
+  --rf-accent-soft: #e5f2ed;
+  --rf-ok: #1f7a4c;
+  --rf-ok-soft: #e6f4ec;
+  --rf-bad: #b83b2c;
+  --rf-bad-soft: #fcebe9;
+  --rf-warn: #b4690e;
+  --rf-warn-soft: #fdf3e3;
   color-scheme: light;
 }
 
 .dark {
-  --rf-canvas: #0d1117;
-  --rf-surface: #151b23;
-  --rf-subtle: #1c2430;
-  --rf-border: #2a3444;
-  --rf-ink: #e6edf3;
-  --rf-ink-muted: #919eae;
-  --rf-accent: #60a5fa;
-  --rf-accent-hover: #93c5fd;
-  --rf-accent-soft: #172554;
+  --rf-canvas: #111315;
+  --rf-surface: #181b1f;
+  --rf-subtle: #20242a;
+  --rf-border: #2c313a;
+  --rf-ink: #ecebe6;
+  --rf-ink-muted: #989ca3;
+  --rf-accent: #4db89c;
+  --rf-accent-hover: #64cba9;
+  --rf-accent-soft: #152e27;
   --rf-ok: #4ade80;
-  --rf-ok-soft: #052e16;
+  --rf-ok-soft: #0e2c1c;
   --rf-bad: #f87171;
-  --rf-bad-soft: #450a0a;
+  --rf-bad-soft: #3a1717;
   --rf-warn: #fbbf24;
-  --rf-warn-soft: #451a03;
+  --rf-warn-soft: #35250c;
   color-scheme: dark;
 }
 
@@ -81,6 +81,82 @@
       outline-offset: 2px;
     }
   }
+}
+
+/* Smooth in-place disappearance & upward slide-in for checked knowledge cards */
+.rf-collapse-item {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    grid-template-rows 340ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-bottom 340ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: grid-template-rows, opacity, transform;
+}
+
+.rf-collapse-item[data-collapsed='true'] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(-10px) scale(0.985);
+  margin-bottom: 0 !important;
+  pointer-events: none;
+}
+
+.rf-collapse-item > .rf-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Subtle thin scrollbars for workbench panes */
+.rf-pane-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rf-border) transparent;
+}
+
+.rf-pane-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.rf-pane-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.rf-pane-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--rf-border);
+  border-radius: 9999px;
+}
+
+/* Resize handle between three-column workbench frames */
+.rf-resize-handle {
+  position: relative;
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  background: transparent;
+  transition: background-color 150ms ease;
+}
+
+.rf-resize-handle::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 2px;
+  width: 1px;
+  background-color: var(--rf-border);
+  transition: background-color 150ms ease, width 150ms ease, left 150ms ease;
+}
+
+.rf-resize-handle:hover::after,
+.rf-resize-handle[data-dragging='true']::after {
+  left: 1px;
+  width: 3px;
+  background-color: var(--rf-accent);
 }
 
 /* Reading prose & comparison tables */

@@ -7,35 +7,44 @@ import type {
   AttemptLog,
   AuthSession,
   AuthStatus,
+  CardQuestionsResponse,
   CardScheduling,
   CreateSessionRequest,
   CreateSessionResponse,
+  CreateSubjectGroupRequest,
   Edge,
   ExamSet,
+  ExamSetMeta,
   ExportRequest,
   ExportResult,
   FinishSessionResponse,
+  GradedAnswer,
   GraphNode,
   KnowledgeCard,
   Note,
   Proposal,
   ProposalStatus,
   QuestionCard,
+  QuestionGroup,
   QuizAnswer,
   RawSessionState,
   RawTickOutcome,
   Resource,
   ScoreResponse,
   SearchResult,
+  SelectSessionQuestionResponse,
   SessionSnapshot,
   SessionState,
+  SubjectGroup,
   SubmitAnswerResponse,
   TickOutcome,
   UpdateNoteViewSettingsRequest,
   UpdateOperationRequest,
+  UpdateSubjectGroupRequest,
   ValidationErrorItem,
   ValidationReport,
   WeaknessReport,
+  AnswerRecord,
 } from './types'
 import { parseSessionState, parseTickOutcome } from './types'
 
@@ -272,6 +281,30 @@ export const api = {
     apiFetch<KnowledgeCard[]>(`/api/knowledge_cards${buildQuery(params ?? {})}`),
   getKnowledgeCard: (id: string) =>
     apiFetch<KnowledgeCard>(`/api/knowledge_cards/${encodeURIComponent(id)}`),
+  listCardQuestions: (id: string) =>
+    apiFetch<CardQuestionsResponse>(`/api/knowledge_cards/${encodeURIComponent(id)}/questions`),
+
+  // Subject Groups (Nested)
+  listSubjectGroups: () => apiFetch<SubjectGroup[]>('/api/subject_groups'),
+  createSubjectGroup: (body: CreateSubjectGroupRequest) =>
+    apiFetch<SubjectGroup>('/api/subject_groups', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateSubjectGroup: (id: string, body: UpdateSubjectGroupRequest) =>
+    apiFetch<SubjectGroup>(`/api/subject_groups/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteSubjectGroup: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/api/subject_groups/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+
+  listQuestionGroups: (examSetId?: string) =>
+    apiFetch<QuestionGroup[]>(`/api/question_groups${buildQuery({ exam_set_id: examSetId })}`),
+  getQuestionGroup: (id: string) =>
+    apiFetch<QuestionGroup>(`/api/question_groups/${encodeURIComponent(id)}`),
 
   listQuestions: (params?: { subject?: string; status?: string; limit?: number }) =>
     apiFetch<QuestionCard[]>(`/api/questions${buildQuery(params ?? {})}`),
@@ -364,6 +397,11 @@ export const api = {
       state: RawSessionState
       question: QuestionCard | null
       question_count: number
+      questions?: QuestionCard[]
+      question_groups?: Record<string, QuestionGroup>
+      exam_sets?: Record<string, ExamSetMeta>
+      answers?: AnswerRecord[]
+      graded?: GradedAnswer[]
     }>(`/api/study/sessions/${encodeURIComponent(id)}`)
     return {
       session_id: raw.session_id,
@@ -371,6 +409,28 @@ export const api = {
       state: parseSessionState(raw.state),
       question: raw.question,
       question_count: raw.question_count,
+      questions: raw.questions,
+      question_groups: raw.question_groups,
+      exam_sets: raw.exam_sets,
+      answers: raw.answers,
+      graded: raw.graded,
+    }
+  },
+
+  selectSessionQuestion: async (
+    id: string,
+    index: number,
+  ): Promise<SelectSessionQuestionResponse> => {
+    const raw = await apiFetch<{
+      state: RawSessionState
+      question: QuestionCard | null
+    }>(`/api/study/sessions/${encodeURIComponent(id)}/select`, {
+      method: 'POST',
+      body: JSON.stringify({ index }),
+    })
+    return {
+      state: parseSessionState(raw.state),
+      question: raw.question,
     }
   },
 
@@ -409,6 +469,7 @@ export const api = {
   submitAnswer: async (id: string, answer: QuizAnswer): Promise<SubmitAnswerResponse> => {
     const raw = await apiFetch<{
       state: RawSessionState
+      index?: number
       grading: SubmitAnswerResponse['grading']
       revealed_question?: QuestionCard | null
     }>(`/api/study/sessions/${encodeURIComponent(id)}/answers`, {
@@ -417,6 +478,7 @@ export const api = {
     })
     return {
       state: parseSessionState(raw.state),
+      index: raw.index,
       grading: raw.grading,
       revealed_question: raw.revealed_question,
     }

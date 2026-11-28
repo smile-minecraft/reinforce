@@ -1,33 +1,35 @@
 import {
   AlertTriangle,
-  ArrowRight,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   FileSearch,
   Flag,
   Info,
+  ListChecks,
   Pause,
   Play,
   RotateCcw,
   Scale,
-  X,
+  Send,
   XCircle,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useLocation, useNavigate, useParams } from 'react-router'
+import { useLocation, useParams } from 'react-router'
 import { api, ApiError } from '../api/client'
 import {
   useFinishSession,
   usePauseSession,
   useResumeSession,
+  useSelectSessionQuestion,
   useStudySession,
   useSubmitAnswer,
   useTickSession,
 } from '../api/hooks/useStudySession'
 import type {
   AnswerSubmission,
-  Confidence,
   ContentBlock,
   FinishSessionResponse,
   GradingOutcome,
@@ -39,11 +41,21 @@ import type {
 } from '../api/types'
 import { BlockRenderer } from '../blocks/BlockRenderer'
 import { AnchorDrawer } from '../components/AnchorDrawer'
-import { ConfidenceAndTags } from '../study/ConfidenceAndTags'
 import { OptionLinkedCards } from '../study/OptionLinkedCards'
 import { PracticalCanvas } from '../study/PracticalCanvas'
 import { loadSessionConfig, type StoredSessionConfig } from '../study/sessionConfig'
 import { StudySummary, type SessionReviewEntry } from '../study/StudySummary'
+import { RightSidebarSlot } from '../workspace/WorkspaceContext'
+import { useWorkspace } from '../workspace/workspaceContextValue'
+import {
+  buildGroupedQuestionSidebar,
+  buildQuestionUnits,
+  CONFIDENCE_LEVELS_5,
+  findUnitIndexBySessionIndex,
+  mapConfidence5ToCore,
+  type ConfidenceLevel5,
+  type QuestionUnit,
+} from '../workspace/workspaceLogic'
 
 function formatTimer(secs: number): string {
   const clamped = Math.max(0, Math.ceil(secs))
@@ -76,11 +88,40 @@ function extractPracticalMedia(blocks: ContentBlock[]): {
   return null
 }
 
+interface QuestionDraft {
+  selectedKeys: string[]
+  textAnswer: string
+  pinClicks: PinClick[]
+}
+
+const EMPTY_DRAFT: QuestionDraft = {
+  selectedKeys: [],
+  textAnswer: '',
+  pinClicks: [],
+}
+
+interface SubmittedFeedback {
+  question: QuestionCard
+  submission: AnswerSubmission
+  grading: GradingOutcome | null
+  timedOut?: boolean
+}
+
+interface LegacyReviewingState {
+  sessionIndex: number
+  question: QuestionCard
+  nextState: SessionState
+}
+
 export function StudyRunnerPage() {
   const { id: sessionId = '' } = useParams()
+  return <StudyRunnerContent key={sessionId} sessionId={sessionId} />
+}
+
+function StudyRunnerContent({ sessionId }: { sessionId: string }) {
   const location = useLocation()
-  const navigate = useNavigate()
   const { t } = useTranslation()
+  const { openTab, setMobileRightOpen } = useWorkspace()
 
   const storedConfig = useMemo<StoredSessionConfig | null>(() => {
     const navState = location.state as Partial<StoredSessionConfig> | null
@@ -104,38 +145,28 @@ export function StudyRunnerPage() {
   const pauseMutation = usePauseSession(sessionId)
   const resumeMutation = useResumeSession(sessionId)
   const tickMutation = useTickSession(sessionId)
+  const selectMutation = useSelectSessionQuestion(sessionId)
   const submitMutation = useSubmitAnswer(sessionId)
   const finishMutation = useFinishSession(sessionId)
 
-  // Local draft state for the active question
-  const [selectedKeys, setSelectedKeys] = useState<string[]>([])
-  const [textAnswer, setTextAnswer] = useState('')
-  const [pinClicks, setPinClicks] = useState<PinClick[]>([])
-  const [confidence, setConfidence] = useState<Confidence>('certain')
-  const [errorTags, setErrorTags] = useState<string[]>([])
+  // Local overrides for drafts & feedback (merged with server snapshot below)
+  const [localDraftsByIndex, setLocalDraftsByIndex] = useState<Record<number, QuestionDraft>>({})
+  const [localFeedbackByIndex, setLocalFeedbackByIndex] = useState<
+    Record<number, SubmittedFeedback>
+  >({})
+  const [legacyReviewing, setLegacyReviewing] = useState<LegacyReviewingState | null>(null)
+  const [confidence5, setConfidence5] = useState<ConfidenceLevel5>('certain')
+  const [activeUnitIdx, setActiveUnitIdx] = useState(0)
 
-  // Feedback state shown after immediate-grading submission (before advancing to next question)
-  const [feedback, setFeedback] = useState<{
-    question: QuestionCard
-    submission: AnswerSubmission
-    grading: GradingOutcome
-    nextState: SessionState
-    timedOut?: boolean
-  } | null>(null)
-  const [deferredToast, setDeferredToast] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [statusToast, setStatusToast] = useState<string | null>(null)
   const [activeAnchorId, setActiveAnchorId] = useState<string | null>(null)
-
-  // Session review history & final result
-  const [history, setHistory] = useState<SessionReviewEntry[]>([])
   const [finishResult, setFinishResult] = useState<FinishSessionResponse | null>(null)
 
-  // Visibility pause tracking
   const autoPausedByVisibilityRef = useRef(false)
   const [visibilityPausedNotice, setVisibilityPausedNotice] = useState(false)
-  const [pausedForReview, setPausedForReview] = useState(false)
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
 
-  // Display countdown timers (server state remains authoritative via tick)
   const mode = snapshot?.mode ?? storedConfig?.mode ?? 'daily_due'
   const isPractical = mode === 'practical_exam'
   const isFullExam = mode === 'full_exam'
@@ -150,46 +181,184 @@ export function StudyRunnerPage() {
   const tickInFlightRef = useRef(false)
   const lastSyncRef = useRef<number>(0)
 
-  const activeQuestion = feedback ? feedback.question : (snapshot?.question ?? null)
   const sessionState = snapshot?.state
-  const isPaused = sessionState?.status === 'paused' && !pausedForReview
+  const isPaused = sessionState?.status === 'paused'
   const isExpired = sessionState?.status === 'expired'
-  const isSubmittedOnServer = sessionState?.status === 'submitted'
+  const isSubmitted = sessionState?.status === 'submitted'
 
-  const resetDraft = useCallback(() => {
-    setSelectedKeys([])
-    setTextAnswer('')
-    setPinClicks([])
-    setConfidence('certain')
-    setErrorTags([])
-    setActionError(null)
-  }, [])
+  const isFullListMode = Boolean(snapshot?.questions && snapshot.questions.length > 0)
+  const serverIndex =
+    sessionState && (sessionState.status === 'in_progress' || sessionState.status === 'paused')
+      ? sessionState.index
+      : 0
+
+  // Build QuestionUnits from snapshot.questions (or fallback to single snapshot.question for older servers)
+  const allQuestions = useMemo<QuestionCard[]>(() => {
+    if (isFullListMode && snapshot?.questions) {
+      return snapshot.questions
+    }
+    if (legacyReviewing) {
+      return [legacyReviewing.question]
+    }
+    return snapshot?.question ? [snapshot.question] : []
+  }, [isFullListMode, snapshot, legacyReviewing])
+
+  const units = useMemo<QuestionUnit[]>(() => {
+    if (isFullListMode) {
+      return buildQuestionUnits(
+        allQuestions,
+        snapshot?.question_groups ?? {},
+        snapshot?.exam_sets ?? {},
+      )
+    }
+    if (legacyReviewing) {
+      return buildQuestionUnits(
+        [legacyReviewing.question],
+        snapshot?.question_groups ?? {},
+        snapshot?.exam_sets ?? {},
+        legacyReviewing.sessionIndex,
+      )
+    }
+    return buildQuestionUnits(
+      allQuestions,
+      snapshot?.question_groups ?? {},
+      snapshot?.exam_sets ?? {},
+      serverIndex,
+    )
+  }, [
+    isFullListMode,
+    allQuestions,
+    legacyReviewing,
+    snapshot?.question_groups,
+    snapshot?.exam_sets,
+    serverIndex,
+  ])
+
+  const sidebarBuckets = useMemo(
+    () => buildGroupedQuestionSidebar(units, t('workspace.sidebar.ungroupedExam')),
+    [units, t],
+  )
+
+  // Derive merged server + local feedback & drafts (no setState inside useEffect)
+  const feedbackByIndex = useMemo<Record<number, SubmittedFeedback>>(() => {
+    const merged: Record<number, SubmittedFeedback> = {}
+    if (isFullListMode) {
+      const answers = snapshot?.answers ?? []
+      const graded = snapshot?.graded ?? []
+      for (const ans of answers) {
+        const matchedGraded = graded.find((g) => g.record.index === ans.index)
+        const q = allQuestions[ans.index]
+        if (q) {
+          merged[ans.index] = {
+            question: q,
+            submission: ans.submission,
+            grading: matchedGraded?.outcome ?? null,
+            timedOut: ans.timed_out,
+          }
+        }
+      }
+    }
+    return { ...merged, ...localFeedbackByIndex }
+  }, [isFullListMode, snapshot, allQuestions, localFeedbackByIndex])
+
+  const draftsByIndex = useMemo<Record<number, QuestionDraft>>(() => {
+    const merged: Record<number, QuestionDraft> = {}
+    if (isFullListMode) {
+      for (const ans of snapshot?.answers ?? []) {
+        if (ans.submission.kind === 'keys') {
+          merged[ans.index] = { ...EMPTY_DRAFT, selectedKeys: ans.submission.values }
+        } else if (ans.submission.kind === 'text') {
+          merged[ans.index] = { ...EMPTY_DRAFT, textAnswer: ans.submission.value }
+        } else if (ans.submission.kind === 'pin_clicks') {
+          merged[ans.index] = { ...EMPTY_DRAFT, pinClicks: ans.submission.clicks }
+        }
+      }
+    }
+    return { ...merged, ...localDraftsByIndex }
+  }, [isFullListMode, snapshot, localDraftsByIndex])
+
+  // Keep activeUnitIdx clamped
+  const clampedUnitIdx = isFullListMode
+    ? Math.min(activeUnitIdx, Math.max(0, units.length - 1))
+    : 0
+  const currentUnit: QuestionUnit | null = units[clampedUnitIdx] ?? null
+
+  const currentUnitFullyGraded = Boolean(
+    currentUnit &&
+      currentUnit.items.length > 0 &&
+      currentUnit.items.every((item) => Boolean(feedbackByIndex[item.sessionIndex]?.grading)),
+  )
+
+  const answeredCount = Object.keys(feedbackByIndex).length
+  const totalQuestionCount = snapshot?.question_count ?? allQuestions.length
+
+  const navigateToUnit = useCallback(
+    async (targetUnitIndex: number) => {
+      if (!isFullListMode) return
+      if (targetUnitIndex < 0 || targetUnitIndex >= units.length) return
+      const targetUnit = units[targetUnitIndex]
+      setActiveUnitIdx(targetUnitIndex)
+      setActionError(null)
+      setMobileRightOpen(false)
+      scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+      if (perQuestionLimitSecs !== null) {
+        setQuestionRemainingSecs(perQuestionLimitSecs)
+      }
+      const firstSessionIdx = targetUnit.items[0]?.sessionIndex
+      if (
+        typeof firstSessionIdx === 'number' &&
+        (sessionState?.status === 'in_progress' || sessionState?.status === 'paused')
+      ) {
+        try {
+          await selectMutation.mutateAsync(firstSessionIdx)
+        } catch {
+          // Graceful fallback if older server doesn't support /select
+        }
+      }
+    },
+    [
+      isFullListMode,
+      units,
+      perQuestionLimitSecs,
+      sessionState?.status,
+      selectMutation,
+      setMobileRightOpen,
+    ],
+  )
+
+  const handleNextUnit = useCallback(async () => {
+    if (isFullListMode) {
+      await navigateToUnit(clampedUnitIdx + 1)
+      return
+    }
+    if (legacyReviewing) {
+      setLegacyReviewing(null)
+      setActionError(null)
+      scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+      if (perQuestionLimitSecs !== null) {
+        setQuestionRemainingSecs(perQuestionLimitSecs)
+      }
+      await refetchSession()
+    }
+  }, [
+    isFullListMode,
+    navigateToUnit,
+    clampedUnitIdx,
+    legacyReviewing,
+    perQuestionLimitSecs,
+    refetchSession,
+  ])
 
   const handleFinish = useCallback(async () => {
     setActionError(null)
     try {
       const result = await finishMutation.mutateAsync()
-      const revealedQuestions = result.revealed_questions ?? []
-      setHistory((prev) =>
-        prev.map((entry) => {
-          const matched = result.graded?.find(
-            (graded) => graded.record.index === entry.index && graded.record.question_id === entry.question.id,
-          )
-          return {
-            ...entry,
-            question: revealedQuestions[entry.index] ?? entry.question,
-            grading: matched?.outcome ?? entry.grading,
-          }
-        }),
-      )
       setFinishResult(result)
-      setFeedback(null)
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : t('common.errorGeneric'))
     }
   }, [finishMutation, t])
 
-  // Sync with server via /tick
   const runServerTick = useCallback(async () => {
     if (!sessionId || tickInFlightRef.current || finishResult) return
     tickInFlightRef.current = true
@@ -198,54 +367,73 @@ export function StudyRunnerPage() {
       lastSyncRef.current = Date.now()
 
       if (outcome.type === 'question_timed_out') {
-        const timedOutQuestion = snapshot?.question
+        const revealed =
+          outcome.revealed_question ??
+          (isFullListMode ? allQuestions[outcome.index] : snapshot?.question) ??
+          null
+        const alreadyGraded = Boolean(feedbackByIndex[outcome.index]?.grading)
+        if (revealed && !alreadyGraded) {
+          setLocalFeedbackByIndex((prev) => {
+            if (prev[outcome.index]?.grading) return prev
+            return {
+              ...prev,
+              [outcome.index]: {
+                question: revealed,
+                submission: { kind: 'timed_out' },
+                grading: outcome.graded.outcome,
+                timedOut: true,
+              },
+            }
+          })
+        }
         const refreshed = await refetchSession()
-        if (timedOutQuestion) {
-          const revealedQuestion = outcome.revealed_question ?? timedOutQuestion
-          const entry: SessionReviewEntry = {
-            index: outcome.index,
-            question: revealedQuestion,
-            submission: { kind: 'timed_out' },
-            confidence: 'guessed',
-            errorTags: ['time_pressure'],
-            grading: outcome.graded.outcome,
+        const st = refreshed.data?.state
+        if (isFullListMode) {
+          if (!alreadyGraded && st && (st.status === 'in_progress' || st.status === 'paused')) {
+            setActiveUnitIdx(findUnitIndexBySessionIndex(units, st.index))
+            if (perQuestionLimitSecs !== null) {
+              setQuestionRemainingSecs(perQuestionLimitSecs)
+            }
           }
-          setHistory((prev) => [...prev, entry])
-          const nextState = refreshed.data?.state ?? { status: 'submitted' as const }
-          if (isPractical && nextState.status === 'in_progress') {
-            setPausedForReview(true)
-            await api.pauseSession(sessionId).catch(() => {})
-          }
-          setFeedback({
-            question: revealedQuestion,
-            submission: { kind: 'timed_out' },
-            grading: outcome.graded.outcome,
-            nextState,
-            timedOut: true,
+        } else if (revealed && !alreadyGraded) {
+          setLegacyReviewing({
+            sessionIndex: outcome.index,
+            question: revealed,
+            nextState: st ?? { status: 'submitted' },
           })
         }
       } else if (outcome.type === 'session_expired') {
         await refetchSession()
       }
     } catch {
-      // Transient tick errors will retry on next interval.
+      // Transient tick errors retry next cycle
     } finally {
       tickInFlightRef.current = false
     }
-  }, [sessionId, finishResult, tickMutation, snapshot, refetchSession, isPractical])
+  }, [
+    sessionId,
+    finishResult,
+    tickMutation,
+    isFullListMode,
+    allQuestions,
+    snapshot,
+    feedbackByIndex,
+    refetchSession,
+    units,
+    perQuestionLimitSecs,
+  ])
 
-  // Countdown loop for timed modes
+  const shouldRunTimer =
+    isTimedMode &&
+    sessionState?.status === 'in_progress' &&
+    !finishResult &&
+    !(isPractical && (currentUnitFullyGraded || legacyReviewing !== null))
+
+  // Countdown timer loop (stops automatically in practical_exam once current unit is graded)
   useEffect(() => {
-    if (
-      !isTimedMode ||
-      !sessionState ||
-      sessionState.status !== 'in_progress' ||
-      Boolean(feedback) ||
-      Boolean(finishResult)
-    ) {
+    if (!shouldRunTimer) {
       return
     }
-
     let lastFrame = performance.now()
     lastSyncRef.current = Date.now()
     const timer = window.setInterval(() => {
@@ -256,215 +444,187 @@ export function StudyRunnerPage() {
       if (perQuestionLimitSecs !== null) {
         setQuestionRemainingSecs((prev) => {
           const next = Math.max(0, prev - dt)
-          if (next <= 0 && prev > 0) {
-            void runServerTick()
-          }
+          if (next <= 0 && prev > 0) void runServerTick()
           return next
         })
       }
-
       if (totalExamLimitSecs !== null) {
         setTotalRemainingSecs((prev) => {
           const next = Math.max(0, prev - dt)
-          if (next <= 0 && prev > 0) {
-            void runServerTick()
-          }
+          if (next <= 0 && prev > 0) void runServerTick()
           return next
         })
       }
-
       if (Date.now() - lastSyncRef.current >= 5000) {
         void runServerTick()
       }
     }, 250)
-
     return () => window.clearInterval(timer)
-  }, [
-    isTimedMode,
-    sessionState,
-    feedback,
-    finishResult,
-    perQuestionLimitSecs,
-    totalExamLimitSecs,
-    runServerTick,
-  ])
+  }, [shouldRunTimer, perQuestionLimitSecs, totalExamLimitSecs, runServerTick])
 
-  // visibilitychange auto-pause when hidden, auto-resume when visible again
+  // Visibility auto-pause
   useEffect(() => {
     if (!isTimedMode || !sessionId || finishResult) return
-
     function onVisibilityChange() {
       if (document.hidden) {
-        if (sessionState?.status === 'in_progress' && !feedback) {
+        if (sessionState?.status === 'in_progress') {
           autoPausedByVisibilityRef.current = true
           setVisibilityPausedNotice(true)
-          void api
-            .pauseSession(sessionId)
-            .then(() => refetchSession())
-            .catch(() => {})
+          void api.pauseSession(sessionId).then(() => refetchSession()).catch(() => {})
         }
       } else if (autoPausedByVisibilityRef.current) {
         autoPausedByVisibilityRef.current = false
-        void api
-          .resumeSession(sessionId)
-          .then(() => refetchSession())
-          .catch(() => {})
+        void api.resumeSession(sessionId).then(() => refetchSession()).catch(() => {})
       }
     }
-
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [isTimedMode, sessionId, sessionState?.status, feedback, finishResult, refetchSession])
+  }, [isTimedMode, sessionId, sessionState?.status, finishResult, refetchSession])
 
-  // Target pin numbers for pin_locate
-  const practicalMedia = useMemo(
-    () => (activeQuestion ? extractPracticalMedia(activeQuestion.stem_blocks) : null),
-    [activeQuestion],
-  )
-
-  const requiredPinNos = useMemo(() => {
-    if (!activeQuestion || activeQuestion.question_type !== 'pin_locate') return []
-    const pinNos = practicalMedia?.pins.map((p) => p.no) ?? []
-    return pinNos.length > 0 ? pinNos : [1]
-  }, [activeQuestion, practicalMedia])
-
-  const nextUnplacedPinNo = useMemo(() => {
-    for (const no of requiredPinNos) {
-      if (!pinClicks.some((c) => c.no === no)) return no
-    }
-    return requiredPinNos[requiredPinNos.length - 1] ?? null
-  }, [requiredPinNos, pinClicks])
-
-  function handlePlacePin(point: NormalizedPoint) {
-    if (feedback || nextUnplacedPinNo === null) return
-    setPinClicks((prev) => {
-      const targetNo =
-        requiredPinNos.find((no) => !prev.some((c) => c.no === no)) ??
-        requiredPinNos[requiredPinNos.length - 1]
-      const filtered = prev.filter((c) => c.no !== targetNo)
-      return [...filtered, { no: targetNo, point }]
-    })
+  function updateDraft(sessionIndex: number, updater: (prev: QuestionDraft) => QuestionDraft) {
+    setLocalDraftsByIndex((prev) => ({
+      ...prev,
+      [sessionIndex]: updater(prev[sessionIndex] ?? draftsByIndex[sessionIndex] ?? EMPTY_DRAFT),
+    }))
   }
 
-  function buildSubmission(): AnswerSubmission | null {
-    if (!activeQuestion) return null
-    if (activeQuestion.grading_mode === 'voided') {
-      return activeQuestion.options.length > 0
-        ? { kind: 'keys', values: selectedKeys.length > 0 ? selectedKeys : [activeQuestion.options[0].key] }
-        : { kind: 'text', value: textAnswer.trim() || '-' }
+  function buildSubmissionFor(question: QuestionCard, draft: QuestionDraft): AnswerSubmission | null {
+    if (question.grading_mode === 'voided') {
+      return question.options.length > 0
+        ? {
+            kind: 'keys',
+            values: draft.selectedKeys.length > 0 ? draft.selectedKeys : [question.options[0].key],
+          }
+        : { kind: 'text', value: draft.textAnswer.trim() || '-' }
     }
-
-    switch (activeQuestion.question_type) {
+    switch (question.question_type) {
       case 'single_choice':
       case 'multiple_choice':
-        return selectedKeys.length > 0 ? { kind: 'keys', values: selectedKeys } : null
+        return draft.selectedKeys.length > 0 ? { kind: 'keys', values: draft.selectedKeys } : null
       case 'pin_locate':
-        return pinClicks.length > 0 ? { kind: 'pin_clicks', clicks: pinClicks } : null
+        return draft.pinClicks.length > 0 ? { kind: 'pin_clicks', clicks: draft.pinClicks } : null
       case 'short_answer':
       case 'vocab':
       case 'image_qa':
       case 'image_occlusion':
       case 'pin_identify':
-        return textAnswer.trim().length > 0 ? { kind: 'text', value: textAnswer.trim() } : null
+        return draft.textAnswer.trim().length > 0
+          ? { kind: 'text', value: draft.textAnswer.trim() }
+          : null
     }
   }
 
-  async function handleSubmitAnswer() {
-    if (!snapshot?.question || !sessionState || sessionState.status !== 'in_progress') return
-    const submission = buildSubmission()
-    if (!submission) return
+  // Can submit if at least one question in currentUnit has a valid draft
+  const submittableItems = useMemo(() => {
+    if (!currentUnit || sessionState?.status !== 'in_progress' || legacyReviewing !== null) {
+      return []
+    }
+    return currentUnit.items.filter(({ sessionIndex, question }) => {
+      const sub = buildSubmissionFor(question, draftsByIndex[sessionIndex] ?? EMPTY_DRAFT)
+      if (!sub) return false
+      if (!isFullExam && feedbackByIndex[sessionIndex]?.grading) return false
+      return true
+    })
+  }, [currentUnit, draftsByIndex, feedbackByIndex, isFullExam, sessionState?.status, legacyReviewing])
 
+  async function handleSubmitCurrentUnit() {
+    if (!currentUnit || submittableItems.length === 0) return
     setActionError(null)
-    const currentQ = snapshot.question
-    const currentIndex = sessionState.index
+    const { confidence, impliedErrorTag } = mapConfidence5ToCore(confidence5)
+    const errorTags = impliedErrorTag ? [impliedErrorTag] : undefined
 
     try {
-      const res = await submitMutation.mutateAsync({
-        submission,
-        confidence,
-        error_tags: errorTags.length > 0 ? errorTags : undefined,
-      })
+      let lastRes: Awaited<ReturnType<typeof submitMutation.mutateAsync>> | null = null
+      let lastSubmitted: { sessionIndex: number; question: QuestionCard } | null = null
 
-      const entry: SessionReviewEntry = {
-        index: currentIndex,
-        question: currentQ,
-        submission,
-        confidence,
-        errorTags: [...errorTags],
-        grading: res.grading,
-      }
-      setHistory((prev) => [...prev, entry])
+      for (const { sessionIndex, question } of submittableItems) {
+        const submission = buildSubmissionFor(question, draftsByIndex[sessionIndex] ?? EMPTY_DRAFT)
+        if (!submission) continue
 
-      if (res.grading === null) {
-        // Deferred grading (full_exam): no right/wrong feedback until finish
-        resetDraft()
-        setDeferredToast(true)
-        window.setTimeout(() => setDeferredToast(false), 1600)
-        await refetchSession()
-      } else {
-        // Immediate grading: pause practical timer while user reviews feedback
-        if (isPractical && res.state.status === 'in_progress') {
-          setPausedForReview(true)
-          await api.pauseSession(sessionId).catch(() => {})
-        }
-        setFeedback({
-          question: res.revealed_question ?? currentQ,
+        const res = await submitMutation.mutateAsync({
+          index: isFullListMode ? sessionIndex : undefined,
           submission,
-          grading: res.grading,
-          nextState: res.state,
+          confidence,
+          error_tags: errorTags,
         })
+        lastRes = res
+        lastSubmitted = { sessionIndex, question }
+
+        setLocalFeedbackByIndex((prev) => ({
+          ...prev,
+          [sessionIndex]: {
+            question: res.revealed_question ?? question,
+            submission,
+            grading: res.grading,
+          },
+        }))
+      }
+
+      if (isFullListMode) {
+        if (isFullExam) {
+          setStatusToast(t('study.runner.recorded'))
+          window.setTimeout(() => setStatusToast(null), 1600)
+        }
+        await refetchSession()
+      } else if (lastRes && lastSubmitted) {
+        if (lastRes.grading !== null) {
+          // Legacy single-question server already advanced state.index; keep feedback visible until user clicks Next
+          setLegacyReviewing({
+            sessionIndex: lastSubmitted.sessionIndex,
+            question: lastRes.revealed_question ?? lastSubmitted.question,
+            nextState: lastRes.state,
+          })
+        } else {
+          // Legacy full_exam deferred grading: advance to next question cleanly
+          setStatusToast(t('study.runner.recorded'))
+          window.setTimeout(() => setStatusToast(null), 1600)
+          await refetchSession()
+        }
       }
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : t('common.errorGeneric'))
     }
   }
 
-  async function handleNextAfterFeedback() {
-    if (!feedback) return
-    const nextState = feedback.nextState
-    setFeedback(null)
-    resetDraft()
-    if (perQuestionLimitSecs !== null) {
-      setQuestionRemainingSecs(perQuestionLimitSecs)
+  // Summary entries built from finishResult + local feedback
+  const summaryEntries = useMemo<SessionReviewEntry[]>(() => {
+    if (!finishResult) return []
+    const revealed = finishResult.revealed_questions ?? []
+    const gradedList = finishResult.graded ?? []
+    if (gradedList.length > 0) {
+      const entries: SessionReviewEntry[] = []
+      for (const g of gradedList) {
+        const question =
+          revealed[g.record.index] ??
+          feedbackByIndex[g.record.index]?.question ??
+          (isFullListMode ? allQuestions[g.record.index] : undefined)
+        if (!question) continue
+        entries.push({
+          index: g.record.index,
+          question,
+          submission: g.record.submission,
+          confidence: g.record.confidence,
+          errorTags: [],
+          grading: g.outcome,
+        })
+      }
+      return entries
     }
+    return Object.entries(feedbackByIndex)
+      .map(([idxStr, fb]) => ({
+        index: Number(idxStr),
+        question: fb.question,
+        submission: fb.submission,
+        confidence: mapConfidence5ToCore(confidence5).confidence,
+        errorTags: [],
+        grading: fb.grading,
+      }))
+      .sort((a, b) => a.index - b.index)
+  }, [finishResult, isFullListMode, allQuestions, feedbackByIndex, confidence5])
 
-    if (nextState.status === 'submitted') {
-      setPausedForReview(false)
-      await handleFinish()
-      return
-    }
-
-    if (pausedForReview) {
-      setPausedForReview(false)
-      await api.resumeSession(sessionId).catch(() => {})
-    }
-    await refetchSession()
-  }
-
-  function toggleErrorTag(tag: string) {
-    setErrorTags((prev) =>
-      prev.includes(tag) ? prev.filter((item) => item !== tag) : [...prev, tag],
-    )
-    if (feedback) {
-      setHistory((prev) =>
-        prev.map((item, idx) =>
-          idx === prev.length - 1
-            ? {
-                ...item,
-                errorTags: item.errorTags.includes(tag)
-                  ? item.errorTags.filter((itemTag) => itemTag !== tag)
-                  : [...item.errorTags, tag],
-              }
-            : item,
-        ),
-      )
-    }
-  }
-
-  // Loading & Error screens
   if (isLoading) {
     return (
-      <div className="flex min-h-dvh items-center justify-center text-sm text-ink-muted">
+      <div className="flex flex-1 items-center justify-center text-sm text-ink-muted">
         {t('common.loading')}
       </div>
     )
@@ -472,14 +632,16 @@ export function StudyRunnerPage() {
 
   if (sessionError || !snapshot) {
     return (
-      <div className="mx-auto max-w-xl px-4 py-12">
+      <div className="p-6">
         <div className="rounded-xl bg-bad-soft p-5 text-sm text-bad">
           {sessionError instanceof Error ? sessionError.message : t('common.errorGeneric')}
         </div>
         <button
           type="button"
-          onClick={() => void navigate('/study')}
-          className="mt-4 inline-flex min-h-11 items-center rounded-lg border border-border bg-surface px-4 text-sm font-medium text-ink"
+          onClick={() =>
+            openTab({ id: 'study', kind: 'study', path: '/study', title: t('workspace.tabs.study') })
+          }
+          className="mt-4 inline-flex h-10 items-center rounded-xl border border-border bg-surface px-4 text-sm font-medium text-ink"
         >
           {t('study.runner.summary.backToStudy')}
         </button>
@@ -487,567 +649,743 @@ export function StudyRunnerPage() {
     )
   }
 
-  // Summary screen
   if (finishResult) {
     return (
-      <>
+      <div className="rf-pane-scroll flex-1 overflow-y-auto">
         <StudySummary
           score={finishResult.score}
           attemptsWritten={finishResult.attempts_written}
-          entries={history}
+          entries={summaryEntries}
           onOpenAnchor={setActiveAnchorId}
         />
         <AnchorDrawer anchorId={activeAnchorId} onClose={() => setActiveAnchorId(null)} />
-      </>
+      </div>
     )
   }
 
-  const currentIdx =
-    sessionState?.status === 'in_progress' ||
-    sessionState?.status === 'paused' ||
-    sessionState?.status === 'expired'
-      ? sessionState.index
-      : snapshot.question_count
-  const displayIndex = feedback ? history[history.length - 1]?.index ?? currentIdx : currentIdx
-  const progressPct =
-    snapshot.question_count > 0
-      ? Math.min(100, ((displayIndex + (feedback ? 1 : 0)) / snapshot.question_count) * 100)
-      : 100
+  // Breadcrumb & Tags matching Sketch 1: "XX科目 / XX年 / 第XX題" + "#標籤"
+  const breadcrumbParts: string[] = []
+  if (currentUnit) {
+    breadcrumbParts.push(currentUnit.subject)
+    if (currentUnit.examYear) breadcrumbParts.push(`${currentUnit.examYear}`)
+    else if (currentUnit.examTitle) breadcrumbParts.push(currentUnit.examTitle)
 
-  const showPracticalCanvas = Boolean(
-    activeQuestion &&
-      practicalMedia &&
-      (activeQuestion.question_type === 'pin_locate' ||
-        activeQuestion.question_type === 'pin_identify' ||
-        activeQuestion.question_type === 'image_qa'),
-  )
+    const nums = currentUnit.items.map((item) => item.question.question_no ?? item.sessionIndex + 1)
+    if (nums.length > 1) {
+      breadcrumbParts.push(
+        t('workspace.sidebar.questionRange', { start: nums[0], end: nums[nums.length - 1] }),
+      )
+    } else if (nums.length === 1) {
+      breadcrumbParts.push(t('workspace.sidebar.questionNumber', { no: nums[0] }))
+    }
+  }
 
-  const nonCanvasBlocks = activeQuestion
-    ? activeQuestion.stem_blocks.filter((b) => {
-        if (!showPracticalCanvas) return true
-        return b.type !== 'interactive_pins' && b.type !== 'image_occlusion'
-      })
+  const unitTags = currentUnit
+    ? Array.from(new Set(currentUnit.items.flatMap((i) => i.question.topics)))
     : []
 
-  const canSubmit = !feedback && buildSubmission() !== null && sessionState?.status === 'in_progress'
   const timerWarning =
-    (perQuestionLimitSecs !== null && questionRemainingSecs <= 5) ||
+    (perQuestionLimitSecs !== null && !currentUnitFullyGraded && questionRemainingSecs <= 5) ||
     (totalExamLimitSecs !== null && totalRemainingSecs <= 60)
 
+  const hasPrevUnit = isFullListMode && clampedUnitIdx > 0
+  const hasNextUnit = isFullListMode
+    ? clampedUnitIdx < units.length - 1
+    : Boolean(
+        legacyReviewing &&
+          legacyReviewing.nextState.status !== 'submitted' &&
+          legacyReviewing.nextState.status !== 'expired',
+      )
+
   return (
-    <div className="flex min-h-dvh flex-col bg-canvas">
-      {/* Top Runner Header */}
-      <header className="sticky top-0 z-30 border-b border-border bg-surface/95 backdrop-blur">
-        <div className="mx-auto flex max-w-4xl items-center justify-between gap-2 px-3 py-2 sm:px-6">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void navigate('/study')}
-              aria-label={t('study.runner.exit')}
-              className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-ink-muted hover:bg-subtle hover:text-ink"
-            >
-              <X className="h-5 w-5" />
-            </button>
-            <div>
-              <div className="text-xs font-medium text-ink-muted">
-                {t(`study.modes.${mode}.name`)}
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-surface">
+      {/* Right Sidebar: Grouped Question List (Sketch 1: 分組題目列表) */}
+      <RightSidebarSlot>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="shrink-0 border-b border-border px-3.5 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-ink">
+                <ListChecks className="h-3.5 w-3.5 text-accent" />
+                <span>{t('workspace.sidebar.questionList')}</span>
               </div>
-              <div className="text-sm font-semibold text-ink">
-                {t('study.runner.progress', {
-                  current: Math.min(displayIndex + 1, Math.max(1, snapshot.question_count)),
-                  total: snapshot.question_count,
+              <span className="rounded-full bg-subtle px-2 py-0.5 font-mono text-[10px] font-medium text-ink-muted">
+                {t('workspace.sidebar.answeredCount', {
+                  answered: answeredCount,
+                  total: totalQuestionCount,
                 })}
-              </div>
+              </span>
             </div>
           </div>
 
+          <div className="rf-pane-scroll flex-1 space-y-3 overflow-y-auto p-3">
+            {sidebarBuckets.map((subjectBucket) => (
+              <div key={subjectBucket.subject} className="space-y-1.5">
+                <div className="px-1 text-xs font-semibold text-ink">{subjectBucket.subject}</div>
+
+                {subjectBucket.exams.map((examBucket) => (
+                  <div key={examBucket.key} className="space-y-1 pl-2">
+                    <div className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-ink-muted">
+                      <span className="h-1.5 w-1.5 rounded-full border border-ink-muted/60" />
+                      <span className="truncate">{examBucket.label}</span>
+                    </div>
+
+                    <ul className="space-y-0.5 pl-3">
+                      {examBucket.units.map((unit) => {
+                        const isActive = unit.unitIndex === clampedUnitIdx
+                        const nums = unit.items.map(
+                          (item) => item.question.question_no ?? item.sessionIndex + 1,
+                        )
+                        const label =
+                          nums.length > 1
+                            ? t('workspace.sidebar.questionRange', {
+                                start: nums[0],
+                                end: nums[nums.length - 1],
+                              })
+                            : t('workspace.sidebar.questionNumber', { no: nums[0] ?? 1 })
+
+                        const unitFeedbacks = unit.items
+                          .map((item) => feedbackByIndex[item.sessionIndex])
+                          .filter(Boolean)
+                        const allAnswered = unitFeedbacks.length === unit.items.length
+                        const anyWrong = unitFeedbacks.some(
+                          (fb) => fb.grading && !fb.grading.voided && !fb.grading.is_correct,
+                        )
+                        const allCorrect =
+                          allAnswered &&
+                          unitFeedbacks.every((fb) => fb.grading && (fb.grading.is_correct || fb.grading.voided))
+
+                        let dotClass = 'border border-ink-muted/60 bg-transparent'
+                        if (allCorrect) dotClass = 'bg-ok'
+                        else if (anyWrong) dotClass = 'bg-bad'
+                        else if (unitFeedbacks.length > 0) dotClass = 'bg-accent'
+
+                        return (
+                          <li key={unit.unitId}>
+                            <button
+                              type="button"
+                              onClick={() => void navigateToUnit(unit.unitIndex)}
+                              className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+                                isActive
+                                  ? 'bg-accent-soft font-semibold text-accent'
+                                  : 'text-ink-muted hover:bg-subtle hover:text-ink'
+                              }`}
+                            >
+                              <span className="flex min-w-0 items-center gap-2">
+                                <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
+                                <span className="truncate">{label}</span>
+                              </span>
+
+                              {unit.items.length > 1 && (
+                                <span className="shrink-0 rounded-full bg-surface px-1.5 py-0.5 text-[10px] font-medium text-ink-muted">
+                                  {t('workspace.sidebar.questionGroupBadge', {
+                                    count: unit.items.length,
+                                  })}
+                                </span>
+                              )}
+                            </button>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </RightSidebarSlot>
+
+      {/* Center Frame Top Meta Header: Breadcrumb + #Tags + Controls (Sketch 1) */}
+      <header className="shrink-0 border-b border-border bg-surface px-5 py-3 sm:px-8">
+        <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-2.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold tracking-tight text-ink">
+              {breadcrumbParts.join(' / ')}
+            </span>
+
+            {unitTags.map((tag) => (
+              <span
+                key={tag}
+                className="inline-flex items-center rounded-full border border-border bg-canvas px-2.5 py-0.5 text-xs font-medium text-ink-muted"
+              >
+                # {tag}
+              </span>
+            ))}
+          </div>
+
           <div className="flex items-center gap-2">
-            {/* Timer Pill */}
             {perQuestionLimitSecs !== null && (
               <div
-                className={`inline-flex min-h-10 items-center gap-1.5 rounded-lg border px-3 font-mono text-sm font-bold tabular-nums ${
+                className={`inline-flex h-8 items-center gap-1.5 rounded-full border px-3 font-mono text-xs font-bold tabular-nums ${
                   timerWarning
                     ? 'border-bad bg-bad-soft text-bad'
-                    : 'border-border bg-subtle text-ink'
+                    : 'border-border bg-canvas text-ink'
                 }`}
               >
-                <Clock className="h-4 w-4" />
+                <Clock className="h-3.5 w-3.5" />
                 <span>{formatTimer(questionRemainingSecs)}</span>
               </div>
             )}
 
             {totalExamLimitSecs !== null && (
               <div
-                className={`inline-flex min-h-10 items-center gap-1.5 rounded-lg border px-3 font-mono text-sm font-bold tabular-nums ${
+                className={`inline-flex h-8 items-center gap-1.5 rounded-full border px-3 font-mono text-xs font-bold tabular-nums ${
                   timerWarning
                     ? 'border-bad bg-bad-soft text-bad'
-                    : 'border-border bg-subtle text-ink'
+                    : 'border-border bg-canvas text-ink'
                 }`}
               >
-                <Clock className="h-4 w-4" />
+                <Clock className="h-3.5 w-3.5" />
                 <span>{formatTimer(totalRemainingSecs)}</span>
               </div>
             )}
 
-            {/* Pause / Resume */}
-            {!feedback && (sessionState?.status === 'in_progress' || isPaused) && (
+            {(sessionState?.status === 'in_progress' || isPaused) && (
               <button
                 type="button"
-                onClick={() =>
-                  isPaused ? resumeMutation.mutate() : pauseMutation.mutate()
-                }
+                onClick={() => (isPaused ? resumeMutation.mutate() : pauseMutation.mutate())}
                 disabled={pauseMutation.isPending || resumeMutation.isPending}
-                className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-canvas px-3 text-xs font-medium text-ink hover:bg-subtle"
+                className="inline-flex h-8 items-center gap-1 rounded-full border border-border bg-canvas px-3 text-xs font-medium text-ink hover:bg-subtle"
               >
-                {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
-                <span className="hidden sm:inline">
-                  {isPaused ? t('study.runner.resume') : t('study.runner.pause')}
-                </span>
+                {isPaused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                <span>{isPaused ? t('study.runner.resume') : t('study.runner.pause')}</span>
               </button>
             )}
 
-            {/* Finish Button */}
             <button
               type="button"
               onClick={() => void handleFinish()}
               disabled={finishMutation.isPending}
-              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-canvas px-3 text-xs font-medium text-ink hover:bg-subtle"
+              className="inline-flex h-8 items-center gap-1.5 rounded-full border border-accent/40 bg-accent-soft px-3 text-xs font-semibold text-accent hover:bg-accent hover:text-white disabled:opacity-50"
             >
-              <Flag className="h-3.5 w-3.5 text-accent" />
+              <Flag className="h-3.5 w-3.5" />
               <span>{t('study.runner.finish')}</span>
             </button>
           </div>
-        </div>
-
-        {/* Thin progress line */}
-        <div className="h-1 w-full bg-subtle">
-          <div
-            className="h-full bg-accent transition-all duration-200"
-            style={{ width: `${progressPct}%` }}
-          />
         </div>
       </header>
 
-      {/* Main Runner Body */}
-      <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-4 px-4 py-5 sm:px-6">
-        {isFullExam && !isSubmittedOnServer && (
-          <div className="rounded-lg border border-accent/30 bg-accent-soft px-3.5 py-2 text-xs text-accent">
-            {t('study.runner.deferredBanner')}
-          </div>
-        )}
+      {/* Scrollable Middle Question Stage (Whole QuestionGroup in One View!) */}
+      <div ref={scrollContainerRef} className="rf-pane-scroll flex-1 overflow-y-auto px-5 py-6 sm:px-8">
+        <div className="mx-auto max-w-3xl space-y-6">
+          {isFullExam && (
+            <div className="rounded-xl border border-accent/30 bg-accent-soft/70 px-3.5 py-2 text-xs text-accent">
+              {t('study.runner.deferredBanner')}
+            </div>
+          )}
 
-        {visibilityPausedNotice && (
-          <div className="flex items-center justify-between gap-2 rounded-lg border border-warn/40 bg-warn-soft px-3.5 py-2.5 text-xs text-warn">
-            <span>{t('study.runner.pausedVisibility')}</span>
-            <button
-              type="button"
-              onClick={() => setVisibilityPausedNotice(false)}
-              className="font-semibold underline"
-            >
-              {t('common.close')}
-            </button>
-          </div>
-        )}
+          {visibilityPausedNotice && (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-warn/40 bg-warn-soft px-3.5 py-2 text-xs text-warn">
+              <span>{t('study.runner.pausedVisibility')}</span>
+              <button
+                type="button"
+                onClick={() => setVisibilityPausedNotice(false)}
+                className="font-semibold underline"
+              >
+                {t('common.close')}
+              </button>
+            </div>
+          )}
 
-        {deferredToast && (
-          <div className="rounded-lg bg-ok-soft px-3.5 py-2 text-xs font-medium text-ok">
-            {t('study.runner.recorded')}
-          </div>
-        )}
+          {statusToast && (
+            <div className="rounded-xl bg-ok-soft px-3.5 py-2 text-xs font-medium text-ok">
+              {statusToast}
+            </div>
+          )}
 
-        {actionError && (
-          <div className="rounded-lg bg-bad-soft px-4 py-3 text-sm text-bad">{actionError}</div>
-        )}
+          {actionError && (
+            <div className="rounded-xl bg-bad-soft px-4 py-3 text-sm text-bad">{actionError}</div>
+          )}
 
-        {/* Manual Pause Overlay */}
-        {isPaused && (
-          <section className="rounded-2xl border border-border bg-surface p-8 text-center">
-            <Pause className="mx-auto h-10 w-10 text-accent" />
-            <h2 className="mt-3 text-lg font-semibold text-ink">{t('study.runner.pausedTitle')}</h2>
-            <p className="mt-1 text-sm text-ink-muted">{t('study.runner.pausedManual')}</p>
-            <button
-              type="button"
-              onClick={() => resumeMutation.mutate()}
-              className="mt-5 inline-flex min-h-11 items-center gap-2 rounded-xl bg-accent px-6 text-sm font-semibold text-white hover:bg-accent-hover"
-            >
-              <Play className="h-4 w-4 fill-current" />
-              <span>{t('study.runner.resume')}</span>
-            </button>
-          </section>
-        )}
-
-        {/* Expired State */}
-        {isExpired && (
-          <section className="rounded-2xl border border-warn/40 bg-surface p-8 text-center">
-            <AlertTriangle className="mx-auto h-10 w-10 text-warn" />
-            <h2 className="mt-3 text-lg font-semibold text-ink">{t('study.runner.expiredTitle')}</h2>
-            <p className="mt-1 text-sm text-ink-muted">{t('study.runner.expiredDesc')}</p>
-            <button
-              type="button"
-              onClick={() => void handleFinish()}
-              disabled={finishMutation.isPending}
-              className="mt-5 inline-flex min-h-11 items-center gap-2 rounded-xl bg-accent px-6 text-sm font-semibold text-white hover:bg-accent-hover"
-            >
-              <Flag className="h-4 w-4" />
-              <span>{t('study.runner.finish')}</span>
-            </button>
-          </section>
-        )}
-
-        {/* All questions answered on server (deferred exam ready to finish) */}
-        {isSubmittedOnServer && !feedback && (
-          <section className="rounded-2xl border border-border bg-surface p-8 text-center">
-            <CheckCircle2 className="mx-auto h-10 w-10 text-ok" />
-            <h2 className="mt-3 text-lg font-semibold text-ink">
-              {t('study.runner.summary.title')}
-            </h2>
-            <button
-              type="button"
-              onClick={() => void handleFinish()}
-              disabled={finishMutation.isPending}
-              className="mt-5 inline-flex min-h-12 items-center gap-2 rounded-xl bg-accent px-6 text-sm font-semibold text-white hover:bg-accent-hover"
-            >
-              <Flag className="h-4 w-4" />
-              <span>{t('study.runner.finish')}</span>
-            </button>
-          </section>
-        )}
-
-        {/* Active Question Stage */}
-        {!isPaused && !isExpired && activeQuestion && (!isSubmittedOnServer || feedback) && (
-          <div className="space-y-4">
-            {/* Practical / Specimen Zoom Canvas (55svh portrait, 65svh landscape) */}
-            {showPracticalCanvas && practicalMedia && (
-              <PracticalCanvas
-                resourceId={practicalMedia.resourceId}
-                overlayResourceId={practicalMedia.overlayResourceId}
-                pins={practicalMedia.pins}
-                mode={
-                  activeQuestion.question_type === 'pin_locate'
-                    ? 'locate'
-                    : activeQuestion.question_type === 'pin_identify'
-                      ? 'identify'
-                      : 'view'
-                }
-                placedClicks={pinClicks}
-                activePinNo={nextUnplacedPinNo}
-                revealPins={Boolean(feedback)}
-                onPlacePin={handlePlacePin}
-              />
-            )}
-
-            {/* Question Stem Card */}
-            <section className="rounded-xl border border-border bg-surface p-5">
-              <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-                <span className="rounded bg-subtle px-2 py-0.5 font-medium text-ink-muted">
-                  {t(`study.runner.questionTypes.${activeQuestion.question_type}`)}
-                </span>
-                <span className="rounded bg-subtle px-2 py-0.5 text-ink-muted">
-                  {activeQuestion.subject}
-                </span>
-                {activeQuestion.grading_mode === 'any_accepted' && (
-                  <span className="inline-flex items-center gap-1 rounded bg-warn-soft px-2 py-0.5 font-medium text-warn">
-                    <Scale className="h-3 w-3" />
-                    {t('study.runner.grading.anyAccepted')}
-                  </span>
-                )}
-                {activeQuestion.grading_mode === 'voided' && (
-                  <span className="inline-flex items-center gap-1 rounded bg-subtle px-2 py-0.5 font-medium text-ink-muted">
-                    <Info className="h-3 w-3" />
-                    {t('study.runner.grading.voided')}
-                  </span>
-                )}
-              </div>
-
-              <div className="space-y-3">
-                {nonCanvasBlocks.map((block, idx) => (
-                  <BlockRenderer
-                    key={`${activeQuestion.id}-stem-${idx}`}
-                    block={block}
-                    hidePinTerms={!feedback}
-                  />
-                ))}
-              </div>
+          {isPaused ? (
+            <section className="rounded-2xl border border-border bg-canvas/50 p-8 text-center">
+              <Pause className="mx-auto h-10 w-10 text-accent" />
+              <h2 className="mt-3 text-lg font-semibold text-ink">{t('study.runner.pausedTitle')}</h2>
+              <p className="mt-1 text-sm text-ink-muted">{t('study.runner.pausedManual')}</p>
+              <button
+                type="button"
+                onClick={() => resumeMutation.mutate()}
+                className="mt-5 inline-flex h-11 items-center gap-2 rounded-full bg-accent px-6 text-sm font-semibold text-white hover:bg-accent-hover"
+              >
+                <Play className="h-4 w-4 fill-current" />
+                <span>{t('study.runner.resume')}</span>
+              </button>
             </section>
-
-            {/* Answer Input Controls */}
-            {activeQuestion.options.length > 0 &&
-              (activeQuestion.question_type === 'single_choice' ||
-                activeQuestion.question_type === 'multiple_choice') && (
-                <section className="space-y-2.5">
-                  {activeQuestion.options.map((opt) => {
-                    const isSelected = selectedKeys.includes(opt.key)
-                    const acceptedKeys = new Set<string>([
-                      ...(activeQuestion.answer ?? []),
-                      ...(activeQuestion.grading_mode === 'any_accepted'
-                        ? (activeQuestion.accepted_answers ?? []).flat()
-                        : []),
-                    ])
-                    const isCorrectOpt = Boolean(feedback && acceptedKeys.has(opt.key))
-                    const isWrongSelected = Boolean(
-                      feedback &&
-                        isSelected &&
-                        !feedback.grading.voided &&
-                        acceptedKeys.size > 0 &&
-                        !acceptedKeys.has(opt.key),
-                    )
-
-                    let borderClass = 'border-border bg-surface hover:border-accent/60'
-                    if (feedback) {
-                      if (isCorrectOpt) borderClass = 'border-ok bg-ok-soft/60'
-                      else if (isWrongSelected) borderClass = 'border-bad bg-bad-soft/60'
-                      else borderClass = 'border-border bg-surface'
-                    } else if (isSelected) {
-                      borderClass = 'border-accent bg-accent-soft'
-                    }
-
-                    return (
-                      <div
-                        key={opt.key}
-                        className={`rounded-xl border p-3.5 transition-colors ${borderClass}`}
-                      >
-                        <button
-                          type="button"
-                          disabled={Boolean(feedback)}
-                          onClick={() => {
-                            if (activeQuestion.question_type === 'single_choice') {
-                              setSelectedKeys([opt.key])
-                            } else {
-                              setSelectedKeys((prev) =>
-                                prev.includes(opt.key)
-                                  ? prev.filter((k) => k !== opt.key)
-                                  : [...prev, opt.key],
-                              )
-                            }
-                          }}
-                          aria-pressed={isSelected}
-                          className="flex min-h-11 w-full items-start gap-3 text-left"
-                        >
-                          <span
-                            className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border font-mono text-xs font-bold ${
-                              isSelected
-                                ? 'border-accent bg-accent text-white'
-                                : 'border-border bg-canvas text-ink-muted'
-                            }`}
-                          >
-                            {opt.key}
-                          </span>
-                          <span className="flex-1 pt-0.5 text-sm font-medium text-ink">
-                            {opt.content}
-                          </span>
-                        </button>
-
-                        {/* Post-answer option explanation + expandable linked Knowledge Cards */}
-                        {feedback && (
-                          <div className="mt-2 pl-10">
-                            {opt.explanation && (
-                              <p className="text-xs text-ink-muted">{opt.explanation}</p>
-                            )}
-                            <OptionLinkedCards
-                              cardIds={opt.linked_card_ids}
-                              onOpenAnchor={setActiveAnchorId}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
+          ) : isExpired ? (
+            <section className="rounded-2xl border border-warn/40 bg-canvas/50 p-8 text-center">
+              <AlertTriangle className="mx-auto h-10 w-10 text-warn" />
+              <h2 className="mt-3 text-lg font-semibold text-ink">{t('study.runner.expiredTitle')}</h2>
+              <p className="mt-1 text-sm text-ink-muted">{t('study.runner.expiredDesc')}</p>
+              <button
+                type="button"
+                onClick={() => void handleFinish()}
+                disabled={finishMutation.isPending}
+                className="mt-5 inline-flex h-11 items-center gap-2 rounded-full bg-accent px-6 text-sm font-semibold text-white hover:bg-accent-hover"
+              >
+                <Flag className="h-4 w-4" />
+                <span>{t('study.runner.finish')}</span>
+              </button>
+            </section>
+          ) : !legacyReviewing && isSubmitted ? (
+            <section className="rounded-2xl border border-accent/30 bg-canvas/50 p-8 text-center">
+              <CheckCircle2 className="mx-auto h-10 w-10 text-ok" />
+              <h2 className="mt-3 text-lg font-semibold text-ink">{t('study.runner.recorded')}</h2>
+              <button
+                type="button"
+                onClick={() => void handleFinish()}
+                disabled={finishMutation.isPending}
+                className="mt-5 inline-flex h-11 items-center gap-2 rounded-full bg-accent px-6 text-sm font-semibold text-white hover:bg-accent-hover"
+              >
+                <Flag className="h-4 w-4" />
+                <span>{t('study.runner.finish')}</span>
+              </button>
+            </section>
+          ) : currentUnit ? (
+            <div className="space-y-6">
+              {/* Shared QuestionGroup Vignette (shown above ALL child questions of this group) */}
+              {currentUnit.group && (
+                <section className="rounded-2xl border border-accent/30 bg-canvas/80 p-5">
+                  <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-accent">
+                    <span>
+                      {currentUnit.group.title ??
+                        t('workspace.sidebar.questionGroupBadge', {
+                          count: currentUnit.items.length,
+                        })}
+                    </span>
+                  </div>
+                  <div className="space-y-3">
+                    {currentUnit.group.shared_stem_blocks.map((block, bIdx) => (
+                      <BlockRenderer
+                        key={`${currentUnit.group!.id}-shared-${bIdx}`}
+                        block={block}
+                      />
+                    ))}
+                  </div>
                 </section>
               )}
 
-            {/* Pin Locate Controls */}
-            {activeQuestion.question_type === 'pin_locate' && !feedback && (
-              <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface p-4">
-                <div className="text-sm text-ink">
-                  {pinClicks.length >= requiredPinNos.length
-                    ? t('study.runner.pinLocateAllPlaced')
-                    : t('study.runner.pinLocatePrompt', { no: nextUnplacedPinNo ?? 1 })}
-                </div>
-                {pinClicks.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setPinClicks([])}
-                    className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-canvas px-3 text-xs font-medium text-ink hover:bg-subtle"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    <span>{t('study.runner.pinClear')}</span>
-                  </button>
-                )}
-              </section>
-            )}
+              {/* All Questions belonging to this Unit (1 for standalone, N for QuestionGroup) */}
+              {currentUnit.items.map(({ sessionIndex, question }) => {
+                const draft = draftsByIndex[sessionIndex] ?? EMPTY_DRAFT
+                const fb = feedbackByIndex[sessionIndex]
+                const activeQ = fb?.question ?? question
+                const locked = Boolean(fb?.grading) && !isFullExam
 
-            {/* Free-text Input (short_answer / vocab / image_qa / pin_identify / image_occlusion) */}
-            {(activeQuestion.question_type === 'short_answer' ||
-              activeQuestion.question_type === 'vocab' ||
-              activeQuestion.question_type === 'image_qa' ||
-              activeQuestion.question_type === 'image_occlusion' ||
-              activeQuestion.question_type === 'pin_identify') && (
-              <section className="rounded-xl border border-border bg-surface p-4">
-                <label className="block">
-                  <span className="text-xs font-medium text-ink-muted">
-                    {activeQuestion.question_type === 'pin_identify'
-                      ? t('study.runner.pinIdentifyPrompt')
-                      : t('study.runner.typeAnswer')}
-                  </span>
-                  <input
-                    type="text"
-                    disabled={Boolean(feedback)}
-                    value={textAnswer}
-                    onChange={(e) => setTextAnswer(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && canSubmit) {
-                        void handleSubmitAnswer()
-                      }
-                    }}
-                    placeholder={t('study.runner.typeAnswer')}
-                    className="mt-1.5 min-h-12 w-full rounded-lg border border-border bg-canvas px-3.5 text-base text-ink disabled:opacity-60"
-                  />
-                </label>
-              </section>
-            )}
+                const media = extractPracticalMedia(activeQ.stem_blocks)
+                const showCanvas = Boolean(
+                  media &&
+                    (activeQ.question_type === 'pin_locate' ||
+                      activeQ.question_type === 'pin_identify' ||
+                      activeQ.question_type === 'image_qa'),
+                )
+                const nonCanvasBlocks = activeQ.stem_blocks.filter((b) =>
+                  showCanvas ? b.type !== 'interactive_pins' && b.type !== 'image_occlusion' : true,
+                )
 
-            {/* Immediate Grading Feedback Banner */}
-            {feedback && (
-              <section
-                className={`space-y-3 rounded-xl border p-4 ${
-                  feedback.grading.voided
-                    ? 'border-border bg-subtle'
-                    : feedback.grading.is_correct
-                      ? 'border-ok/40 bg-ok-soft'
-                      : 'border-bad/40 bg-bad-soft'
-                }`}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  {feedback.grading.voided ? (
-                    <Info className="h-5 w-5 text-ink-muted" />
-                  ) : feedback.grading.is_correct ? (
-                    <CheckCircle2 className="h-5 w-5 text-ok" />
-                  ) : (
-                    <XCircle className="h-5 w-5 text-bad" />
-                  )}
-                  <span
-                    className={`text-base font-semibold ${
-                      feedback.grading.voided
-                        ? 'text-ink'
-                        : feedback.grading.is_correct
-                          ? 'text-ok'
-                          : 'text-bad'
+                const requiredPinNos =
+                  activeQ.question_type === 'pin_locate'
+                    ? (media?.pins.map((p) => p.no).length ? media!.pins.map((p) => p.no) : [1])
+                    : []
+                const nextUnplacedPinNo =
+                  requiredPinNos.find((no) => !draft.pinClicks.some((c) => c.no === no)) ??
+                  requiredPinNos[requiredPinNos.length - 1] ??
+                  null
+
+                const acceptedKeys = new Set<string>([
+                  ...(activeQ.answer ?? []),
+                  ...(activeQ.grading_mode === 'any_accepted'
+                    ? (activeQ.accepted_answers ?? []).flat()
+                    : []),
+                ])
+
+                return (
+                  <article
+                    key={`${activeQ.id}-${sessionIndex}`}
+                    className={`space-y-4 ${
+                      currentUnit.items.length > 1
+                        ? 'rounded-2xl border border-border bg-canvas/30 p-5'
+                        : ''
                     }`}
                   >
-                    {feedback.timedOut
-                      ? t('study.runner.grading.timedOut')
-                      : feedback.grading.voided
-                        ? t('study.runner.grading.voided')
-                        : feedback.grading.is_correct
-                          ? t('study.runner.grading.correct')
-                          : t('study.runner.grading.incorrect')}
-                  </span>
-
-                  {!feedback.grading.voided &&
-                    activeQuestion.grading_mode === 'any_accepted' && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-warn-soft px-2.5 py-0.5 text-xs font-medium text-warn">
-                        <Scale className="h-3.5 w-3.5" />
-                        {t('study.runner.grading.anyAccepted')}
-                      </span>
-                    )}
-                </div>
-
-                {activeQuestion.answer && activeQuestion.answer.length > 0 && (
-                  <div className="text-sm text-ink">
-                    <span className="font-semibold">
-                      {t('study.runner.grading.officialAnswer')}:{' '}
-                    </span>
-                    {activeQuestion.answer.join(', ')}
-                    {activeQuestion.grading_mode === 'any_accepted' &&
-                      activeQuestion.accepted_answers &&
-                      activeQuestion.accepted_answers.length > 0 && (
-                        <span className="ml-2 text-xs text-ink-muted">
-                          ({activeQuestion.accepted_answers.map((g) => g.join('+')).join(' / ')})
+                    {/* Question Header badges */}
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      {currentUnit.items.length > 1 && (
+                        <span className="rounded-full bg-accent-soft px-2.5 py-0.5 font-semibold text-accent">
+                          {t('workspace.sidebar.questionNumber', {
+                            no: activeQ.question_no ?? sessionIndex + 1,
+                          })}
                         </span>
                       )}
-                  </div>
-                )}
+                      <span className="rounded-full bg-subtle px-2.5 py-0.5 font-medium text-ink-muted">
+                        {t(`study.runner.questionTypes.${activeQ.question_type}`)}
+                      </span>
+                      {activeQ.grading_mode === 'any_accepted' && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-warn-soft px-2.5 py-0.5 font-medium text-warn">
+                          <Scale className="h-3 w-3" />
+                          {t('study.runner.grading.anyAccepted')}
+                        </span>
+                      )}
+                      {activeQ.grading_mode === 'voided' && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-subtle px-2.5 py-0.5 font-medium text-ink-muted">
+                          <Info className="h-3 w-3" />
+                          {t('study.runner.grading.voided')}
+                        </span>
+                      )}
+                    </div>
 
-                {activeQuestion.answer_basis && (
-                  <p className="text-xs text-ink-muted">
-                    <span className="font-semibold text-ink">
-                      {t('study.runner.grading.answerBasis')}:{' '}
-                    </span>
-                    {activeQuestion.answer_basis}
-                  </p>
-                )}
+                    {/* Practical / Image Canvas */}
+                    {showCanvas && media && (
+                      <PracticalCanvas
+                        resourceId={media.resourceId}
+                        overlayResourceId={media.overlayResourceId}
+                        pins={media.pins}
+                        mode={
+                          activeQ.question_type === 'pin_locate'
+                            ? 'locate'
+                            : activeQ.question_type === 'pin_identify'
+                              ? 'identify'
+                              : 'view'
+                        }
+                        placedClicks={draft.pinClicks}
+                        activePinNo={nextUnplacedPinNo}
+                        revealPins={Boolean(fb?.grading)}
+                        onPlacePin={(point: NormalizedPoint) => {
+                          if (locked || nextUnplacedPinNo === null) return
+                          updateDraft(sessionIndex, (prev) => {
+                            const targetNo =
+                              requiredPinNos.find(
+                                (no) => !prev.pinClicks.some((c) => c.no === no),
+                              ) ?? requiredPinNos[requiredPinNos.length - 1]
+                            const filtered = prev.pinClicks.filter((c) => c.no !== targetNo)
+                            return { ...prev, pinClicks: [...filtered, { no: targetNo, point }] }
+                          })
+                        }}
+                      />
+                    )}
 
-                {activeQuestion.explanation_blocks &&
-                  activeQuestion.explanation_blocks.length > 0 && (
-                    <div className="space-y-2 border-t border-border/60 pt-3">
-                      <div className="text-xs font-semibold text-ink-muted">
-                        {t('study.runner.grading.explanation')}
-                      </div>
-                      {activeQuestion.explanation_blocks.map((block, i) => (
-                        <BlockRenderer key={i} block={block} />
+                    {/* Stem Blocks */}
+                    <div className="space-y-3 text-base leading-relaxed text-ink">
+                      {nonCanvasBlocks.map((block, bIdx) => (
+                        <BlockRenderer
+                          key={`${activeQ.id}-stem-${bIdx}`}
+                          block={block}
+                          hidePinTerms={!fb?.grading}
+                        />
                       ))}
                     </div>
-                  )}
 
-                {activeQuestion.anchor_ids.length > 0 && (
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    {activeQuestion.anchor_ids.map((aid, idx) => (
-                      <button
-                        key={aid}
-                        type="button"
-                        onClick={() => setActiveAnchorId(aid)}
-                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-surface px-3 text-xs font-medium text-accent hover:bg-accent-soft"
-                      >
-                        <FileSearch className="h-3.5 w-3.5" />
+                    {/* Pill-shaped Choice Options (Sketch 1: rounded full/2xl wide pills A/B/C/D) */}
+                    {activeQ.options.length > 0 &&
+                      (activeQ.question_type === 'single_choice' ||
+                        activeQ.question_type === 'multiple_choice') && (
+                        <div className="space-y-3 pt-1">
+                          {activeQ.options.map((opt) => {
+                            const isSelected = draft.selectedKeys.includes(opt.key)
+                            const hasGrading = Boolean(fb?.grading)
+                            const isCorrectOpt = hasGrading && acceptedKeys.has(opt.key)
+                            const isWrongSelected =
+                              hasGrading &&
+                              isSelected &&
+                              !fb?.grading?.voided &&
+                              acceptedKeys.size > 0 &&
+                              !acceptedKeys.has(opt.key)
+
+                            let pillClass =
+                              'border-border bg-surface hover:border-accent/60 hover:bg-canvas/70'
+                            if (hasGrading) {
+                              if (isCorrectOpt) pillClass = 'border-ok bg-ok-soft/70'
+                              else if (isWrongSelected) pillClass = 'border-bad bg-bad-soft/70'
+                              else pillClass = 'border-border bg-surface opacity-80'
+                            } else if (isSelected) {
+                              pillClass = 'border-accent bg-accent-soft/80 shadow-2xs'
+                            }
+
+                            return (
+                              <div
+                                key={opt.key}
+                                className={`rounded-3xl border px-5 py-3.5 transition-all ${pillClass}`}
+                              >
+                                <button
+                                  type="button"
+                                  disabled={locked}
+                                  onClick={() => {
+                                    updateDraft(sessionIndex, (prev) => {
+                                      if (activeQ.question_type === 'single_choice') {
+                                        return { ...prev, selectedKeys: [opt.key] }
+                                      }
+                                      const exists = prev.selectedKeys.includes(opt.key)
+                                      return {
+                                        ...prev,
+                                        selectedKeys: exists
+                                          ? prev.selectedKeys.filter((k) => k !== opt.key)
+                                          : [...prev.selectedKeys, opt.key].sort(),
+                                      }
+                                    })
+                                  }}
+                                  className="flex w-full items-start gap-3 text-left disabled:cursor-default"
+                                >
+                                  <span
+                                    className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border font-mono text-xs font-bold ${
+                                      isCorrectOpt
+                                        ? 'border-ok bg-ok text-white'
+                                        : isWrongSelected
+                                          ? 'border-bad bg-bad text-white'
+                                          : isSelected
+                                            ? 'border-accent bg-accent text-white'
+                                            : 'border-border bg-canvas text-ink-muted'
+                                    }`}
+                                  >
+                                    {opt.key}
+                                  </span>
+                                  <span className="flex-1 text-sm font-medium leading-relaxed text-ink sm:text-[15px]">
+                                    {opt.content}
+                                  </span>
+                                </button>
+
+                                {hasGrading && opt.explanation && (
+                                  <p className="mt-2 pl-10 text-xs leading-relaxed text-ink-muted">
+                                    {opt.explanation}
+                                  </p>
+                                )}
+
+                                {hasGrading && opt.linked_card_ids.length > 0 && (
+                                  <div className="mt-2 pl-10">
+                                    <OptionLinkedCards
+                                      cardIds={opt.linked_card_ids}
+                                      onOpenAnchor={setActiveAnchorId}
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+
+                    {/* Pin Locate Status Bar */}
+                    {activeQ.question_type === 'pin_locate' && !locked && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-border bg-canvas px-4 py-3 text-xs text-ink">
                         <span>
-                          {t('reading.sourceAnchor')} #{idx + 1}
+                          {draft.pinClicks.length >= requiredPinNos.length
+                            ? t('study.runner.pinLocateAllPlaced')
+                            : t('study.runner.pinLocatePrompt', { no: nextUnplacedPinNo ?? 1 })}
                         </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </section>
-            )}
+                        {draft.pinClicks.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateDraft(sessionIndex, (prev) => ({ ...prev, pinClicks: [] }))
+                            }
+                            className="inline-flex h-8 items-center gap-1 rounded-full border border-border bg-surface px-3 text-xs font-medium text-ink hover:bg-subtle"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            <span>{t('study.runner.pinClear')}</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
 
-            {/* Confidence & Error Tags */}
-            <ConfidenceAndTags
-              confidence={confidence}
-              onConfidenceChange={setConfidence}
-              errorTags={errorTags}
-              onToggleErrorTag={toggleErrorTag}
-              confidenceDisabled={feedback !== null}
-              showErrorTags
-            />
+                    {/* Free-text Input */}
+                    {(activeQ.question_type === 'short_answer' ||
+                      activeQ.question_type === 'vocab' ||
+                      activeQ.question_type === 'image_qa' ||
+                      activeQ.question_type === 'image_occlusion' ||
+                      activeQ.question_type === 'pin_identify') && (
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-medium text-ink-muted">
+                          {activeQ.question_type === 'pin_identify'
+                            ? t('study.runner.pinIdentifyPrompt')
+                            : t('study.runner.typeAnswer')}
+                        </label>
+                        <input
+                          type="text"
+                          disabled={locked}
+                          value={draft.textAnswer}
+                          onChange={(e) =>
+                            updateDraft(sessionIndex, (prev) => ({
+                              ...prev,
+                              textAnswer: e.target.value,
+                            }))
+                          }
+                          placeholder={t('study.runner.typeAnswer')}
+                          className="h-12 w-full rounded-2xl border border-border bg-canvas px-4 text-sm text-ink placeholder:text-ink-muted disabled:opacity-65"
+                        />
+                      </div>
+                    )}
 
-            {/* Primary Action Button */}
-            <div className="pb-safe pt-1">
-              {feedback ? (
-                <button
-                  type="button"
-                  onClick={() => void handleNextAfterFeedback()}
-                  className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-accent px-6 text-sm font-semibold text-white hover:bg-accent-hover"
-                >
-                  <span>
-                    {feedback.nextState.status === 'submitted'
-                      ? t('study.runner.viewSummary')
-                      : t('study.runner.nextQuestion')}
-                  </span>
-                  <ArrowRight className="h-4 w-4" />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={!canSubmit || submitMutation.isPending}
-                  onClick={() => void handleSubmitAnswer()}
-                  className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-accent px-6 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-40"
-                >
-                  <span>{t('study.runner.submitAnswer')}</span>
-                </button>
-              )}
+                    {/* Immediate Grading Feedback Banner */}
+                    {fb?.grading && (
+                      <div
+                        className={`space-y-3 rounded-2xl border p-4 ${
+                          fb.grading.voided
+                            ? 'border-border bg-subtle'
+                            : fb.grading.is_correct
+                              ? 'border-ok/40 bg-ok-soft/60'
+                              : 'border-bad/40 bg-bad-soft/60'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 text-sm font-semibold">
+                          {fb.grading.voided ? (
+                            <Info className="h-4 w-4 text-ink-muted" />
+                          ) : fb.grading.is_correct ? (
+                            <CheckCircle2 className="h-4 w-4 text-ok" />
+                          ) : (
+                            <XCircle className="h-4 w-4 text-bad" />
+                          )}
+                          <span
+                            className={
+                              fb.grading.voided
+                                ? 'text-ink'
+                                : fb.grading.is_correct
+                                  ? 'text-ok'
+                                  : 'text-bad'
+                            }
+                          >
+                            {fb.timedOut
+                              ? t('study.runner.grading.timedOut')
+                              : fb.grading.voided
+                                ? t('study.runner.grading.voided')
+                                : fb.grading.is_correct
+                                  ? t('study.runner.grading.correct')
+                                  : t('study.runner.grading.incorrect')}
+                          </span>
+                        </div>
+
+                        {activeQ.answer && activeQ.answer.length > 0 && (
+                          <div className="text-xs text-ink">
+                            <span className="font-semibold">
+                              {t('study.runner.grading.officialAnswer')}:{' '}
+                            </span>
+                            {activeQ.answer.join(', ')}
+                          </div>
+                        )}
+
+                        {activeQ.answer_basis && (
+                          <div className="text-xs text-ink-muted">
+                            <span className="font-semibold text-ink">
+                              {t('study.runner.grading.answerBasis')}:{' '}
+                            </span>
+                            {activeQ.answer_basis}
+                          </div>
+                        )}
+
+                        {activeQ.explanation_blocks && activeQ.explanation_blocks.length > 0 && (
+                          <div className="space-y-2 border-t border-border/60 pt-2.5">
+                            <div className="text-xs font-semibold text-ink-muted">
+                              {t('study.runner.grading.explanation')}
+                            </div>
+                            {activeQ.explanation_blocks.map((block, eIdx) => (
+                              <BlockRenderer key={eIdx} block={block} />
+                            ))}
+                          </div>
+                        )}
+
+                        {activeQ.anchor_ids.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 pt-1">
+                            {activeQ.anchor_ids.map((aid, aIdx) => (
+                              <button
+                                key={aid}
+                                type="button"
+                                onClick={() => setActiveAnchorId(aid)}
+                                className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-surface px-3 text-xs font-medium text-accent hover:border-accent"
+                              >
+                                <FileSearch className="h-3.5 w-3.5" />
+                                <span>
+                                  {t('reading.sourceAnchor')} #{aIdx + 1}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </article>
+                )
+              })}
             </div>
+          ) : null}
+        </div>
+      </div>
+
+      {/* FIXED Bottom Navigation & 5-Level Confidence Bar (Sketch 1 + User explicit rule) */}
+      <footer className="pb-safe shrink-0 border-t border-border bg-surface px-4 py-3 sm:px-6">
+        <div className="mx-auto flex max-w-3xl flex-col gap-2.5">
+          {/* Five tactile confidence pills from Sketch 1: 確定 / 還可以 / 猶豫中 / 不熟 / 亂猜 */}
+          <div
+            className="flex flex-wrap items-center justify-center gap-2"
+            role="radiogroup"
+            aria-label={t('study.runner.confidence')}
+          >
+            {CONFIDENCE_LEVELS_5.map((level) => {
+              const active = confidence5 === level
+              return (
+                <button
+                  key={level}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setConfidence5(level)}
+                  className={`h-9 min-w-[68px] rounded-full border px-4 text-xs font-medium transition-all ${
+                    active
+                      ? 'border-accent bg-accent-soft font-semibold text-accent shadow-2xs'
+                      : 'border-border bg-canvas/70 text-ink-muted hover:border-accent/50 hover:text-ink'
+                  }`}
+                >
+                  {t(`workspace.confidence5.${level}`)}
+                </button>
+              )
+            })}
           </div>
-        )}
-      </main>
+
+          {/* Prev / Submit / Next row */}
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              disabled={!hasPrevUnit}
+              onClick={() => void navigateToUnit(clampedUnitIdx - 1)}
+              className="inline-flex h-10 items-center gap-1 rounded-full border border-border bg-canvas px-4 text-xs font-medium text-ink transition-colors hover:bg-subtle disabled:opacity-40"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              <span>{t('workspace.sidebar.prevQuestion')}</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={submittableItems.length === 0 || submitMutation.isPending}
+              onClick={() => void handleSubmitCurrentUnit()}
+              className="inline-flex h-10 flex-1 max-w-xs items-center justify-center gap-1.5 rounded-full bg-accent px-5 text-xs font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
+            >
+              <Send className="h-3.5 w-3.5" />
+              <span>
+                {currentUnit && currentUnit.items.length > 1
+                  ? t('workspace.sidebar.submitGroup')
+                  : t('study.runner.submitAnswer')}
+              </span>
+            </button>
+
+            {hasNextUnit ? (
+              <button
+                type="button"
+                onClick={() => void handleNextUnit()}
+                className="inline-flex h-10 items-center gap-1 rounded-full border border-border bg-canvas px-4 text-xs font-medium text-ink transition-colors hover:bg-subtle"
+              >
+                <span>{t('workspace.sidebar.nextQuestion')}</span>
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleFinish()}
+                disabled={finishMutation.isPending}
+                className="inline-flex h-10 items-center gap-1.5 rounded-full border border-accent bg-accent-soft px-4 text-xs font-semibold text-accent hover:bg-accent hover:text-white disabled:opacity-50"
+              >
+                <Flag className="h-3.5 w-3.5" />
+                <span>{t('study.runner.finish')}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </footer>
 
       <AnchorDrawer anchorId={activeAnchorId} onClose={() => setActiveAnchorId(null)} />
     </div>
