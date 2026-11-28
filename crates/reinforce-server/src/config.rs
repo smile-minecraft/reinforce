@@ -115,23 +115,23 @@ pub struct ImportArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct ServeArgs {
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(long, env = "REINFORCE_HOST", default_value = "127.0.0.1")]
     pub host: String,
-    #[arg(long, default_value_t = 3000)]
+    #[arg(long, env = "REINFORCE_PORT", default_value_t = 3000)]
     pub port: u16,
-    #[arg(long, default_value = "./reinforce.db")]
+    #[arg(long, env = "REINFORCE_DB", default_value = "./reinforce.db")]
     pub db: std::path::PathBuf,
-    #[arg(long, default_value = "./blobs")]
+    #[arg(long, env = "REINFORCE_BLOBS", default_value = "./blobs")]
     pub blobs: std::path::PathBuf,
-    #[arg(long, default_value = "./fonts")]
+    #[arg(long, env = "REINFORCE_FONTS", default_value = "./fonts")]
     pub fonts: std::path::PathBuf,
-    #[arg(long, value_enum, default_value_t = AuthMode::Single)]
+    #[arg(long, env = "REINFORCE_AUTH", value_enum, default_value_t = AuthMode::Single)]
     pub auth: AuthMode,
     /// Owner-written plugin manifest file. Only this file can declare which
     /// external programs the server may run.
-    #[arg(long)]
+    #[arg(long, env = "REINFORCE_PLUGINS")]
     pub plugins: Option<std::path::PathBuf>,
-    #[arg(long)]
+    #[arg(long, env = "REINFORCE_DEMO")]
     pub demo: bool,
 }
 
@@ -248,5 +248,104 @@ mod tests {
             "out.pdf",
         ]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn serve_args_declare_expected_env_vars() {
+        use clap::CommandFactory;
+        use std::ffi::OsStr;
+
+        let cmd = Cli::command();
+        let serve = cmd
+            .find_subcommand("serve")
+            .expect("serve subcommand should exist");
+
+        for (arg_id, expected_env) in [
+            ("host", "REINFORCE_HOST"),
+            ("port", "REINFORCE_PORT"),
+            ("db", "REINFORCE_DB"),
+            ("blobs", "REINFORCE_BLOBS"),
+            ("fonts", "REINFORCE_FONTS"),
+            ("auth", "REINFORCE_AUTH"),
+            ("plugins", "REINFORCE_PLUGINS"),
+            ("demo", "REINFORCE_DEMO"),
+        ] {
+            let arg = serve
+                .get_arguments()
+                .find(|candidate| candidate.get_id() == arg_id)
+                .unwrap_or_else(|| panic!("serve arg {arg_id} should exist"));
+            assert_eq!(
+                arg.get_env(),
+                Some(OsStr::new(expected_env)),
+                "serve arg {arg_id} should map to {expected_env}"
+            );
+        }
+    }
+
+    #[test]
+    fn serve_args_parse_from_env_vars_and_allow_cli_override() {
+        const CHILD_GUARD: &str = "REINFORCE_CONFIG_ENV_TEST_CHILD";
+
+        if std::env::var_os(CHILD_GUARD).is_none() {
+            let exe = std::env::current_exe().expect("current test binary path");
+            let output = std::process::Command::new(exe)
+                .arg("--exact")
+                .arg("config::tests::serve_args_parse_from_env_vars_and_allow_cli_override")
+                .arg("--nocapture")
+                .env(CHILD_GUARD, "1")
+                .env("REINFORCE_HOST", "0.0.0.0")
+                .env("REINFORCE_PORT", "8080")
+                .env("REINFORCE_DB", "/data/reinforce.db")
+                .env("REINFORCE_BLOBS", "/data/blobs")
+                .env("REINFORCE_FONTS", "/data/fonts")
+                .env("REINFORCE_AUTH", "invite")
+                .env("REINFORCE_PLUGINS", "/data/plugins.json")
+                .env("REINFORCE_DEMO", "true")
+                .output()
+                .expect("spawn isolated env test process");
+            assert!(
+                output.status.success(),
+                "child env test failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let cli = Cli::try_parse_from(["reinforce", "serve"])
+            .expect("serve should parse from REINFORCE_* env vars");
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve command");
+        };
+        assert_eq!(args.host, "0.0.0.0");
+        assert_eq!(args.port, 8080);
+        assert_eq!(args.db, std::path::PathBuf::from("/data/reinforce.db"));
+        assert_eq!(args.blobs, std::path::PathBuf::from("/data/blobs"));
+        assert_eq!(args.fonts, std::path::PathBuf::from("/data/fonts"));
+        assert_eq!(args.auth, AuthMode::Invite);
+        assert_eq!(
+            args.plugins,
+            Some(std::path::PathBuf::from("/data/plugins.json"))
+        );
+        assert!(args.demo);
+
+        let overridden = Cli::try_parse_from([
+            "reinforce",
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9090",
+            "--auth",
+            "single",
+        ])
+        .expect("CLI flags should override REINFORCE_* env vars");
+        let Command::Serve(args) = overridden.command else {
+            panic!("expected serve command");
+        };
+        assert_eq!(args.host, "127.0.0.1");
+        assert_eq!(args.port, 9090);
+        assert_eq!(args.auth, AuthMode::Single);
+        assert_eq!(args.db, std::path::PathBuf::from("/data/reinforce.db"));
     }
 }

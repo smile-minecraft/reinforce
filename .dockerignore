@@ -1,0 +1,17 @@
+.git
+.gitignore
+.github
+.DS_Store
+.scratch
+target
+bindings
+apps
+docs
+scripts
+data
+web/node_modules
+web/dist
+*.db
+*.db-shm
+*.db-wal
+*.log

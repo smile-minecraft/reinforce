@@ -324,6 +324,62 @@ and pass it as a Bearer token; proposals record `submitted_by` as `agent:<name>`
 }
 ```
 
+## Docker deployment
+
+The repository ships a multi-stage [`Dockerfile`](Dockerfile) and [`docker-compose.yml`](docker-compose.yml) for both local self-hosting and remote VPS deployments. The runtime image builds and embeds the WebApp (`web/dist`), bundles `reinforce` alongside the three official plugin binaries (`reinforce-plugin-mineru`, `reinforce-plugin-tikz`, `reinforce-plugin-acp`) under `/usr/local/bin/`, runs as a non-root `reinforce` user with data stored in `/data`, and checks `GET /api/meta` for container health.
+
+Heavy external toolchains (TeX Live, MinerU Python environments, ACP agent CLIs) are intentionally **not** baked into the base image so the default container stays small. Mount or layer only the tools you actually use.
+
+### Local quick start
+
+```sh
+mkdir -p data
+docker compose up -d --build
+```
+
+By default `docker-compose.yml` binds `127.0.0.1:3000` with `REINFORCE_AUTH=single` and persists SQLite, blobs and fonts under `./data`. Set `REINFORCE_DEMO=true` to seed sample data on startup.
+
+### Remote VPS deployment
+
+1. Prepare a persistent data directory owned by UID/GID `10001` (matching the container's `reinforce` user):
+
+   ```sh
+   mkdir -p data/blobs data/fonts
+   sudo chown -R 10001:10001 data
+   ```
+
+2. Start the container with `REINFORCE_AUTH=invite` so the server enforces login instead of single-user mode, and keep port `3000` bound to `127.0.0.1` behind a TLS-terminating reverse proxy (Caddy, Nginx or Traefik):
+
+   ```sh
+   REINFORCE_AUTH=invite docker compose up -d --build
+   docker compose logs reinforce   # read the one-time owner setup token on first boot
+   ```
+
+3. Forward HTTPS traffic from your reverse proxy to `http://127.0.0.1:3000`. The server handles both `SIGINT` and `SIGTERM` gracefully, draining in-flight requests and closing SQLite cleanly on `docker compose down` or container restarts.
+
+### Environment variables (`reinforce serve`)
+
+All `reinforce serve` flags can be configured through environment variables (explicit CLI flags take precedence):
+
+| Variable | CLI flag | Container default | Purpose |
+| --- | --- | --- | --- |
+| `REINFORCE_HOST` | `--host` | `0.0.0.0` | Bind address (`127.0.0.1` outside Docker) |
+| `REINFORCE_PORT` | `--port` | `3000` | Listen port |
+| `REINFORCE_DB` | `--db` | `/data/reinforce.db` | SQLite database path |
+| `REINFORCE_BLOBS` | `--blobs` | `/data/blobs` | Content-addressed media directory |
+| `REINFORCE_FONTS` | `--fonts` | `/data/fonts` | Custom fonts directory for Typst PDF export |
+| `REINFORCE_AUTH` | `--auth` | `single` | `single` (local) or `invite` (VPS / multi-user) |
+| `REINFORCE_PLUGINS` | `--plugins` | unset | Path to the owner-written plugin manifest JSON |
+| `REINFORCE_DEMO` | `--demo` | `false` | Set to `true` to seed the demo library on startup |
+
+### Mounting external plugins in Docker
+
+The three official plugin binaries are already installed in `/usr/local/bin/` inside the image. To enable any of them:
+
+1. Copy [`plugins.example.json`](plugins.example.json) to `./data/plugins.json` and remove the entries you do not use.
+2. Mount or bake the external tool executables referenced in `args` (such as MinerU, LaTeX + `dvisvgm`, or an ACP agent binary) into the container at the configured absolute paths.
+3. Set `REINFORCE_PLUGINS=/data/plugins.json` in `docker-compose.yml` and restart the service.
+
 ## License
 
 Licensed under either of

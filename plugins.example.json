@@ -1,0 +1,59 @@
+{
+  "plugins": [
+    {
+      "name": "mineru",
+      "capabilities": ["ingest_pdf"],
+      "transport": {
+        "type": "stdio",
+        "command": "/usr/local/bin/reinforce-plugin-mineru",
+        "args": [
+          "--mineru",
+          "/opt/tools/mineru",
+          "--work-dir",
+          "/tmp"
+        ]
+      },
+      "timeout_secs": 600,
+      "max_output_bytes": 8388608,
+      "max_attempts": 1
+    },
+    {
+      "name": "tikz",
+      "capabilities": ["tikz_render"],
+      "transport": {
+        "type": "stdio",
+        "command": "/usr/local/bin/reinforce-plugin-tikz",
+        "args": [
+          "--latex",
+          "/opt/tools/latex",
+          "--dvisvgm",
+          "/opt/tools/dvisvgm",
+          "--work-dir",
+          "/tmp"
+        ]
+      },
+      "timeout_secs": 300,
+      "max_output_bytes": 8388608,
+      "max_attempts": 1
+    },
+    {
+      "name": "acp",
+      "capabilities": ["draft_cards"],
+      "transport": {
+        "type": "stdio",
+        "command": "/usr/local/bin/reinforce-plugin-acp",
+        "args": [
+          "--agent",
+          "/opt/tools/opencode",
+          "--request-timeout-secs",
+          "240",
+          "--",
+          "acp"
+        ]
+      },
+      "timeout_secs": 300,
+      "max_output_bytes": 8388608,
+      "max_attempts": 1
+    }
+  ]
+}

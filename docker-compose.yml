@@ -1,0 +1,28 @@
+services:
+  reinforce:
+    build: .
+    image: reinforce:local
+    restart: unless-stopped
+    stop_grace_period: 15s
+    ports:
+      # Local development: bind only to loopback or keep 3000:3000.
+      # Remote VPS behind a reverse proxy (Caddy/Nginx/Traefik): prefer "127.0.0.1:3000:3000".
+      - "${REINFORCE_PUBLISH_ADDR:-127.0.0.1}:${REINFORCE_PUBLISH_PORT:-3000}:3000"
+    volumes:
+      # Persists SQLite database, content-addressed blobs, optional fonts and plugins.json.
+      - ./data:/data
+    environment:
+      REINFORCE_HOST: 0.0.0.0
+      REINFORCE_PORT: 3000
+      REINFORCE_DB: /data/reinforce.db
+      REINFORCE_BLOBS: /data/blobs
+      REINFORCE_FONTS: /data/fonts
+      # Use "single" for local loopback-only use.
+      # For any remote VPS or shared network deployment, set REINFORCE_AUTH=invite.
+      REINFORCE_AUTH: ${REINFORCE_AUTH:-single}
+      # Uncomment to enable external plugins defined in ./data/plugins.json
+      # (see plugins.example.json for the manifest format).
+      # REINFORCE_PLUGINS: /data/plugins.json
+      # Uncomment to seed demo data on startup (useful for local evaluation).
+      # REINFORCE_DEMO: "true"
+      RUST_LOG: ${RUST_LOG:-info}
