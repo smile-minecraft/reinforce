@@ -1,5 +1,12 @@
 import type {
   AdjustPinsRequest,
+  AgentTokenList,
+  CreatedAgentToken,
+  PluginJob,
+  PluginJobStatus,
+  PluginSummary,
+  RevokeAgentTokenResponse,
+  SubmitPluginJobRequest,
   AdjustPinsResponse,
   Anchor,
   ApiMeta,
@@ -265,6 +272,32 @@ export const api = {
       body: JSON.stringify(body),
     }),
   logout: () => apiFetch<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+
+  // MCP agent tokens
+  listAgentTokens: () => apiFetch<AgentTokenList>('/api/auth/agent-tokens'),
+  createAgentToken: (body: { name?: string }) =>
+    apiFetch<CreatedAgentToken>('/api/auth/agent-tokens', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  revokeAgentToken: (id: string) =>
+    apiFetch<RevokeAgentTokenResponse>(`/api/auth/agent-tokens/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+
+  // Plugins
+  listPlugins: () => apiFetch<PluginSummary[]>('/api/plugins'),
+  listPluginJobs: (params?: { status?: PluginJobStatus; plugin?: string; limit?: number }) =>
+    apiFetch<PluginJob[]>(`/api/plugins/jobs${buildQuery(params ?? {})}`),
+  submitPluginJob: (plugin: string, body: SubmitPluginJobRequest) =>
+    apiFetch<PluginJob>(`/api/plugins/${encodeURIComponent(plugin)}/jobs`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  cancelPluginJob: (id: string) =>
+    apiFetch<PluginJob>(`/api/plugins/jobs/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+    }),
 
   // Content
   listNotes: (params?: { subject?: string; status?: string; limit?: number }) =>

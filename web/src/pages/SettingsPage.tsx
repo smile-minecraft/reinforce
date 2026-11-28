@@ -5,6 +5,9 @@ import { Link } from 'react-router'
 import { useAuthStatus, useLogout, useMeta } from '../api/hooks/useAuth'
 import { useTheme, type ThemePreference } from '../components/themeContext'
 import { SUPPORTED_LANGUAGES, type Language } from '../i18n'
+import { McpSection } from '../settings/McpSection'
+import { PluginsSection } from '../settings/PluginsSection'
+import { deriveSettingsAccess } from '../settings/settingsLogic'
 import { useWorkspace } from '../workspace/workspaceContextValue'
 
 const THEME_OPTIONS: Array<{ id: ThemePreference; icon: typeof Sun; key: string }> = [
@@ -20,6 +23,7 @@ export function SettingsPage() {
   const { data: authStatus } = useAuthStatus()
   const { data: meta } = useMeta()
   const logout = useLogout()
+  const access = deriveSettingsAccess(authStatus)
 
   const [nameInput, setNameInput] = useState(displayName)
 
@@ -145,9 +149,13 @@ export function SettingsPage() {
               </Link>
             )
           ) : (
-            <p className="text-xs text-ink-muted">Single-user local mode</p>
+            <p className="text-xs text-ink-muted">{t('settings.singleMode')}</p>
           )}
         </section>
+
+        <McpSection access={access} />
+
+        {access.isOwner && <PluginsSection />}
       </div>
     </div>
   )

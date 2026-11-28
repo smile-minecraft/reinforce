@@ -10,6 +10,8 @@ import type {
   GradingOutcome,
   Note,
   OutlineNode,
+  PluginJob,
+  PluginSummary,
   Proposal,
   QuestionCard,
   QuestionGroup,
@@ -19,6 +21,7 @@ import type {
   SessionMode,
   SessionState,
   SubjectGroup,
+  SubmitPluginJobRequest,
   UpdateNoteViewSettingsRequest,
   UpdateOperationRequest,
   UpdateSubjectGroupRequest,
@@ -364,6 +367,55 @@ function toWireState(state: SessionState): unknown {
   }
 }
 
+const MOCK_PLUGINS: PluginSummary[] = [
+  {
+    name: 'mineru',
+    capabilities: ['ingest_pdf'],
+    transport: 'stdio',
+    command: '/usr/local/bin/reinforce-plugin-mineru',
+    args: [],
+    timeout_secs: 600,
+    max_output_bytes: 16_777_216,
+    max_attempts: 3,
+  },
+  {
+    name: 'tikz',
+    capabilities: ['render_tikz'],
+    transport: 'stdio',
+    command: '/usr/local/bin/reinforce-plugin-tikz',
+    args: [],
+    timeout_secs: 60,
+    max_output_bytes: 4_194_304,
+    max_attempts: 2,
+  },
+]
+
+const mockPluginJobs: PluginJob[] = []
+
+/** Moves mock jobs forward a step per poll so the queue UI can be exercised. */
+function advanceMockJobs() {
+  const now = new Date().toISOString()
+  for (const job of mockPluginJobs) {
+    if (job.status === 'queued') {
+      Object.assign(job, { status: 'running', attempts: 1, started_at: now, updated_at: now })
+    } else if (job.status === 'running') {
+      const progress = Math.min(1, job.progress + 0.34)
+      if (progress >= 1) {
+        Object.assign(job, {
+          status: 'succeeded',
+          progress: 1,
+          progress_message: null,
+          proposal_id: 'mock-proposal-from-plugin',
+          updated_at: now,
+          finished_at: now,
+        })
+      } else {
+        Object.assign(job, { progress, progress_message: 'processing pages', updated_at: now })
+      }
+    }
+  }
+}
+
 export async function handleMockRequest(
   path: string,
   init?: RequestInit,
@@ -677,6 +729,69 @@ export async function handleMockRequest(
     return found
       ? { status: 200, body: found }
       : { status: 404, body: { error: { code: 'not_found', message: 'anchor not found' } } }
+  }
+
+  // Plugin endpoints (single mode treats the caller as owner)
+  if (pathname === '/api/plugins' && method === 'GET') {
+    return { status: 200, body: MOCK_PLUGINS }
+  }
+  if (pathname === '/api/plugins/jobs' && method === 'GET') {
+    advanceMockJobs()
+    return { status: 200, body: mockPluginJobs }
+  }
+  const cancelMatch = pathname.match(/^\/api\/plugins\/jobs\/([^/]+)\/cancel$/)
+  if (cancelMatch && method === 'POST') {
+    const job = mockPluginJobs.find((item) => item.id === decodeURIComponent(cancelMatch[1]))
+    if (!job) {
+      return { status: 404, body: { error: { code: 'not_found', message: 'plugin job not found' } } }
+    }
+    if (job.status === 'queued' || job.status === 'running') {
+      const now = new Date().toISOString()
+      Object.assign(job, {
+        status: 'cancelled',
+        cancel_requested: true,
+        error: { code: 'cancelled', message: 'cancelled by the owner' },
+        updated_at: now,
+        finished_at: now,
+      })
+    }
+    return { status: 200, body: job }
+  }
+  const submitMatch = pathname.match(/^\/api\/plugins\/([^/]+)\/jobs$/)
+  if (submitMatch && method === 'POST') {
+    const name = decodeURIComponent(submitMatch[1])
+    const plugin = MOCK_PLUGINS.find((item) => item.name === name)
+    const body = JSON.parse(String(init?.body ?? '{}')) as SubmitPluginJobRequest
+    if (!plugin) {
+      return { status: 404, body: { error: { code: 'not_found', message: 'plugin not configured' } } }
+    }
+    if (!plugin.capabilities.includes(body.capability)) {
+      return {
+        status: 400,
+        body: { error: { code: 'bad_request', message: `unknown capability ${body.capability}` } },
+      }
+    }
+    const now = new Date().toISOString()
+    const job: PluginJob = {
+      id: `mock-job-${Date.now()}`,
+      plugin: name,
+      capability: body.capability,
+      input: body.input,
+      status: 'queued',
+      attempts: 0,
+      max_attempts: plugin.max_attempts,
+      cancel_requested: false,
+      progress: 0,
+      progress_message: null,
+      proposal_id: null,
+      error: null,
+      created_at: now,
+      updated_at: now,
+      started_at: null,
+      finished_at: null,
+    }
+    mockPluginJobs.unshift(job)
+    return { status: 202, body: job }
   }
 
   // Study endpoints

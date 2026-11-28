@@ -534,5 +534,98 @@
       "fontsMissing": "伺服器缺少中文字型或數學字型，無法渲染 PDF。請確認伺服器 fonts/ 目錄已安裝所需字型，或改匯出 Markdown。",
       "serverUpdateRequired": "此伺服器尚未支援匯出端點，請更新 Reinforce 伺服器版本。"
     }
+  },
+  "settings": {
+    "singleMode": "單人本機模式",
+    "copy": {
+      "copy": "複製",
+      "copied": "已複製",
+      "failed": "複製失敗",
+      "copyNamed": "複製{{name}}"
+    },
+    "mcp": {
+      "title": "MCP 連線",
+      "subtitle": "透過 Model Context Protocol 讓 AI 代理連上 Reinforce。代理可以瀏覽內容並送出提案，送來的內容都要經過你審核才會發布。",
+      "stdioTitle": "本機 stdio",
+      "stdioHint": "給在這台電腦上執行的代理使用。請把路徑換成你的執行檔、資料庫與 blob 目錄。",
+      "httpTitle": "Streamable HTTP",
+      "httpHintInvite": "給遠端代理使用。每次呼叫都要帶上具名 Agent Token 作為 Bearer token，提案會記錄 token 名稱作為送出者。",
+      "httpHintSingle": "單人模式接受本機迴路連線，不需要 token。若要讓這台電腦以外的代理連線，請改用邀請模式。",
+      "tokensSingleMode": "Agent Token 只在邀請模式（reinforce serve --auth invite）下使用。單人模式中，本機的 HTTP 用戶端不需要 token 就能連線。",
+      "tokensOwnerOnly": "只有擁有者可以建立或撤銷 Agent Token。如需連接代理，請向擁有者索取 token。"
+    },
+    "tokens": {
+      "title": "Agent Token",
+      "subtitle": "為每個代理各建立一組具名 token，方便分辨提案來源，也能個別撤銷存取權。",
+      "nameLabel": "Token 名稱",
+      "namePlaceholder": "名稱（選填），例如 claude",
+      "create": "建立 token",
+      "creating": "建立中…",
+      "createFailed": "無法建立 token：{{message}}",
+      "createdNotice": "已建立 token「{{name}}」。請立即複製，之後不會再顯示。",
+      "plaintextLabel": "新的 Agent Token",
+      "copyToken": "複製 token",
+      "copyConfig": "複製含此 token 的 HTTP 設定",
+      "dismiss": "關閉新 token 提示",
+      "unnamed": "未命名 token",
+      "createdAt": "建立於 {{time}}",
+      "empty": "目前還沒有 Agent Token。",
+      "listLabel": "Agent Token 列表",
+      "loadFailed": "無法載入 Agent Token：{{message}}",
+      "revoke": "撤銷",
+      "revokeNamed": "撤銷 token {{name}}",
+      "revoking": "撤銷中…",
+      "confirmRevoke": "確認撤銷 token {{name}}",
+      "confirmRevokeShort": "使用它的代理會失去存取權。",
+      "revokeFailed": "無法撤銷 token：{{message}}",
+      "alreadyRevoked": "這組 token 先前已被撤銷。"
+    },
+    "plugins": {
+      "title": "外掛",
+      "subtitle": "為擁有者設定檔中宣告的外掛排入任務。結果會以待審核提案的形式送達。",
+      "loadFailed": "無法載入外掛：{{message}}",
+      "listLabel": "已設定的外掛",
+      "capabilities": "功能",
+      "limits": "逾時 {{timeout}} 秒 · 最多嘗試 {{attempts}} 次",
+      "emptyTitle": "這台伺服器尚未設定任何外掛。",
+      "emptyManifest": "撰寫一份設定檔（例如 plugins.json），宣告每個外掛與它提供的功能：",
+      "emptyServe": "接著帶著這份設定檔重新啟動伺服器：",
+      "emptyBoundary": "外掛只能透過編輯該檔案新增或修改；這個頁面只能排入任務，不會修改設定檔。",
+      "submitTitle": "排入任務",
+      "plugin": "外掛",
+      "capability": "功能",
+      "input": "輸入內容（JSON）",
+      "inputHint": "傳給外掛的 JSON 物件，例如 {\"resource_id\": \"…\"}。",
+      "input_empty": "請輸入 JSON 物件。",
+      "input_notObject": "輸入內容必須是 JSON 物件，不能是陣列或單一值。",
+      "inputInvalid": "JSON 格式錯誤：{{message}}",
+      "submit": "排入任務",
+      "submitting": "排入中…",
+      "submitted": "已排入任務 {{id}}。",
+      "submitFailed": "無法排入任務：{{message}}"
+    },
+    "jobs": {
+      "title": "任務佇列",
+      "polling": "有進行中的任務，正在自動重新整理。",
+      "idle": "目前沒有進行中的任務。",
+      "refresh": "重新整理",
+      "empty": "目前還沒有任務。",
+      "listLabel": "外掛任務",
+      "loadFailed": "無法載入任務：{{message}}",
+      "meta": "排入於 {{time}} · 第 {{attempts}}/{{max}} 次嘗試",
+      "cancelRequested": "已要求取消",
+      "cancelNamed": "取消任務 {{name}}",
+      "cancelling": "取消中…",
+      "cancelFailed": "無法取消任務：{{message}}",
+      "progressLabel": "{{name}} 的進度",
+      "viewProposal": "審核提案",
+      "status": {
+        "queued": "排隊中",
+        "running": "執行中",
+        "succeeded": "已完成",
+        "failed": "失敗",
+        "cancelled": "已取消"
+      }
+    }
   }
 }
