@@ -7,7 +7,9 @@ import type {
   Note,
   Proposal,
   QuestionCard,
+  QuestionGroup,
   Resource,
+  SubjectGroup,
   WeaknessReport,
 } from '../types'
 
@@ -274,13 +276,48 @@ export const MOCK_NOTES: Note[] = [
   },
 ]
 
+export const MOCK_SUBJECT_GROUPS: SubjectGroup[] = [
+  {
+    id: '01a21714-c98d-7000-8000-000000001001',
+    parent_id: null,
+    name: '自然科學',
+    sort_order: 0,
+    subjects: [],
+    created_at: '2026-01-01T00:00:00.000000Z',
+    updated_at: '2026-01-01T00:00:00.000000Z',
+  },
+  {
+    id: '01a21714-c98d-7000-8000-000000001002',
+    parent_id: '01a21714-c98d-7000-8000-000000001001',
+    name: '物理與熱力學',
+    sort_order: 0,
+    subjects: ['physics'],
+    created_at: '2026-01-01T00:00:00.000000Z',
+    updated_at: '2026-01-01T00:00:00.000000Z',
+  },
+]
+
+export const MOCK_QUESTION_GROUPS: QuestionGroup[] = [
+  {
+    id: '01a21714-c98d-7931-a48a-6a1d5cd39901',
+    exam_set_id: '01a21714-c98d-7931-a48a-6a1d5cd348bd',
+    title: '相變與潛熱情境題組（第 1–2 題）',
+    shared_stem_blocks: [
+      {
+        type: 'markdown',
+        text: '在一大氣壓下，將 100 g 零度冰塊置於密閉量熱計中以固定功率持續加熱，觀察溫度隨時間的變化與固、液、氣三相轉變。請依此情境回答下列題組問題。',
+      },
+    ],
+  },
+]
+
 export const MOCK_EXAM_SETS: ExamSet[] = [
   {
     id: '01a21714-c98d-7931-a48a-6a1d5cd348bd',
     subject: 'physics',
     title: '相位變化小測',
     source_kind: 'original',
-    exam_year: null,
+    exam_year: 2025,
     source_resource_id: '01a21714-c98c-7bfe-8cf8-a60b84573f56',
     expected_questions: 4,
     metadata: {},
@@ -292,7 +329,7 @@ export const MOCK_QUESTIONS: QuestionCard[] = [
   {
     id: '01a21714-c98d-70f7-90ba-1bced11dd072',
     exam_set_id: '01a21714-c98d-7931-a48a-6a1d5cd348bd',
-    question_group_id: null,
+    question_group_id: '01a21714-c98d-7931-a48a-6a1d5cd39901',
     question_no: 1,
     subject: 'physics',
     topics: ['phase changes'],
@@ -338,7 +375,7 @@ export const MOCK_QUESTIONS: QuestionCard[] = [
   {
     id: '01a21714-c98d-7dae-9885-d1852753b72a',
     exam_set_id: '01a21714-c98d-7931-a48a-6a1d5cd348bd',
-    question_group_id: null,
+    question_group_id: '01a21714-c98d-7931-a48a-6a1d5cd39901',
     question_no: 2,
     subject: 'physics',
     topics: ['phase changes'],

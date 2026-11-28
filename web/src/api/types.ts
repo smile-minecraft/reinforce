@@ -278,6 +278,43 @@ export interface QuizAnswer {
   submission: AnswerSubmission
   confidence: Confidence
   error_tags?: string[]
+  index?: number
+}
+
+export interface SubjectGroup {
+  id: string
+  parent_id: string | null
+  name: string
+  sort_order: number
+  subjects: string[]
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateSubjectGroupRequest {
+  parent_id?: string | null
+  name: string
+  subjects?: string[]
+  sort_order?: number
+}
+
+export interface UpdateSubjectGroupRequest {
+  parent_id?: string | null
+  name?: string
+  subjects?: string[]
+  sort_order?: number
+}
+
+export interface CardQuestionsResponse {
+  question_ids: string[]
+  count: number
+}
+
+export interface ExamSetMeta {
+  id: string
+  title: string
+  exam_year: number | null
+  subject: string
 }
 
 export interface GradingOutcome {
@@ -390,6 +427,8 @@ export interface SessionOptions {
 export interface CreateSessionRequest {
   mode: SessionMode
   exam_set_id?: string
+  subject_group_id?: string
+  subject?: string
   knowledge_card_ids?: string[]
   question_ids?: string[]
   options?: SessionOptions
@@ -407,10 +446,21 @@ export interface SessionSnapshot {
   state: SessionState
   question: QuestionCard | null
   question_count: number
+  questions?: QuestionCard[]
+  question_groups?: Record<string, QuestionGroup>
+  exam_sets?: Record<string, ExamSetMeta>
+  answers?: AnswerRecord[]
+  graded?: GradedAnswer[]
+}
+
+export interface SelectSessionQuestionResponse {
+  state: SessionState
+  question: QuestionCard | null
 }
 
 export interface SubmitAnswerResponse {
   state: SessionState
+  index?: number
   grading: GradingOutcome | null
   revealed_question?: QuestionCard | null
 }
