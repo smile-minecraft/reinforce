@@ -761,3 +761,81 @@ export interface SyncContentUnchanged {
 }
 
 export type SyncContentResponse = SyncContentSnapshot | SyncContentUnchanged
+
+// MCP agent tokens (invite mode, owner only)
+export interface AgentTokenSummary {
+  id: string
+  name: string | null
+  created_at: string
+}
+
+export interface AgentTokenList {
+  tokens: AgentTokenSummary[]
+}
+
+/** Returned once on creation; `token` is the only time the plaintext is visible. */
+export interface CreatedAgentToken extends AgentTokenSummary {
+  token: string
+}
+
+export interface RevokeAgentTokenResponse {
+  ok: boolean
+  revoked: boolean
+}
+
+// Plugins (owner only)
+export interface PluginSummary {
+  name: string
+  capabilities: string[]
+  transport: string
+  command: string
+  args: string[]
+  timeout_secs: number
+  max_output_bytes: number
+  max_attempts: number
+}
+
+export type PluginJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export type PluginJobErrorCode =
+  | 'timeout'
+  | 'crashed'
+  | 'output_too_large'
+  | 'protocol_violation'
+  | 'spawn_failed'
+  | 'validation_failed'
+  | 'interrupted'
+  | 'cancelled'
+  | 'plugin_not_configured'
+  | 'plugin_reported'
+  | 'internal'
+
+export interface PluginJobError {
+  code: PluginJobErrorCode
+  message: string
+  details?: unknown
+}
+
+export interface PluginJob {
+  id: string
+  plugin: string
+  capability: string
+  input: Record<string, unknown>
+  status: PluginJobStatus
+  attempts: number
+  max_attempts: number
+  cancel_requested: boolean
+  progress: number
+  progress_message: string | null
+  proposal_id: string | null
+  error: PluginJobError | null
+  created_at: string
+  updated_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface SubmitPluginJobRequest {
+  capability: string
+  input: Record<string, unknown>
+}
