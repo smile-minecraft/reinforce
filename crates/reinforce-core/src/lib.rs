@@ -25,7 +25,7 @@ pub use plugin::{JobError, JobErrorCode, PluginJob};
 pub use primitives::{
     AnchorId, CardId, CardStatus, Confidence, EdgeId, Error, ExamSetId, JobId, JobStatus,
     KnowledgeCardId, NoteId, ProposalId, QuestionCardId, QuestionGroupId, ResourceId, Result,
-    UserId, Verification,
+    SubjectGroupId, UserId, Verification,
 };
 pub use proposal::{
     ApprovalOptions, ApprovalOutcome, BatchOperation, BatchPayload, OperationKind, SubmitOutcome,
@@ -45,6 +45,8 @@ pub use db::plugins as plugin_store;
 pub use db::quiz as quiz_store;
 pub use db::search;
 pub use db::study as study_store;
+pub use db::subject_groups as subject_groups_store;
+pub use db::subject_groups::SubjectGroup;
 pub use db::sync as sync_store;
 pub use db::sync::{MergeOutcome, SyncState};
 pub use quiz::{QuizSession, SessionState};

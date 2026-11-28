@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use reinforce_core::QuizSession as CoreQuizSession;
 
-use crate::error::{FfiError, guard, locked, parse_timestamp};
+use crate::error::{FfiError, guard, locked, parse_timestamp, usize_field};
 use crate::types::{
-    AttemptLogRecord, GradedAnswer, GradingOutcome, QuestionCard, QuizAnswer, Score, SessionMode,
-    SessionState, TickOutcome,
+    AnswerRecord, AttemptLogRecord, GradedAnswer, GradingOutcome, QuestionCard, QuizAnswer, Score,
+    SessionMode, SessionState, TickOutcome,
 };
 
 #[derive(uniffi::Object)]
@@ -132,6 +132,49 @@ impl QuizSessionHandle {
             Ok(session
                 .submit_answer(answer, now)?
                 .map(GradingOutcome::from))
+        })
+    }
+
+    /// Switches the active question for a running or paused session.
+    pub fn select_index(&self, index: u32, now: String) -> Result<SessionState, FfiError> {
+        guard("select question index", || {
+            let index = usize_field("index", index)?;
+            let now = parse_timestamp("now", &now)?;
+            let mut session = locked("quiz session", &self.inner)?;
+            session.select_index(index, now)?;
+            Ok(session.state().into())
+        })
+    }
+
+    /// Answers one question index without advancing; re-answering replaces the
+    /// stored answer for that index.
+    pub fn submit_answer_at(
+        &self,
+        index: u32,
+        answer: QuizAnswer,
+        now: String,
+    ) -> Result<Option<GradingOutcome>, FfiError> {
+        guard("submit answer at index", || {
+            let index = usize_field("index", index)?;
+            let now = parse_timestamp("now", &now)?;
+            let answer = answer.into_core()?;
+            let mut session = locked("quiz session", &self.inner)?;
+            Ok(session
+                .submit_answer_at(index, answer, now)?
+                .map(GradingOutcome::from))
+        })
+    }
+
+    /// The answers stored so far, in the order they were first recorded.
+    pub fn answers(&self) -> Result<Vec<AnswerRecord>, FfiError> {
+        guard("session answers", || {
+            let session = locked("quiz session", &self.inner)?;
+            Ok(session
+                .answers()
+                .iter()
+                .cloned()
+                .map(AnswerRecord::from)
+                .collect())
         })
     }
 

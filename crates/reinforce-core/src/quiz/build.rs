@@ -16,6 +16,10 @@ pub struct BuildOptions {
     pub affects_scheduling: bool,
     pub pin_radius: f64,
     pub pin_aspect_ratio: Option<f64>,
+    /// Optional subject scope. `None` keeps every published question; `Some`
+    /// restricts every mode to the listed subjects, and an empty list is an
+    /// empty scope rather than "no filter".
+    pub subjects: Option<Vec<String>>,
 }
 
 impl Default for BuildOptions {
@@ -28,6 +32,7 @@ impl Default for BuildOptions {
             affects_scheduling: true,
             pin_radius: 0.05,
             pin_aspect_ratio: None,
+            subjects: None,
         }
     }
 }
@@ -38,6 +43,16 @@ impl BuildOptions {
             pin_radius: self.pin_radius,
             pin_aspect_ratio: self.pin_aspect_ratio,
         }
+    }
+
+    fn subject_scope(&self) -> Option<&[String]> {
+        self.subjects.as_deref()
+    }
+
+    fn has_empty_subject_scope(&self) -> bool {
+        self.subjects
+            .as_ref()
+            .is_some_and(|subjects| subjects.is_empty())
     }
 }
 
@@ -70,10 +85,19 @@ fn session(
     )
 }
 
-fn load(connection: &Connection, ids: Vec<QuestionCardId>) -> Result<Vec<QuestionCard>> {
+fn load(
+    connection: &Connection,
+    ids: Vec<QuestionCardId>,
+    subjects: Option<&[String]>,
+) -> Result<Vec<QuestionCard>> {
     ids.into_iter()
         .filter_map(|id| match store::get_question_card(connection, &id) {
-            Ok(Some(card)) if card.status == crate::primitives::CardStatus::Published => {
+            Ok(Some(card))
+                if card.status == crate::primitives::CardStatus::Published
+                    && subjects.is_none_or(|subjects| {
+                        subjects.iter().any(|subject| subject == &card.subject)
+                    }) =>
+            {
                 Some(Ok(card))
             }
             Ok(_) => None,
@@ -91,19 +115,20 @@ pub fn build_daily_due(
     options: &BuildOptions,
 ) -> Result<QuizSession> {
     validate(options)?;
-    let ids = quiz_store::due_questions(
+    let ids = quiz_store::due_questions_scoped(
         connection,
         user_id,
         now,
         options.new_card_limit,
         options.question_limit,
+        options.subject_scope(),
     )?
     .into_iter()
     .map(|due| due.id)
     .collect();
     session(
         SessionMode::DailyDue,
-        load(connection, ids)?,
+        load(connection, ids, options.subject_scope())?,
         options,
         None,
         None,
@@ -118,10 +143,39 @@ pub fn build_full_exam(
     options: &BuildOptions,
 ) -> Result<QuizSession> {
     validate(options)?;
-    let ids = quiz_store::exam_question_ids(connection, exam_set_id, options.question_limit)?;
+    let ids = quiz_store::exam_question_ids_scoped(
+        connection,
+        exam_set_id,
+        options.question_limit,
+        options.subject_scope(),
+    )?;
     session(
         SessionMode::FullExam,
-        load(connection, ids)?,
+        load(connection, ids, options.subject_scope())?,
+        options,
+        options.total_time_secs,
+        None,
+        true,
+    )
+}
+
+/// A combined mock exam over every published question of the given subjects,
+/// ordered by subject, exam set and question number, with grading deferred so
+/// the whole paper is revealed at once.
+pub fn build_subject_exam(
+    connection: &Connection,
+    subjects: &[String],
+    options: &BuildOptions,
+) -> Result<QuizSession> {
+    validate(options)?;
+    let ids = if subjects.is_empty() {
+        Vec::new()
+    } else {
+        quiz_store::subject_question_ids(connection, subjects, options.question_limit)?
+    };
+    session(
+        SessionMode::FullExam,
+        load(connection, ids, Some(subjects))?,
         options,
         options.total_time_secs,
         None,
@@ -136,11 +190,15 @@ pub fn build_topic_drill(
     options: &BuildOptions,
 ) -> Result<QuizSession> {
     validate(options)?;
-    let ids =
-        quiz_store::topic_question_ids(connection, knowledge_card_ids, options.question_limit)?;
+    let ids = quiz_store::topic_question_ids_scoped(
+        connection,
+        knowledge_card_ids,
+        options.question_limit,
+        options.subject_scope(),
+    )?;
     session(
         SessionMode::TopicDrill,
-        load(connection, ids)?,
+        load(connection, ids, options.subject_scope())?,
         options,
         None,
         None,
@@ -156,11 +214,15 @@ pub fn build_practical_exam(
 ) -> Result<QuizSession> {
     validate(options)?;
     let ids = if question_ids.is_empty() {
-        quiz_store::practical_question_ids(connection, options.question_limit)?
+        quiz_store::practical_question_ids_scoped(
+            connection,
+            options.question_limit,
+            options.subject_scope(),
+        )?
     } else {
         question_ids.to_vec()
     };
-    let questions = load(connection, ids)?
+    let questions = load(connection, ids, options.subject_scope())?
         .into_iter()
         .filter(is_practical_question)
         .take(options.question_limit)
@@ -183,7 +245,22 @@ pub fn build_weakness_drill(
     options: &BuildOptions,
 ) -> Result<QuizSession> {
     validate(options)?;
-    let report = weakness::build_report(connection, user_id, options.question_limit)?;
+    if options.has_empty_subject_scope() {
+        return session(
+            SessionMode::WeaknessDrill,
+            Vec::new(),
+            options,
+            None,
+            None,
+            false,
+        );
+    }
+    let report = weakness::build_report_scoped(
+        connection,
+        user_id,
+        options.question_limit,
+        options.subject_scope(),
+    )?;
     let mut ids: Vec<QuestionCardId> = report
         .questions
         .iter()
@@ -191,10 +268,11 @@ pub fn build_weakness_drill(
         .collect();
     if ids.len() < options.question_limit {
         for card in report.knowledge_cards {
-            let linked = quiz_store::topic_question_ids(
+            let linked = quiz_store::topic_question_ids_scoped(
                 connection,
                 std::slice::from_ref(&card.card_id),
                 options.question_limit,
+                options.subject_scope(),
             )?;
             for id in linked {
                 if !ids.contains(&id) {
@@ -206,7 +284,7 @@ pub fn build_weakness_drill(
     ids.truncate(options.question_limit);
     session(
         SessionMode::WeaknessDrill,
-        load(connection, ids)?,
+        load(connection, ids, options.subject_scope())?,
         options,
         None,
         None,

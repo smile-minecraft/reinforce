@@ -8,16 +8,17 @@ use axum::extract::rejection::BytesRejection;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
-use axum::routing::{get, put};
+use axum::routing::{get, patch, put};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use reinforce_core::content_store;
 use reinforce_core::db::search::{self, SearchHit};
+use reinforce_core::db::{quiz as quiz_store, subject_groups as subject_groups_store};
 use reinforce_core::primitives::{CardStatus, ExportPolicy, ResourceKind};
 use reinforce_core::{
     Anchor, AnchorId, ContentHash, Edge, EdgeEndpoint, ExamSet, ExamSetId, GraphNode,
-    KnowledgeCard, KnowledgeCardId, Note, NoteId, QuestionCard, QuestionCardId, Resource,
-    ResourceId, Timestamp,
+    KnowledgeCard, KnowledgeCardId, Note, NoteId, QuestionCard, QuestionCardId, QuestionGroup,
+    QuestionGroupId, Resource, ResourceId, SubjectGroup, SubjectGroupId, Timestamp,
 };
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, params_from_iter};
@@ -30,7 +31,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio_util::io::ReaderStream;
 
 use crate::auth::Principal;
-use crate::error::{ApiError, ApiResult, MultipartBody, PathParam, QueryParams};
+use crate::error::{ApiError, ApiResult, JsonBody, MultipartBody, PathParam, QueryParams};
 use crate::state::AppState;
 
 const MAX_UPLOAD_BYTES: u64 = 64 * 1024 * 1024;
@@ -50,10 +51,24 @@ pub fn router() -> Router<AppState> {
         .route("/notes/{id}/view_settings", put(update_note_view_settings))
         .route("/knowledge_cards", get(list_knowledge_cards))
         .route("/knowledge_cards/{id}", get(get_knowledge_card))
+        .route(
+            "/knowledge_cards/{id}/questions",
+            get(list_knowledge_card_questions),
+        )
         .route("/questions", get(list_questions))
         .route("/questions/{id}", get(get_question))
         .route("/exam_sets", get(list_exam_sets))
         .route("/exam_sets/{id}", get(get_exam_set))
+        .route("/question_groups", get(list_question_groups))
+        .route("/question_groups/{id}", get(get_question_group))
+        .route(
+            "/subject_groups",
+            get(list_subject_groups).post(create_subject_group),
+        )
+        .route(
+            "/subject_groups/{id}",
+            patch(update_subject_group).delete(delete_subject_group),
+        )
         .route("/search", get(search_content))
         .route("/graph/{kind}/{id}/neighbors", get(graph_neighbors))
         .route("/resources/{id}", get(get_resource))
@@ -80,6 +95,48 @@ struct SearchQuery {
     q: String,
     #[serde(default)]
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct QuestionGroupQuery {
+    #[serde(default)]
+    exam_set_id: Option<ExamSetId>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateSubjectGroupRequest {
+    #[serde(default)]
+    parent_id: Option<SubjectGroupId>,
+    name: String,
+    #[serde(default)]
+    subjects: Vec<String>,
+    #[serde(default)]
+    sort_order: i32,
+}
+
+/// `parent_id` distinguishes "field absent" (`None`) from "explicitly null"
+/// (`Some(None)`, which moves the group back to the top level).
+fn deserialize_optional_parent<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<SubjectGroupId>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<SubjectGroupId>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateSubjectGroupRequest {
+    #[serde(default, deserialize_with = "deserialize_optional_parent")]
+    parent_id: Option<Option<SubjectGroupId>>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    subjects: Option<Vec<String>>,
+    #[serde(default)]
+    sort_order: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -560,6 +617,184 @@ async fn get_question(
         .ok_or_else(|| ApiError::not_found("question card"))?;
     ensure_visible(card.status, &principal)?;
     Ok(Json(card))
+}
+
+async fn list_knowledge_card_questions(
+    State(state): State<AppState>,
+    PathParam(id): PathParam<KnowledgeCardId>,
+    QueryParams(query): QueryParams<ListQuery>,
+    principal: Principal,
+) -> ApiResult<Json<Value>> {
+    let limit = limit_of(query.limit);
+    let (question_ids, count) = state
+        .with_db(move |database| {
+            let connection = database.connection();
+            let card = content_store::get_knowledge_card(connection, &id)?
+                .ok_or_else(|| ApiError::not_found("knowledge card"))?;
+            ensure_visible(card.status, &principal)?;
+            let ids = quiz_store::topic_question_ids(connection, std::slice::from_ref(&id), limit)?;
+            Ok((
+                ids.iter()
+                    .map(QuestionCardId::as_str)
+                    .collect::<Vec<String>>(),
+                ids.len(),
+            ))
+        })
+        .await?;
+    Ok(Json(
+        json!({ "question_ids": question_ids, "count": count }),
+    ))
+}
+
+fn question_group_is_visible(connection: &Connection, id: &QuestionGroupId) -> ApiResult<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM question_cards
+             WHERE question_group_id = ?1 AND status = 'published')",
+        rusqlite::params![id],
+        |row| row.get::<_, i64>(0),
+    )? != 0)
+}
+
+async fn list_question_groups(
+    State(state): State<AppState>,
+    QueryParams(query): QueryParams<QuestionGroupQuery>,
+    principal: Principal,
+) -> ApiResult<Json<Vec<QuestionGroup>>> {
+    let owner = principal.is_owner();
+    let exam_set_id = query.exam_set_id;
+    let limit = limit_of(query.limit);
+    let groups = state
+        .with_db(move |database| {
+            let connection = database.connection();
+            let mut sql =
+                "SELECT id FROM question_groups WHERE (?1 IS NULL OR exam_set_id = ?1)".to_owned();
+            if !owner {
+                sql.push_str(
+                    " AND EXISTS (SELECT 1 FROM question_cards q
+                       WHERE q.question_group_id = question_groups.id
+                         AND q.status = 'published')",
+                );
+            }
+            sql.push_str(" ORDER BY id LIMIT ?2");
+            let mut statement = connection.prepare(&sql)?;
+            let ids = statement
+                .query_map(
+                    rusqlite::params![exam_set_id, i64::try_from(limit).unwrap_or(50)],
+                    |row| row.get::<_, QuestionGroupId>(0),
+                )?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            ids.into_iter()
+                .map(|id| content_store::get_question_group(connection, &id))
+                .collect::<reinforce_core::Result<Vec<_>>>()
+                .map(|items| items.into_iter().flatten().collect())
+                .map_err(Into::into)
+        })
+        .await?;
+    Ok(Json(groups))
+}
+
+async fn get_question_group(
+    State(state): State<AppState>,
+    PathParam(id): PathParam<QuestionGroupId>,
+    principal: Principal,
+) -> ApiResult<Json<QuestionGroup>> {
+    let owner = principal.is_owner();
+    let group = state
+        .with_db(move |database| {
+            let connection = database.connection();
+            let group = content_store::get_question_group(connection, &id)?
+                .ok_or_else(|| ApiError::not_found("question group"))?;
+            if !owner && !question_group_is_visible(connection, &id)? {
+                return Err(ApiError::not_found("question group"));
+            }
+            Ok(group)
+        })
+        .await?;
+    Ok(Json(group))
+}
+
+async fn list_subject_groups(
+    State(state): State<AppState>,
+    _principal: Principal,
+) -> ApiResult<Json<Vec<SubjectGroup>>> {
+    let groups = state
+        .with_db(move |database| {
+            Ok(subject_groups_store::list_subject_groups(
+                database.connection(),
+            )?)
+        })
+        .await?;
+    Ok(Json(groups))
+}
+
+async fn create_subject_group(
+    State(state): State<AppState>,
+    principal: Principal,
+    JsonBody(request): JsonBody<CreateSubjectGroupRequest>,
+) -> ApiResult<Json<SubjectGroup>> {
+    require_owner(&principal, "create subject groups")?;
+    let now = Timestamp::now();
+    let group = state
+        .with_db(move |database| {
+            Ok(subject_groups_store::create_subject_group(
+                database.connection(),
+                request.parent_id.as_ref(),
+                &request.name,
+                &request.subjects,
+                request.sort_order,
+                now,
+            )?)
+        })
+        .await?;
+    Ok(Json(group))
+}
+
+async fn update_subject_group(
+    State(state): State<AppState>,
+    PathParam(id): PathParam<SubjectGroupId>,
+    principal: Principal,
+    JsonBody(request): JsonBody<UpdateSubjectGroupRequest>,
+) -> ApiResult<Json<SubjectGroup>> {
+    require_owner(&principal, "update subject groups")?;
+    let now = Timestamp::now();
+    let group = state
+        .with_db(move |database| {
+            let connection = database.connection();
+            let existing = subject_groups_store::get_subject_group(connection, &id)?
+                .ok_or_else(|| ApiError::not_found("subject group"))?;
+            let parent_id = request.parent_id.unwrap_or(existing.parent_id);
+            let name = request.name.unwrap_or(existing.name);
+            let subjects = request.subjects.unwrap_or(existing.subjects);
+            let sort_order = request.sort_order.unwrap_or(existing.sort_order);
+            Ok(subject_groups_store::update_subject_group(
+                connection,
+                &id,
+                parent_id.as_ref(),
+                &name,
+                &subjects,
+                sort_order,
+                now,
+            )?)
+        })
+        .await?;
+    Ok(Json(group))
+}
+
+async fn delete_subject_group(
+    State(state): State<AppState>,
+    PathParam(id): PathParam<SubjectGroupId>,
+    principal: Principal,
+) -> ApiResult<Json<Value>> {
+    require_owner(&principal, "delete subject groups")?;
+    let deleted = state
+        .with_db(move |database| {
+            Ok(subject_groups_store::delete_subject_group(
+                database.connection(),
+                &id,
+            )?)
+        })
+        .await?;
+    Ok(Json(json!({ "ok": deleted })))
 }
 
 fn has_published_question(connection: &Connection, set: &ExamSet) -> ApiResult<bool> {

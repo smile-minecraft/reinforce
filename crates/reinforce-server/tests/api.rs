@@ -2461,3 +2461,746 @@ async fn note_edges_returns_typed_edges_between_outline_cards_only() {
     assert_eq!(list[0]["from"]["id"], DEMO_CARD_PHASE_CHANGES);
     assert_eq!(list[0]["to"]["id"], DEMO_CARD_PHASE_PINS);
 }
+
+#[tokio::test]
+async fn subject_groups_scope_sessions_and_indexed_answers_replace() {
+    let (app, _state, _dir) = test_state(AuthMode::Single).await;
+    let root = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/subject_groups",
+            Some(json!({"name": "自然科", "subjects": ["physics"]})),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let root_id = root["id"].as_str().expect("root id").to_owned();
+    assert_eq!(root["sort_order"], 0);
+    assert_eq!(root["subjects"], json!(["physics"]));
+
+    let child = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/subject_groups",
+            Some(json!({
+                "parent_id": root_id,
+                "name": "化學",
+                "subjects": ["chemistry", "chemistry"],
+                "sort_order": 3
+            })),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let child_id = child["id"].as_str().expect("child id").to_owned();
+    assert_eq!(child["parent_id"], root_id);
+    assert_eq!(child["subjects"], json!(["chemistry"]));
+
+    assert_eq!(
+        json_call(
+            &app,
+            Method::PATCH,
+            &format!("/api/subject_groups/{root_id}"),
+            Some(json!({"parent_id": child_id})),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST,
+        "a group cannot be moved below its own descendant"
+    );
+    assert_eq!(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/subject_groups",
+            Some(json!({"name": "   "})),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let detached = expect_json(
+        json_call(
+            &app,
+            Method::PATCH,
+            &format!("/api/subject_groups/{child_id}"),
+            Some(json!({"parent_id": null, "name": "化學科"})),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert!(detached["parent_id"].is_null());
+    assert_eq!(detached["name"], "化學科");
+    assert_eq!(detached["subjects"], json!(["chemistry"]));
+    let reattached = expect_json(
+        json_call(
+            &app,
+            Method::PATCH,
+            &format!("/api/subject_groups/{child_id}"),
+            Some(json!({"parent_id": root_id})),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(reattached["parent_id"], root_id);
+    assert_eq!(
+        json_call(
+            &app,
+            Method::PATCH,
+            "/api/subject_groups/00000000-0000-7000-8000-000000000000",
+            Some(json!({"name": "ghost"})),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let groups = expect_json(
+        json_call(&app, Method::GET, "/api/subject_groups", None, None).await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(groups.as_array().expect("groups").len(), 2);
+
+    let created = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({
+                "mode": "full_exam",
+                "subject_group_id": root_id,
+                "options": {"question_limit": 10, "total_time_secs": 600}
+            })),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(created["question_count"], 4);
+    let session_id = created["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+
+    let empty = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({"mode": "daily_due", "subject_group_id": child_id})),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        empty["question_count"], 0,
+        "a group without matching published questions must build an empty session"
+    );
+    let single = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({"mode": "daily_due", "subject": "physics"})),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(single["question_count"], 4);
+    let blank_subject = json_call(
+        &app,
+        Method::POST,
+        "/api/study/sessions",
+        Some(json!({"mode": "daily_due", "subject": "  "})),
+        None,
+    )
+    .await;
+    assert_eq!(blank_subject.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({
+                "mode": "daily_due",
+                "subject_group_id": "00000000-0000-7000-8000-000000000000"
+            })),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let session = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/study/sessions/{session_id}"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(session["question_count"], 4);
+    let questions = session["questions"].as_array().expect("questions");
+    assert_eq!(questions.len(), 4);
+    for question in questions {
+        assert!(question.get("answer").is_none());
+        assert!(question.get("explanation_blocks").is_none());
+        assert!(question.get("accepted_answers").is_none());
+    }
+    assert!(session["answers"].as_array().expect("answers").is_empty());
+    assert!(session["graded"].as_array().expect("graded").is_empty());
+    assert!(session["exam_sets"].is_object());
+    assert!(session["question_groups"].is_object());
+
+    let selected = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/select"),
+            Some(json!({"index": 2})),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(selected["state"]["InProgress"]["index"], 2);
+    assert_eq!(
+        selected["question"]["id"], "01a21714-c98d-7c8f-800b-0200f1cba221",
+        "selecting index 2 must expose the third exam question"
+    );
+    assert_eq!(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/select"),
+            Some(json!({"index": 9})),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let first = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/answers"),
+            Some(json!({
+                "index": 1,
+                "submission": {"kind": "keys", "values": ["A"]},
+                "confidence": "certain"
+            })),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(first["index"], 1);
+    assert!(first["grading"].is_null(), "full exams defer grading");
+    assert!(first["revealed_question"].is_null());
+    let replaced = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/answers"),
+            Some(json!({
+                "index": 1,
+                "submission": {"kind": "keys", "values": ["B"]},
+                "confidence": "split"
+            })),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(replaced["index"], 1);
+    assert_eq!(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/answers"),
+            Some(json!({
+                "index": 9,
+                "submission": {"kind": "keys", "values": ["A"]},
+                "confidence": "certain"
+            })),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let after_answers = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/study/sessions/{session_id}"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let answers = after_answers["answers"].as_array().expect("answers");
+    assert_eq!(answers.len(), 1, "re-answering must replace, not append");
+    assert_eq!(answers[0]["index"], 1);
+    assert_eq!(answers[0]["submission"]["values"], json!(["B"]));
+    assert!(
+        after_answers["graded"]
+            .as_array()
+            .expect("graded")
+            .is_empty()
+    );
+
+    let finished = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{session_id}/finish"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(finished["attempts_written"], 1);
+    assert_eq!(finished["graded"].as_array().expect("graded").len(), 1);
+
+    let deleted = expect_json(
+        json_call(
+            &app,
+            Method::DELETE,
+            &format!("/api/subject_groups/{root_id}"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(deleted["ok"], true);
+    let remaining = expect_json(
+        json_call(&app, Method::GET, "/api/subject_groups", None, None).await,
+        StatusCode::OK,
+    )
+    .await;
+    assert!(
+        remaining.as_array().expect("groups").is_empty(),
+        "deleting a root group cascades to its children"
+    );
+}
+
+#[tokio::test]
+async fn question_groups_and_linked_questions_are_exposed() {
+    let (app, state, _dir) = test_state(AuthMode::Single).await;
+    let group_id: reinforce_core::QuestionGroupId =
+        "01a21714-c98d-7f00-8000-800000000001".parse().unwrap();
+    let exam_set_id: reinforce_core::ExamSetId = EXAM_SET.parse().unwrap();
+    let question_id: reinforce_core::QuestionCardId = QUESTION_ONE.parse().unwrap();
+    let grouped = group_id.clone();
+    let linked_question = question_id.clone();
+    state
+        .with_db(move |database| {
+            content_store::insert_question_group(
+                database.connection(),
+                &reinforce_core::QuestionGroup {
+                    id: grouped.clone(),
+                    exam_set_id: Some(exam_set_id),
+                    title: Some("共用題幹".to_owned()),
+                    shared_stem_blocks: Vec::new(),
+                },
+            )?;
+            database.connection().execute(
+                "UPDATE question_cards SET question_group_id = ?1 WHERE id = ?2",
+                rusqlite::params![grouped, linked_question],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("insert question group");
+
+    let groups = expect_json(
+        json_call(&app, Method::GET, "/api/question_groups", None, None).await,
+        StatusCode::OK,
+    )
+    .await;
+    let list = groups.as_array().expect("groups");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["id"], group_id.as_str());
+    assert_eq!(list[0]["title"], "共用題幹");
+
+    let filtered = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/question_groups?exam_set_id={EXAM_SET}"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(filtered.as_array().expect("filtered").len(), 1);
+    let other_set = "00000000-0000-7000-8000-000000000000";
+    let none = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/question_groups?exam_set_id={other_set}"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert!(none.as_array().expect("none").is_empty());
+    let group = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/question_groups/{}", group_id.as_str()),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(group["id"], group_id.as_str());
+    assert_eq!(group["exam_set_id"], EXAM_SET);
+    assert_eq!(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/question_groups/{other_set}"),
+            None,
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let linked = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/knowledge_cards/{DEMO_CARD_PHASE_CHANGES}/questions"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(linked["count"], 1);
+    assert_eq!(linked["question_ids"], json!([QUESTION_ONE]));
+    assert_eq!(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/knowledge_cards/{other_set}/questions"),
+            None,
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let created = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({
+                "mode": "full_exam",
+                "exam_set_id": EXAM_SET,
+                "options": {"question_limit": 10, "total_time_secs": 600}
+            })),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let session_id = created["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    let session = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/study/sessions/{session_id}"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let groups_map = session["question_groups"].as_object().expect("group map");
+    assert_eq!(
+        groups_map[group_id.as_str().as_str()]["title"],
+        "共用題幹",
+        "the session must carry the shared stem of its questions"
+    );
+    let sets = session["exam_sets"].as_object().expect("exam set map");
+    assert_eq!(sets[EXAM_SET]["title"], "相位變化小測");
+    assert_eq!(sets[EXAM_SET]["subject"], "physics");
+    assert!(sets[EXAM_SET]["exam_year"].is_null());
+
+    let daily = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/study/sessions",
+            Some(json!({"mode": "daily_due"})),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let daily_id = daily["session_id"].as_str().expect("daily id").to_owned();
+    expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            &format!("/api/study/sessions/{daily_id}/answers"),
+            Some(json!({
+                "submission": {"kind": "keys", "values": ["A"]},
+                "confidence": "certain"
+            })),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let revealed = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/study/sessions/{daily_id}"),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    let questions = revealed["questions"].as_array().expect("questions");
+    assert!(
+        questions[0].get("answer").is_some(),
+        "an immediately graded question is revealed in the question list"
+    );
+    assert!(
+        questions[1].get("answer").is_none(),
+        "unanswered questions keep their answers hidden"
+    );
+    let answers = revealed["answers"].as_array().expect("answers");
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0]["index"], 0);
+    assert_eq!(revealed["graded"].as_array().expect("graded").len(), 1);
+}
+
+#[tokio::test]
+async fn members_cannot_manage_subject_groups() {
+    let (app, state, _dir) = test_state(AuthMode::Invite).await;
+    let owner_cookie = setup_invite_owner(&app, &state).await;
+    let member_cookie = register_member(&app, &owner_cookie).await;
+    let created = expect_json(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/subject_groups",
+            Some(json!({"name": "自然科", "subjects": ["physics"]})),
+            Some(&owner_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        json_call(
+            &app,
+            Method::POST,
+            "/api/subject_groups",
+            Some(json!({"name": "member group"})),
+            Some(&member_cookie),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        json_call(
+            &app,
+            Method::PATCH,
+            &format!("/api/subject_groups/{}", created["id"].as_str().unwrap()),
+            Some(json!({"name": "renamed"})),
+            Some(&member_cookie),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        json_call(
+            &app,
+            Method::DELETE,
+            &format!("/api/subject_groups/{}", created["id"].as_str().unwrap()),
+            None,
+            Some(&member_cookie),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let listed = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            "/api/subject_groups",
+            None,
+            Some(&member_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(listed.as_array().expect("groups").len(), 1);
+
+    // Members must not see draft-only question groups through list or get endpoints.
+    let draft_exam_id = reinforce_core::ExamSetId::generate();
+    let draft_group_id = reinforce_core::QuestionGroupId::generate();
+    let draft_exam = reinforce_core::ExamSet {
+        id: draft_exam_id.clone(),
+        subject: "physics".to_owned(),
+        title: "draft exam".to_owned(),
+        source_kind: reinforce_core::primitives::SourceKind::PastExam,
+        exam_year: None,
+        source_resource_id: None,
+        expected_questions: Some(1),
+        metadata: json!({}),
+        is_complete: false,
+    };
+    let draft_group = reinforce_core::QuestionGroup {
+        id: draft_group_id.clone(),
+        exam_set_id: Some(draft_exam_id.clone()),
+        title: Some("Draft-only vignette".to_owned()),
+        shared_stem_blocks: vec![reinforce_core::ContentBlock::Markdown {
+            text: "Hidden draft stem".to_owned(),
+        }],
+    };
+    let draft_question = reinforce_core::QuestionCard {
+        id: reinforce_core::QuestionCardId::generate(),
+        exam_set_id: Some(draft_exam_id.clone()),
+        question_group_id: Some(draft_group_id.clone()),
+        question_no: Some(1),
+        subject: "physics".to_owned(),
+        topics: vec!["draft".to_owned()],
+        stem_blocks: vec![reinforce_core::ContentBlock::Markdown {
+            text: "Draft question".to_owned(),
+        }],
+        anchor_ids: Vec::new(),
+        question_type: reinforce_core::primitives::QuestionType::ShortAnswer,
+        grading_mode: reinforce_core::primitives::GradingMode::Exact,
+        options: Vec::new(),
+        answer: vec!["A".to_owned()],
+        accepted_answers: Vec::new(),
+        answer_source_kind: reinforce_core::primitives::AnswerSourceKind::Official,
+        answer_basis: None,
+        explanation_blocks: Vec::new(),
+        status: reinforce_core::primitives::CardStatus::Draft,
+        verification: reinforce_core::primitives::Verification::Verified,
+        duplicate_question_id: None,
+        unsure_count: 0,
+        metadata: json!({}),
+        created_at: Timestamp::now(),
+        updated_at: Timestamp::now(),
+    };
+    state
+        .with_db(move |database| {
+            content_store::insert_exam_set(database.connection(), &draft_exam)?;
+            content_store::insert_question_group(database.connection(), &draft_group)?;
+            content_store::insert_question_card(database.connection(), &draft_question)?;
+            Ok(())
+        })
+        .await
+        .expect("insert draft group");
+
+    let member_groups = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/question_groups?exam_set_id={draft_exam_id}"),
+            None,
+            Some(&member_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert!(member_groups.as_array().expect("groups").is_empty());
+    assert_eq!(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/question_groups/{draft_group_id}"),
+            None,
+            Some(&member_cookie),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let owner_group = expect_json(
+        json_call(
+            &app,
+            Method::GET,
+            &format!("/api/question_groups/{draft_group_id}"),
+            None,
+            Some(&owner_cookie),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(owner_group["id"], draft_group_id.as_str());
+}

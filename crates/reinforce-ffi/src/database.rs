@@ -2,23 +2,27 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use reinforce_core::db::{auth, study as study_store};
-use reinforce_core::db::{content as content_store, quiz as quiz_store, search as search_store};
+use reinforce_core::db::{
+    content as content_store, quiz as quiz_store, search as search_store,
+    subject_groups as subject_groups_store,
+};
 use reinforce_core::primitives::AttemptDirection;
 use reinforce_core::proposal::{
     ApprovalOptions, ApprovalOutcome, BatchOperation, SubmitOutcome, approve_batch, submit_batch,
 };
 use reinforce_core::quiz::build::{
-    build_daily_due, build_full_exam, build_practical_exam, build_topic_drill, build_weakness_drill,
+    build_daily_due, build_full_exam, build_practical_exam, build_subject_exam, build_topic_drill,
+    build_weakness_drill,
 };
 use reinforce_core::validation::Actor;
 use reinforce_core::weakness;
-use reinforce_core::{CardId, Database as CoreDatabase, Timestamp};
+use reinforce_core::{CardId, Database as CoreDatabase, SubjectGroupId, Timestamp};
 
-use crate::error::{FfiError, guard, locked, parse_timestamp, usize_field};
+use crate::error::{FfiError, guard, locked, parse_id, parse_timestamp, usize_field};
 use crate::session::QuizSessionHandle;
 use crate::types::{
     AttemptLogRecord, BuildOptions, CardSchedulingRecord, DueQuestion, ExamSet, ImportSummary,
-    KnowledgeCard, Note, QuestionCard, QuestionGroup, SearchHit, WeaknessReport,
+    KnowledgeCard, Note, QuestionCard, QuestionGroup, SearchHit, SubjectGroup, WeaknessReport,
     generated_attempt_id, parse_card_id, parse_user_id,
 };
 
@@ -262,6 +266,21 @@ impl LocalDatabase {
         })
     }
 
+    /// Builds one combined mock exam over every published question of the given
+    /// subjects, ordered by subject, exam set and question number.
+    pub fn create_subject_exam_session(
+        &self,
+        subjects: Vec<String>,
+        options: BuildOptions,
+    ) -> Result<Arc<QuizSessionHandle>, FfiError> {
+        guard("build subject exam session", || {
+            let options = options.into_core()?;
+            let database = locked("database", &self.inner)?;
+            let session = build_subject_exam(database.connection(), &subjects, &options)?;
+            Ok(Arc::new(QuizSessionHandle::new(session)))
+        })
+    }
+
     pub fn create_topic_drill_session(
         &self,
         card_ids: Vec<String>,
@@ -313,6 +332,75 @@ impl LocalDatabase {
             let database = locked("database", &self.inner)?;
             let session = build_weakness_drill(database.connection(), &user_id, &options)?;
             Ok(Arc::new(QuizSessionHandle::new(session)))
+        })
+    }
+
+    /// Creates a nested subject folder. `parent_id` must reference an existing
+    /// group when given.
+    pub fn create_subject_group(
+        &self,
+        parent_id: Option<String>,
+        name: String,
+        subjects: Vec<String>,
+        sort_order: i32,
+    ) -> Result<SubjectGroup, FfiError> {
+        guard("create subject group", || {
+            let parent_id = parent_id
+                .as_deref()
+                .map(|value| parse_id::<SubjectGroupId>("subject group id", value))
+                .transpose()?;
+            let database = locked("database", &self.inner)?;
+            Ok(subject_groups_store::create_subject_group(
+                database.connection(),
+                parent_id.as_ref(),
+                &name,
+                &subjects,
+                sort_order,
+                Timestamp::now(),
+            )?
+            .into())
+        })
+    }
+
+    /// Replaces a group's parent, name, subjects and sort order. A group can
+    /// never be moved below itself or one of its descendants.
+    pub fn update_subject_group(
+        &self,
+        id: String,
+        parent_id: Option<String>,
+        name: String,
+        subjects: Vec<String>,
+        sort_order: i32,
+    ) -> Result<SubjectGroup, FfiError> {
+        guard("update subject group", || {
+            let id: SubjectGroupId = parse_id("subject group id", &id)?;
+            let parent_id = parent_id
+                .as_deref()
+                .map(|value| parse_id::<SubjectGroupId>("subject group id", value))
+                .transpose()?;
+            let database = locked("database", &self.inner)?;
+            Ok(subject_groups_store::update_subject_group(
+                database.connection(),
+                &id,
+                parent_id.as_ref(),
+                &name,
+                &subjects,
+                sort_order,
+                Timestamp::now(),
+            )?
+            .into())
+        })
+    }
+
+    /// Deletes a group; descendants and subject links cascade with it.
+    pub fn delete_subject_group(&self, id: String) -> Result<bool, FfiError> {
+        guard("delete subject group", || {
+            let id: SubjectGroupId = parse_id("subject group id", &id)?;
+            let database = locked("database", &self.inner)?;
+            Ok(subject_groups_store::delete_subject_group(
+                database.connection(),
+                &id,
+            )?)
         })
     }
 
