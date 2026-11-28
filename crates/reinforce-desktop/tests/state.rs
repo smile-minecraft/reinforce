@@ -63,6 +63,7 @@ fn targets() -> QuizTargets {
     QuizTargets {
         exam_set: Some(EXAM_SET_ID.parse().unwrap()),
         cards: vec![KNOWLEDGE_CARD_ID.parse().unwrap()],
+        subjects: None,
     }
 }
 
@@ -275,4 +276,153 @@ fn exam_date_is_stored_in_shared_settings() {
             .as_deref(),
         Some("2026-02-01")
     );
+}
+
+#[test]
+fn tab_manager_opens_focuses_and_closes_falling_back_to_home() {
+    use reinforce_desktop::model::{TabManager, WorkspaceTab, WorkspaceTabKind};
+
+    let mut tabs = TabManager::default();
+    assert_eq!(tabs.tabs().len(), 1);
+    assert_eq!(tabs.active().kind, WorkspaceTabKind::Home);
+
+    let note_id: reinforce_core::NoteId = NOTE_ID.parse().unwrap();
+    tabs.open_or_focus(WorkspaceTab::note(note_id.clone(), "筆記 A"));
+    tabs.open_or_focus(WorkspaceTab::quiz(1, "複習 1"));
+    assert_eq!(tabs.tabs().len(), 3);
+    assert_eq!(tabs.active().kind, WorkspaceTabKind::Quiz(1));
+
+    // Re-opening existing note tab focuses without duplicating.
+    tabs.open_or_focus(WorkspaceTab::note(note_id.clone(), "筆記 A（更新）"));
+    assert_eq!(tabs.tabs().len(), 3);
+    assert_eq!(tabs.active().title, "筆記 A（更新）");
+
+    // Closing active tab focuses adjacent tab; closing last falls back to Home.
+    tabs.close(&format!("note:{}", note_id.as_str()));
+    assert_eq!(tabs.tabs().len(), 2);
+    tabs.close("quiz:1");
+    tabs.close("home");
+    assert_eq!(tabs.tabs().len(), 1);
+    assert_eq!(tabs.active().kind, WorkspaceTabKind::Home);
+}
+
+#[test]
+fn note_check_state_animates_collapse_smoothly_and_resets() {
+    use reinforce_desktop::model::NoteCheckState;
+
+    let note_id: reinforce_core::NoteId = NOTE_ID.parse().unwrap();
+    let card_id: reinforce_core::KnowledgeCardId = KNOWLEDGE_CARD_ID.parse().unwrap();
+    let mut state = NoteCheckState::default();
+    assert_eq!(state.factor(&note_id, &card_id), 1.0);
+
+    assert!(state.toggle(&note_id, &card_id));
+    assert!(state.is_checked(&note_id, &card_id));
+    let mut steps = 0;
+    while state.step_animations(0.016) && steps < 100 {
+        steps += 1;
+    }
+    assert!(
+        steps > 1 && steps < 100,
+        "animation should take multiple frames"
+    );
+    assert_eq!(state.factor(&note_id, &card_id), 0.0);
+
+    // Show-checked override reveals card immediately; reset clears checks.
+    state.show_checked = true;
+    assert_eq!(state.factor(&note_id, &card_id), 1.0);
+    state.show_checked = false;
+    state.reset_note(&note_id);
+    assert_eq!(state.checked_count(&note_id), 0);
+}
+
+#[test]
+fn nested_subject_groups_filter_library_and_build_scoped_exam() {
+    use reinforce_desktop::model::{build_subject_group_tree, is_descendant_or_self};
+
+    let (_temp, store) = open_demo();
+    let root = store
+        .create_subject_group(None, "自然科學", &[], 0, now())
+        .unwrap();
+    let child = store
+        .create_subject_group(Some(&root.id), "物理", &["physics".to_owned()], 0, now())
+        .unwrap();
+    let other = store
+        .create_subject_group(None, "化學", &["chemistry".to_owned()], 1, now())
+        .unwrap();
+
+    let mut library = Library::load(&store).unwrap();
+    assert_eq!(library.subject_groups.len(), 3);
+    assert!(is_descendant_or_self(
+        &library.subject_groups,
+        &child.id,
+        &root.id
+    ));
+    let tree = build_subject_group_tree(&library.subject_groups);
+    assert_eq!(tree.len(), 2);
+    assert_eq!(tree[0].resolved_subjects, vec!["physics".to_owned()]);
+
+    // Selecting parent group recursively includes child's "physics" subject.
+    library.selected_group_id = Some(root.id.clone());
+    assert_eq!(library.filtered_notes().len(), 1);
+    let user = store.local_user().unwrap();
+    let quiz = Quiz::start(
+        &store,
+        QuizMode::FullExam,
+        &library.targets(),
+        &desktop_options(),
+        &user.id,
+        now(),
+    )
+    .unwrap();
+    assert_eq!(quiz.total(), 4);
+
+    // Selecting unrelated "chemistry" group filters out physics notes & yields empty quiz.
+    library.selected_group_id = Some(other.id.clone());
+    assert!(library.filtered_notes().is_empty());
+    let empty_quiz = Quiz::start(
+        &store,
+        QuizMode::FullExam,
+        &library.targets(),
+        &desktop_options(),
+        &user.id,
+        now(),
+    )
+    .unwrap();
+    assert!(empty_quiz.is_empty());
+}
+
+#[test]
+fn grouped_quiz_supports_free_unit_navigation_and_five_level_confidence() {
+    use reinforce_core::primitives::Confidence;
+    use reinforce_desktop::model::ConfidenceLevel5;
+
+    let (_temp, store) = open_demo();
+    let user = store.local_user().unwrap();
+    let mut quiz = Quiz::start(
+        &store,
+        QuizMode::FullExam,
+        &targets(),
+        &desktop_options(),
+        &user.id,
+        now(),
+    )
+    .unwrap();
+    assert!(quiz.units().len() >= 2);
+    assert!(!quiz.sidebar_buckets().is_empty());
+
+    // Jump directly to unit 1, select an option with 5-level confidence, submit, then jump back to unit 0.
+    quiz.select_unit(1, now()).unwrap();
+    assert_eq!(quiz.active_unit_index(), 1);
+    let unit1_idx = quiz.current_unit().unwrap().session_indices[0];
+    quiz.set_confidence5(ConfidenceLevel5::Unfamiliar);
+    assert_eq!(
+        ConfidenceLevel5::Unfamiliar.to_core(),
+        (Confidence::Split, Some("concept_gap"))
+    );
+    quiz.toggle_option_at(unit1_idx, "A");
+    assert_eq!(quiz.submit_current_unit(now()).unwrap(), 1);
+    assert!(quiz.answer_for(unit1_idx).is_some());
+
+    quiz.prev_unit(now()).unwrap();
+    assert_eq!(quiz.active_unit_index(), 0);
 }

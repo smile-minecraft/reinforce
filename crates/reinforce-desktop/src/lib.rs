@@ -18,7 +18,10 @@ pub mod store;
 
 pub use app::{DesktopApp, LaunchOptions, StartScreen};
 pub use model::{
-    Library, PracticalCountdown, Quiz, QuizMode, QuizTargets, Summary, desktop_options,
+    ConfidenceLevel5, Library, NoteCheckState, PracticalCountdown, QuestionUnit, Quiz, QuizMode,
+    QuizTargets, SubjectGroupNode, Summary, TabManager, WorkspaceTab, WorkspaceTabKind,
+    build_question_units, build_sidebar_buckets, build_subject_group_tree, desktop_options,
+    flatten_subject_group_tree, is_descendant_or_self,
 };
 pub use render::{Figure, Renderer};
 pub use store::{ImportSummary, Store};
