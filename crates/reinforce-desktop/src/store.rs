@@ -10,10 +10,11 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use reinforce_core::content::Note;
+use reinforce_core::content::{Note, QuestionGroup};
 use reinforce_core::db::catalog::{ExamSetSummary, NoteOutline, SubjectSummary};
 use reinforce_core::db::{
     auth, catalog, content as content_store, quiz as quiz_store, study as study_store,
+    subject_groups as subject_groups_store,
 };
 use reinforce_core::primitives::CardStatus;
 use reinforce_core::proposal::{
@@ -22,7 +23,11 @@ use reinforce_core::proposal::{
 use reinforce_core::quiz::QuizSession;
 use reinforce_core::study::User;
 use reinforce_core::validation::Actor;
-use reinforce_core::{ContentHash, Database, ExamSetId, NoteId, ResourceId, Timestamp, UserId};
+use reinforce_core::weakness::{WeaknessReport, build_report_scoped};
+use reinforce_core::{
+    ContentHash, Database, ExamSetId, KnowledgeCardId, NoteId, QuestionCardId, QuestionGroupId,
+    ResourceId, SubjectGroup, SubjectGroupId, Timestamp, UserId,
+};
 use serde_json::Value;
 
 use crate::{Error, Result};
@@ -125,6 +130,94 @@ impl Store {
 
     pub fn exam_set(&self, id: &ExamSetId) -> Result<Option<reinforce_core::content::ExamSet>> {
         Ok(content_store::get_exam_set(self.connection(), id)?)
+    }
+
+    pub fn question_group(&self, id: &QuestionGroupId) -> Result<Option<QuestionGroup>> {
+        Ok(content_store::get_question_group(self.connection(), id)?)
+    }
+
+    pub fn topic_question_ids(
+        &self,
+        card_ids: &[KnowledgeCardId],
+        limit: usize,
+    ) -> Result<Vec<QuestionCardId>> {
+        Ok(quiz_store::topic_question_ids(
+            self.connection(),
+            card_ids,
+            limit,
+        )?)
+    }
+
+    pub fn subject_groups(&self) -> Result<Vec<SubjectGroup>> {
+        Ok(subject_groups_store::list_subject_groups(
+            self.connection(),
+        )?)
+    }
+
+    pub fn create_subject_group(
+        &self,
+        parent_id: Option<&SubjectGroupId>,
+        name: &str,
+        subjects: &[String],
+        sort_order: i32,
+        now: Timestamp,
+    ) -> Result<SubjectGroup> {
+        Ok(subject_groups_store::create_subject_group(
+            self.connection(),
+            parent_id,
+            name,
+            subjects,
+            sort_order,
+            now,
+        )?)
+    }
+
+    pub fn update_subject_group(
+        &self,
+        id: &SubjectGroupId,
+        parent_id: Option<&SubjectGroupId>,
+        name: &str,
+        subjects: &[String],
+        sort_order: i32,
+        now: Timestamp,
+    ) -> Result<SubjectGroup> {
+        Ok(subject_groups_store::update_subject_group(
+            self.connection(),
+            id,
+            parent_id,
+            name,
+            subjects,
+            sort_order,
+            now,
+        )?)
+    }
+
+    pub fn delete_subject_group(&self, id: &SubjectGroupId) -> Result<bool> {
+        Ok(subject_groups_store::delete_subject_group(
+            self.connection(),
+            id,
+        )?)
+    }
+
+    pub fn resolve_group_subjects(&self, group_id: &SubjectGroupId) -> Result<Vec<String>> {
+        Ok(subject_groups_store::resolve_group_subjects(
+            self.connection(),
+            group_id,
+        )?)
+    }
+
+    pub fn weakness_report(
+        &self,
+        user_id: &UserId,
+        limit: usize,
+        subjects: Option<&[String]>,
+    ) -> Result<WeaknessReport> {
+        Ok(build_report_scoped(
+            self.connection(),
+            user_id,
+            limit,
+            subjects,
+        )?)
     }
 
     /// Returns the first known user, creating a local learner on first launch.
