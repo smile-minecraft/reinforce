@@ -53,6 +53,16 @@ export function useTickSession(sessionId: string) {
   })
 }
 
+export function useSelectSessionQuestion(sessionId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (index: number) => api.selectSessionQuestion(sessionId, index),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: studyKeys.session(sessionId) })
+    },
+  })
+}
+
 export function useSubmitAnswer(sessionId: string) {
   return useMutation({
     mutationFn: (answer: QuizAnswer) => api.submitAnswer(sessionId, answer),

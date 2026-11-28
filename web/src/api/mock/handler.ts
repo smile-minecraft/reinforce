@@ -3,6 +3,8 @@ import type {
   AnswerRecord,
   BatchOperation,
   CreateSessionRequest,
+  CreateSubjectGroupRequest,
+  ExamSetMeta,
   ExportRequest,
   GradedAnswer,
   GradingOutcome,
@@ -10,15 +12,19 @@ import type {
   OutlineNode,
   Proposal,
   QuestionCard,
+  QuestionGroup,
   QuizAnswer,
   Score,
   SearchResult,
   SessionMode,
   SessionState,
+  SubjectGroup,
   UpdateNoteViewSettingsRequest,
   UpdateOperationRequest,
+  UpdateSubjectGroupRequest,
   ValidationErrorItem,
 } from '../types'
+import { isDescendantOrSelf, resolveGroupSubjects } from '../../workspace/workspaceLogic'
 import {
   MOCK_ANCHORS,
   MOCK_EDGES,
@@ -27,13 +33,17 @@ import {
   MOCK_KNOWLEDGE_CARDS,
   MOCK_NOTES,
   MOCK_PROPOSALS,
+  MOCK_QUESTION_GROUPS,
   MOCK_QUESTIONS,
   MOCK_RESOURCES,
+  MOCK_SUBJECT_GROUPS,
   MOCK_WEAKNESS,
 } from './data'
 
 const mockProposals: Proposal[] = MOCK_PROPOSALS.map((p) => structuredClone(p))
 const mockNotes: Note[] = MOCK_NOTES.map((n) => structuredClone(n))
+let mockSubjectGroups: SubjectGroup[] = MOCK_SUBJECT_GROUPS.map((g) => structuredClone(g))
+let mockGroupCounter = 100
 
 function collectMockOutlineCardIds(nodes: OutlineNode[]): Set<string> {
   const ids = new Set<string>()
@@ -473,12 +483,125 @@ export async function handleMockRequest(
       : MOCK_KNOWLEDGE_CARDS
     return { status: 200, body: items }
   }
+  const cardQuestionsMatch = pathname.match(/^\/api\/knowledge_cards\/([^/]+)\/questions$/)
+  if (cardQuestionsMatch && method === 'GET') {
+    const cardId = decodeURIComponent(cardQuestionsMatch[1])
+    const matched = MOCK_QUESTIONS.filter(
+      (q) =>
+        q.options.some((o) => o.linked_card_ids.includes(cardId)) ||
+        q.stem_blocks.some(
+          (b) =>
+            b.type === 'interactive_pins' &&
+            b.pins.some((p) => p.linked_card_id === cardId),
+        ),
+    )
+    const question_ids = matched.map((q) => q.id)
+    return { status: 200, body: { question_ids, count: question_ids.length } }
+  }
   const cardMatch = pathname.match(/^\/api\/knowledge_cards\/([^/]+)$/)
   if (cardMatch) {
     const found = MOCK_KNOWLEDGE_CARDS.find((c) => c.id === cardMatch[1])
     return found
       ? { status: 200, body: found }
       : { status: 404, body: { error: { code: 'not_found', message: 'knowledge card not found' } } }
+  }
+
+  // Subject Groups (Nested)
+  if (pathname === '/api/subject_groups' && method === 'GET') {
+    return { status: 200, body: structuredClone(mockSubjectGroups) }
+  }
+  if (pathname === '/api/subject_groups' && method === 'POST') {
+    const body = JSON.parse(String(init?.body ?? '{}')) as CreateSubjectGroupRequest
+    const name = (body.name ?? '').trim()
+    if (!name) {
+      return {
+        status: 400,
+        body: { error: { code: 'invalid_request', message: 'name cannot be empty' } },
+      }
+    }
+    if (body.parent_id && !mockSubjectGroups.some((g) => g.id === body.parent_id)) {
+      return {
+        status: 404,
+        body: { error: { code: 'not_found', message: 'parent subject group not found' } },
+      }
+    }
+    const now = new Date().toISOString()
+    const created: SubjectGroup = {
+      id: `01a21714-c98d-7000-8000-${String(++mockGroupCounter).padStart(12, '0')}`,
+      parent_id: body.parent_id ?? null,
+      name,
+      sort_order: body.sort_order ?? 0,
+      subjects: Array.from(new Set(body.subjects ?? [])).sort(),
+      created_at: now,
+      updated_at: now,
+    }
+    mockSubjectGroups = [...mockSubjectGroups, created]
+    return { status: 200, body: structuredClone(created) }
+  }
+  const subjectGroupMatch = pathname.match(/^\/api\/subject_groups\/([^/]+)$/)
+  if (subjectGroupMatch) {
+    const gid = decodeURIComponent(subjectGroupMatch[1])
+    const existing = mockSubjectGroups.find((g) => g.id === gid)
+    if (!existing) {
+      return {
+        status: 404,
+        body: { error: { code: 'not_found', message: 'subject group not found' } },
+      }
+    }
+    if (method === 'PATCH') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as UpdateSubjectGroupRequest
+      const nextParent = body.parent_id !== undefined ? body.parent_id : existing.parent_id
+      if (nextParent && isDescendantOrSelf(mockSubjectGroups, nextParent, gid)) {
+        return {
+          status: 400,
+          body: { error: { code: 'invalid_request', message: 'parent_id creates a cycle' } },
+        }
+      }
+      const updated: SubjectGroup = {
+        ...existing,
+        parent_id: nextParent,
+        name: body.name !== undefined ? body.name.trim() || existing.name : existing.name,
+        sort_order: body.sort_order !== undefined ? body.sort_order : existing.sort_order,
+        subjects:
+          body.subjects !== undefined
+            ? Array.from(new Set(body.subjects)).sort()
+            : existing.subjects,
+        updated_at: new Date().toISOString(),
+      }
+      mockSubjectGroups = mockSubjectGroups.map((g) => (g.id === gid ? updated : g))
+      return { status: 200, body: structuredClone(updated) }
+    }
+    if (method === 'DELETE') {
+      const toRemove = new Set<string>([gid])
+      let changed = true
+      while (changed) {
+        changed = false
+        for (const g of mockSubjectGroups) {
+          if (g.parent_id && toRemove.has(g.parent_id) && !toRemove.has(g.id)) {
+            toRemove.add(g.id)
+            changed = true
+          }
+        }
+      }
+      mockSubjectGroups = mockSubjectGroups.filter((g) => !toRemove.has(g.id))
+      return { status: 200, body: { ok: true } }
+    }
+  }
+
+  // Question Groups
+  if (pathname === '/api/question_groups' && method === 'GET') {
+    const examSetId = url.searchParams.get('exam_set_id')
+    const items = examSetId
+      ? MOCK_QUESTION_GROUPS.filter((g) => g.exam_set_id === examSetId)
+      : MOCK_QUESTION_GROUPS
+    return { status: 200, body: structuredClone(items) }
+  }
+  const qGroupMatch = pathname.match(/^\/api\/question_groups\/([^/]+)$/)
+  if (qGroupMatch && method === 'GET') {
+    const found = MOCK_QUESTION_GROUPS.find((g) => g.id === qGroupMatch[1])
+    return found
+      ? { status: 200, body: structuredClone(found) }
+      : { status: 404, body: { error: { code: 'not_found', message: 'question group not found' } } }
   }
 
   // Questions
@@ -569,15 +692,26 @@ export async function handleMockRequest(
 
   if (pathname === '/api/study/sessions' && method === 'POST') {
     const body = JSON.parse(String(init?.body ?? '{}')) as CreateSessionRequest
+    let allowedSubjects: Set<string> | null = null
+    if (body.subject_group_id) {
+      allowedSubjects = new Set(resolveGroupSubjects(mockSubjectGroups, body.subject_group_id))
+    } else if (body.subject) {
+      allowedSubjects = new Set([body.subject])
+    }
+
     let pool: QuestionCard[] = []
     if (body.mode === 'practical_exam') {
       pool = MOCK_QUESTIONS.filter((q) =>
         ['pin_identify', 'pin_locate', 'image_qa'].includes(q.question_type),
       )
     } else if (body.mode === 'full_exam') {
-      pool = MOCK_QUESTIONS.filter((q) => q.exam_set_id === body.exam_set_id).sort(
-        (a, b) => (a.question_no ?? 0) - (b.question_no ?? 0),
-      )
+      if (body.exam_set_id) {
+        pool = MOCK_QUESTIONS.filter((q) => q.exam_set_id === body.exam_set_id).sort(
+          (a, b) => (a.question_no ?? 0) - (b.question_no ?? 0),
+        )
+      } else {
+        pool = [...MOCK_QUESTIONS].sort((a, b) => (a.question_no ?? 999) - (b.question_no ?? 999))
+      }
     } else if (body.mode === 'topic_drill' && body.knowledge_card_ids?.length) {
       const wanted = new Set(body.knowledge_card_ids)
       pool = MOCK_QUESTIONS.filter((q) =>
@@ -593,6 +727,10 @@ export async function handleMockRequest(
       pool = MOCK_QUESTIONS.slice(0, 3)
     } else {
       pool = MOCK_QUESTIONS.slice(0, body.options?.question_limit ?? 6)
+    }
+
+    if (allowedSubjects) {
+      pool = pool.filter((q) => allowedSubjects!.has(q.subject))
     }
 
     const id = `mock-session-${sessionCounter++}`
@@ -643,6 +781,26 @@ export async function handleMockRequest(
         s.state.status === 'expired'
           ? s.questions[s.state.index]
           : null
+      const gradedIndices = new Set(s.graded.map((g) => g.record.index))
+      const question_groups: Record<string, QuestionGroup> = {}
+      const exam_sets: Record<string, ExamSetMeta> = {}
+      for (const item of s.questions) {
+        if (item.question_group_id && !question_groups[item.question_group_id]) {
+          const found = MOCK_QUESTION_GROUPS.find((g) => g.id === item.question_group_id)
+          if (found) question_groups[found.id] = structuredClone(found)
+        }
+        if (item.exam_set_id && !exam_sets[item.exam_set_id]) {
+          const found = MOCK_EXAM_SETS.find((e) => e.id === item.exam_set_id)
+          if (found) {
+            exam_sets[found.id] = {
+              id: found.id,
+              title: found.title,
+              exam_year: found.exam_year,
+              subject: found.subject,
+            }
+          }
+        }
+      }
       return {
         status: 200,
         body: {
@@ -651,6 +809,39 @@ export async function handleMockRequest(
           state: toWireState(s.state),
           question: q ? stripSecretFields(q) : null,
           question_count: s.questions.length,
+          questions: s.questions.map((item, idx) =>
+            gradedIndices.has(idx) ? structuredClone(item) : stripSecretFields(item),
+          ),
+          question_groups,
+          exam_sets,
+          answers: structuredClone(s.answers),
+          graded: structuredClone(s.graded),
+        },
+      }
+    }
+
+    if (action === 'select' && method === 'POST') {
+      const payload = JSON.parse(String(init?.body ?? '{}')) as { index?: number }
+      const targetIndex = Number(payload.index)
+      if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= s.questions.length) {
+        return {
+          status: 400,
+          body: { error: { code: 'invalid_request', message: 'invalid question index' } },
+        }
+      }
+      if (s.state.status === 'in_progress') {
+        s.state = { status: 'in_progress', index: targetIndex }
+        s.questionStartedAt = Date.now()
+        s.questionElapsedMs = 0
+      } else if (s.state.status === 'paused') {
+        s.state = { status: 'paused', index: targetIndex }
+      }
+      const nextQ = s.questions[targetIndex] ?? null
+      return {
+        status: 200,
+        body: {
+          state: toWireState(s.state),
+          question: nextQ ? stripSecretFields(nextQ) : null,
         },
       }
     }
@@ -728,8 +919,15 @@ export async function handleMockRequest(
         }
       }
       const payload = JSON.parse(String(init?.body ?? '{}')) as QuizAnswer
-      const idx = s.state.index
+      const explicitIndex = typeof payload.index === 'number'
+      const idx = explicitIndex ? payload.index! : s.state.index
       const question = s.questions[idx]
+      if (!question) {
+        return {
+          status: 400,
+          body: { error: { code: 'invalid_request', message: 'question index out of range' } },
+        }
+      }
       const now = Date.now()
       const durationMs = s.questionElapsedMs + (now - s.questionStartedAt)
       const record: AnswerRecord = {
@@ -742,19 +940,28 @@ export async function handleMockRequest(
         timed_out: false,
       }
       const outcome = gradeQuestion(question, payload, s.pinRadius, s.affectsScheduling)
-      s.answers.push(record)
+      const existingAnsIdx = s.answers.findIndex((a) => a.index === idx)
+      if (existingAnsIdx >= 0) s.answers[existingAnsIdx] = record
+      else s.answers.push(record)
+
       if (!s.deferGrading) {
-        s.graded.push({ record, outcome })
+        const existingGradedIdx = s.graded.findIndex((g) => g.record.index === idx)
+        if (existingGradedIdx >= 0) s.graded[existingGradedIdx] = { record, outcome }
+        else s.graded.push({ record, outcome })
       }
-      const next = idx + 1
-      s.state = next < s.questions.length ? { status: 'in_progress', index: next } : { status: 'submitted' }
-      s.questionStartedAt = now
-      s.questionElapsedMs = 0
+      if (!explicitIndex) {
+        const next = idx + 1
+        s.state = next < s.questions.length ? { status: 'in_progress', index: next } : { status: 'submitted' }
+        s.questionStartedAt = now
+        s.questionElapsedMs = 0
+      }
       return {
         status: 200,
         body: {
           state: toWireState(s.state),
+          index: idx,
           grading: s.deferGrading ? null : outcome,
+          revealed_question: s.deferGrading ? null : structuredClone(question),
         },
       }
     }

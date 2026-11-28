@@ -1,147 +1,175 @@
-import { ArrowLeft, BookOpenText, LayoutGrid, ListTree } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import {
+  Check,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  FileOutput,
+  FileText,
+  RotateCcw,
+} from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, useParams, useSearchParams } from 'react-router'
-import { useAuthStatus } from '../api/hooks/useAuth'
+import { useParams } from 'react-router'
+import { ApiError } from '../api/client'
 import { useKnowledgeCardsByIds } from '../api/hooks/useKnowledgeCards'
-import { useNote, useNoteEdges } from '../api/hooks/useNotes'
+import { useNote } from '../api/hooks/useNotes'
+import { useCreateSession } from '../api/hooks/useStudySession'
 import type { KnowledgeCard, OutlineNode } from '../api/types'
 import { MarkdownBlock } from '../blocks/MarkdownBlock'
-import { NoteCanvasView } from '../canvas/NoteCanvasView'
 import { AnchorDrawer } from '../components/AnchorDrawer'
 import { KnowledgeCardView } from '../components/KnowledgeCardView'
+import { saveSessionConfig } from '../study/sessionConfig'
+import { RightSidebarSlot } from '../workspace/WorkspaceContext'
+import { useWorkspace } from '../workspace/workspaceContextValue'
 
-function collectCardIds(nodes: OutlineNode[]): string[] {
-  const ids: string[] = []
-  for (const node of nodes) {
-    if (node.type === 'card_ref') ids.push(node.card_id)
-    else ids.push(...collectCardIds(node.children))
+const CHECKED_STORAGE_PREFIX = 'reinforce:noteChecked:v1:'
+
+function loadCheckedSet(noteId: string | undefined): Set<string> {
+  if (!noteId || typeof window === 'undefined') return new Set()
+  try {
+    const raw = window.localStorage.getItem(`${CHECKED_STORAGE_PREFIX}${noteId}`)
+    if (!raw) return new Set()
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? new Set(parsed.filter((x) => typeof x === 'string')) : new Set()
+  } catch {
+    return new Set()
   }
-  return ids
 }
 
-interface TocItem {
+function saveCheckedSet(noteId: string | undefined, checked: Set<string>) {
+  if (!noteId || typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(
+      `${CHECKED_STORAGE_PREFIX}${noteId}`,
+      JSON.stringify(Array.from(checked)),
+    )
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+interface OutlineCardEntry {
+  key: string
+  cardId: string
+  sectionId: string
+  sectionHeading: string
+}
+
+interface ChapterGroup {
   id: string
   heading: string
+  introMarkdown: string | null
   depth: number
+  cards: OutlineCardEntry[]
 }
 
-function collectToc(nodes: OutlineNode[], prefix = 'sec', depth = 0): TocItem[] {
-  const items: TocItem[] = []
-  nodes.forEach((node, idx) => {
-    if (node.type === 'section') {
-      const id = `${prefix}-${idx}`
-      items.push({ id, heading: node.heading, depth })
-      items.push(...collectToc(node.children, id, depth + 1))
+function flattenOutlineIntoChapters(
+  nodes: OutlineNode[],
+  fallbackHeading: string,
+): { chapters: ChapterGroup[]; allCardIds: string[] } {
+  const chapters: ChapterGroup[] = []
+  const allCardIds: string[] = []
+  let orphanCards: OutlineCardEntry[] = []
+
+  function flushOrphans() {
+    if (orphanCards.length > 0) {
+      chapters.push({
+        id: `sec-root-${chapters.length}`,
+        heading: fallbackHeading,
+        introMarkdown: null,
+        depth: 0,
+        cards: orphanCards,
+      })
+      orphanCards = []
     }
-  })
-  return items
-}
+  }
 
-function OutlineBranch({
-  nodes,
-  cardMap,
-  onOpenAnchor,
-  prefix = 'sec',
-  depth = 0,
-}: {
-  nodes: OutlineNode[]
-  cardMap: Map<string, { card?: KnowledgeCard; loading: boolean; error: boolean }>
-  onOpenAnchor: (anchorId: string) => void
-  prefix?: string
-  depth?: number
-}) {
-  const { t } = useTranslation()
+  function walk(list: OutlineNode[], prefix: string, depth: number) {
+    list.forEach((node, idx) => {
+      if (node.type === 'section') {
+        flushOrphans()
+        const sectionId = `${prefix}-${idx}`
+        const directCards: OutlineCardEntry[] = []
+        const nestedSections: OutlineNode[] = []
 
-  return (
-    <div className="space-y-5">
-      {nodes.map((node, idx) => {
-        if (node.type === 'section') {
-          const sectionId = `${prefix}-${idx}`
-          return (
-            <section key={sectionId} id={sectionId} className="scroll-mt-20 space-y-4">
-              <div className="border-b border-border pb-2">
-                {depth === 0 ? (
-                  <h2 className="text-xl font-semibold tracking-tight text-ink">{node.heading}</h2>
-                ) : (
-                  <h3 className="text-lg font-semibold tracking-tight text-ink">{node.heading}</h3>
-                )}
-                {node.intro_markdown && (
-                  <div className="mt-2">
-                    <MarkdownBlock text={node.intro_markdown} className="text-ink-muted" />
-                  </div>
-                )}
-              </div>
+        node.children.forEach((child, cIdx) => {
+          if (child.type === 'card_ref') {
+            allCardIds.push(child.card_id)
+            directCards.push({
+              key: `${sectionId}-card-${cIdx}-${child.card_id}`,
+              cardId: child.card_id,
+              sectionId,
+              sectionHeading: node.heading,
+            })
+          } else {
+            nestedSections.push(child)
+          }
+        })
 
-              <div className={depth > 0 ? 'pl-3 sm:pl-5 border-l border-border' : ''}>
-                <OutlineBranch
-                  nodes={node.children}
-                  cardMap={cardMap}
-                  onOpenAnchor={onOpenAnchor}
-                  prefix={sectionId}
-                  depth={depth + 1}
-                />
-              </div>
-            </section>
-          )
+        chapters.push({
+          id: sectionId,
+          heading: node.heading,
+          introMarkdown: node.intro_markdown,
+          depth,
+          cards: directCards,
+        })
+
+        if (nestedSections.length > 0) {
+          walk(nestedSections, sectionId, depth + 1)
         }
+      } else {
+        allCardIds.push(node.card_id)
+        orphanCards.push({
+          key: `${prefix}-card-${idx}-${node.card_id}`,
+          cardId: node.card_id,
+          sectionId: `${prefix}-root`,
+          sectionHeading: fallbackHeading,
+        })
+      }
+    })
+  }
 
-        const entry = cardMap.get(node.card_id)
-        if (!entry || entry.loading) {
-          return (
-            <div
-              key={`${prefix}-card-${idx}-${node.card_id}`}
-              className="rounded-xl border border-border bg-surface p-5 text-sm text-ink-muted"
-            >
-              {t('common.loading')}
-            </div>
-          )
-        }
-        if (entry.error || !entry.card) {
-          return (
-            <div
-              key={`${prefix}-card-${idx}-${node.card_id}`}
-              className="rounded-xl border border-bad/40 bg-bad-soft p-4 text-sm text-bad"
-            >
-              {t('reading.missingCard')}
-            </div>
-          )
-        }
+  walk(nodes, 'sec', 0)
+  flushOrphans()
 
-        return (
-          <KnowledgeCardView
-            key={`${prefix}-card-${idx}-${node.card_id}`}
-            card={entry.card}
-            onOpenAnchor={onOpenAnchor}
-            showCardLink
-          />
-        )
-      })}
-    </div>
-  )
+  return { chapters, allCardIds }
 }
 
 export function NotePage() {
   const { id } = useParams()
-  const [searchParams, setSearchParams] = useSearchParams()
   const { t } = useTranslation()
+  const { openTab, setTabTitle, setMobileRightOpen } = useWorkspace()
   const { data: note, isLoading, error } = useNote(id)
-  const { data: edges = [] } = useNoteEdges(id)
-  const { data: authStatus } = useAuthStatus()
+  const createSession = useCreateSession()
+
   const [activeAnchorId, setActiveAnchorId] = useState<string | null>(null)
+  const [checkedByNote, setCheckedByNote] = useState<Record<string, Set<string>>>(() =>
+    id ? { [id]: loadCheckedSet(id) } : {},
+  )
+  const [showChecked, setShowChecked] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
+  const [openingCardId, setOpeningCardId] = useState<string | null>(null)
 
-  const viewMode = searchParams.get('view') === 'canvas' ? 'canvas' : 'reading'
-  const isOwner = authStatus?.auth_mode === 'single' || authStatus?.role === 'owner'
+  const checkedKeys = useMemo(
+    () => (id ? (checkedByNote[id] ?? loadCheckedSet(id)) : new Set<string>()),
+    [id, checkedByNote],
+  )
 
-  function setViewMode(next: 'reading' | 'canvas') {
-    const params = new URLSearchParams(searchParams)
-    if (next === 'canvas') params.set('view', 'canvas')
-    else params.delete('view')
-    setSearchParams(params, { replace: true })
-  }
+  useEffect(() => {
+    if (id && note?.title) {
+      setTabTitle(`note:${id}`, note.title)
+    }
+  }, [id, note?.title, setTabTitle])
 
-  const cardIds = useMemo(() => (note ? collectCardIds(note.outline) : []), [note])
-  const uniqueCardIds = useMemo(() => Array.from(new Set(cardIds)), [cardIds])
+  const { chapters, allCardIds } = useMemo(
+    () =>
+      note
+        ? flattenOutlineIntoChapters(note.outline, note.title)
+        : { chapters: [], allCardIds: [] },
+    [note],
+  )
+
+  const uniqueCardIds = useMemo(() => Array.from(new Set(allCardIds)), [allCardIds])
   const cardQueries = useKnowledgeCardsByIds(uniqueCardIds)
 
   const cardMap = useMemo(() => {
@@ -157,20 +185,100 @@ export function NotePage() {
     return map
   }, [uniqueCardIds, cardQueries])
 
-  const toc = useMemo(() => (note ? collectToc(note.outline) : []), [note])
+  const allTags = useMemo(() => {
+    const tags = new Set<string>()
+    if (note) tags.add(note.subject)
+    for (const cid of uniqueCardIds) {
+      const card = cardMap.get(cid)?.card
+      if (card) {
+        for (const topic of card.topics) tags.add(topic)
+      }
+    }
+    return Array.from(tags)
+  }, [note, uniqueCardIds, cardMap])
+
+  const allEntries = useMemo(() => chapters.flatMap((ch) => ch.cards), [chapters])
+  const totalCount = allEntries.length
+  const checkedCount = useMemo(
+    () => allEntries.filter((entry) => checkedKeys.has(entry.key)).length,
+    [allEntries, checkedKeys],
+  )
+  const allDismissed = totalCount > 0 && checkedCount >= totalCount && !showChecked
+
+  function toggleChecked(entryKey: string) {
+    if (!id) return
+    setCheckedByNote((prev) => {
+      const current = prev[id] ?? loadCheckedSet(id)
+      const next = new Set(current)
+      if (next.has(entryKey)) next.delete(entryKey)
+      else next.add(entryKey)
+      saveCheckedSet(id, next)
+      return { ...prev, [id]: next }
+    })
+  }
+
+  function resetChecked() {
+    if (!id) return
+    const empty = new Set<string>()
+    saveCheckedSet(id, empty)
+    setCheckedByNote((prev) => ({ ...prev, [id]: empty }))
+  }
+
+  function scrollToCard(entryKey: string, cardId: string) {
+    if (checkedKeys.has(entryKey) && !showChecked) {
+      toggleChecked(entryKey)
+    }
+    setMobileRightOpen(false)
+    window.requestAnimationFrame(() => {
+      const el = document.getElementById(`note-entry-${entryKey}`) ?? document.getElementById(`card-${cardId}`)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
+
+  async function openRelatedQuestionsTab(card: KnowledgeCard) {
+    setReviewError(null)
+    setOpeningCardId(card.id)
+    try {
+      const res = await createSession.mutateAsync({
+        mode: 'topic_drill',
+        knowledge_card_ids: [card.id],
+      })
+      if (res.question_count === 0) {
+        setReviewError(`${card.title}：${t('workspace.sidebar.noRelatedQuestions')}`)
+        return
+      }
+      const cfg = {
+        mode: 'topic_drill' as const,
+        secondsPerQuestion: null,
+        totalTimeSecs: null,
+      }
+      saveSessionConfig(res.session_id, cfg)
+      openTab({
+        id: `session:${res.session_id}`,
+        kind: 'session',
+        path: `/study/session/${encodeURIComponent(res.session_id)}`,
+        title: t('workspace.tabs.reviewWithTitle', { title: card.title }),
+        navState: cfg,
+      })
+    } catch (err) {
+      setReviewError(err instanceof ApiError ? err.message : t('common.errorGeneric'))
+    } finally {
+      setOpeningCardId(null)
+    }
+  }
 
   if (isLoading) {
-    return <div className="mx-auto max-w-4xl px-4 py-12 text-center text-sm text-ink-muted">{t('common.loading')}</div>
+    return (
+      <div className="flex flex-1 items-center justify-center text-sm text-ink-muted">
+        {t('common.loading')}
+      </div>
+    )
   }
 
   if (error || !note) {
     return (
-      <div className="mx-auto max-w-4xl px-4 py-8">
-        <Link to="/" className="inline-flex min-h-11 items-center gap-1.5 text-sm text-accent">
-          <ArrowLeft className="h-4 w-4" />
-          <span>{t('common.back')}</span>
-        </Link>
-        <div className="mt-4 rounded-xl bg-bad-soft p-4 text-sm text-bad">
+      <div className="p-6">
+        <div className="rounded-xl bg-bad-soft p-4 text-sm text-bad">
           {error instanceof Error ? error.message : t('common.errorGeneric')}
         </div>
       </div>
@@ -178,117 +286,269 @@ export function NotePage() {
   }
 
   return (
-    <div
-      className={`mx-auto px-4 py-5 sm:px-6 lg:py-6 ${
-        viewMode === 'canvas' ? 'max-w-[1440px]' : 'max-w-6xl lg:py-8'
-      }`}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <Link
-          to="/"
-          className="inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-ink-muted hover:text-ink"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          <span>{t('nav.reading')}</span>
-        </Link>
-
-        {/* Reading / Canvas View Switcher */}
-        <div
-          role="tablist"
-          aria-label={t('reading.viewModeLabel')}
-          className="inline-flex items-center rounded-xl border border-border bg-surface p-1 shadow-xs"
-        >
-          <button
-            type="button"
-            role="tab"
-            aria-selected={viewMode === 'reading'}
-            onClick={() => setViewMode('reading')}
-            className={`inline-flex min-h-10 items-center gap-1.5 rounded-lg px-3.5 text-xs font-medium transition-colors ${
-              viewMode === 'reading'
-                ? 'bg-accent-soft text-accent'
-                : 'text-ink-muted hover:bg-subtle hover:text-ink'
-            }`}
-          >
-            <BookOpenText className="h-4 w-4" />
-            <span>{t('reading.viewReading')}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={viewMode === 'canvas'}
-            onClick={() => setViewMode('canvas')}
-            className={`inline-flex min-h-10 items-center gap-1.5 rounded-lg px-3.5 text-xs font-medium transition-colors ${
-              viewMode === 'canvas'
-                ? 'bg-accent-soft text-accent'
-                : 'text-ink-muted hover:bg-subtle hover:text-ink'
-            }`}
-          >
-            <LayoutGrid className="h-4 w-4" />
-            <span>{t('reading.viewCanvas')}</span>
-          </button>
-        </div>
-      </div>
-
-      {viewMode === 'canvas' ? (
-        <div className="mt-3 space-y-4">
-          <header className="flex flex-wrap items-baseline gap-2.5">
-            <span className="inline-block rounded bg-subtle px-2.5 py-0.5 text-xs font-medium text-ink-muted">
-              {note.subject}
-            </span>
-            <h1 className="text-xl font-bold tracking-tight text-ink sm:text-2xl">{note.title}</h1>
-          </header>
-
-          <NoteCanvasView
-            note={note}
-            cardMap={cardMap}
-            edges={edges}
-            isOwner={isOwner}
-            onOpenAnchor={setActiveAnchorId}
-          />
-        </div>
-      ) : (
-        <div className="mt-3 lg:grid lg:grid-cols-[minmax(0,1fr)_220px] lg:gap-8">
-          {/* Main Reading Column */}
-          <div className="min-w-0 max-w-3xl space-y-6">
-            <header className="space-y-2">
-              <span className="inline-block rounded bg-subtle px-2.5 py-0.5 text-xs font-medium text-ink-muted">
-                {note.subject}
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {/* Right Sidebar: Document Outline with Circular Knowledge-Point Checkboxes (Sketch 2) */}
+      <RightSidebarSlot>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="shrink-0 border-b border-border px-3.5 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-ink">
+                <FileText className="h-3.5 w-3.5 text-accent" />
+                <span>{t('workspace.sidebar.documentList')}</span>
+              </div>
+              <span className="rounded-full bg-subtle px-2 py-0.5 font-mono text-[10px] font-medium text-ink-muted">
+                {checkedCount}/{totalCount}
               </span>
-              <h1 className="text-2xl font-bold tracking-tight text-ink sm:text-3xl">{note.title}</h1>
-            </header>
+            </div>
 
-            <OutlineBranch
-              nodes={note.outline}
-              cardMap={cardMap}
-              onOpenAnchor={setActiveAnchorId}
-            />
+            {totalCount > 0 && (
+              <div className="mt-2.5 flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setShowChecked((v) => !v)}
+                  className={`inline-flex h-7 flex-1 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium transition-colors ${
+                    showChecked
+                      ? 'border-accent bg-accent-soft text-accent'
+                      : 'border-border bg-surface text-ink-muted hover:text-ink'
+                  }`}
+                >
+                  {showChecked ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                  <span className="truncate">
+                    {showChecked
+                      ? t('workspace.sidebar.hideChecked')
+                      : t('workspace.sidebar.showChecked')}
+                  </span>
+                </button>
+
+                {checkedCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={resetChecked}
+                    title={t('workspace.sidebar.resetChecked')}
+                    className="inline-flex h-7 items-center justify-center gap-1 rounded-lg border border-border bg-surface px-2 text-[11px] font-medium text-ink-muted hover:border-accent hover:text-accent"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    <span>{t('workspace.sidebar.resetChecked')}</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
-          {/* Sticky Outline TOC on Desktop / iPad Landscape */}
-          {toc.length > 0 && (
-            <aside className="hidden lg:block">
-              <div className="sticky top-8 rounded-xl border border-border bg-surface p-4">
-                <div className="mb-2.5 flex items-center gap-1.5 text-xs font-semibold text-ink-muted">
-                  <ListTree className="h-3.5 w-3.5" />
-                  <span>{t('reading.outline')}</span>
+          <div className="rf-pane-scroll flex-1 space-y-3 overflow-y-auto p-3">
+            {chapters.map((chapter) => (
+              <div key={chapter.id} className="space-y-1">
+                <div
+                  style={{ paddingLeft: `${chapter.depth * 10}px` }}
+                  className="px-1.5 text-[11px] font-semibold tracking-tight text-ink-muted"
+                >
+                  {chapter.heading}
                 </div>
-                <ul className="space-y-1">
-                  {toc.map((item) => (
-                    <li key={item.id} style={{ paddingLeft: `${item.depth * 12}px` }}>
-                      <a
-                        href={`#${item.id}`}
-                        className="block rounded-md px-2 py-1.5 text-xs text-ink-muted hover:bg-subtle hover:text-ink"
+
+                <ul className="space-y-0.5">
+                  {chapter.cards.map((entry, idx) => {
+                    const card = cardMap.get(entry.cardId)?.card
+                    const isChecked = checkedKeys.has(entry.key)
+                    const label = card?.title ?? `${t('workspace.tabs.card')} ${idx + 1}`
+
+                    return (
+                      <li
+                        key={entry.key}
+                        style={{ paddingLeft: `${chapter.depth * 10 + 4}px` }}
+                        className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-subtle"
                       >
-                        {item.heading}
-                      </a>
-                    </li>
-                  ))}
+                        <button
+                          type="button"
+                          onClick={() => scrollToCard(entry.key, entry.cardId)}
+                          className={`flex min-w-0 flex-1 items-center gap-2 text-left text-xs transition-opacity ${
+                            isChecked
+                              ? 'text-ink-muted line-through opacity-55'
+                              : 'font-medium text-ink'
+                          }`}
+                        >
+                          <span
+                            className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                              isChecked ? 'bg-accent/50' : 'border border-ink-muted/60 bg-transparent'
+                            }`}
+                          />
+                          <span className="truncate">{label}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          role="checkbox"
+                          aria-checked={isChecked}
+                          aria-label={label}
+                          onClick={() => toggleChecked(entry.key)}
+                          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-all duration-200 ${
+                            isChecked
+                              ? 'scale-105 border-accent bg-accent text-white'
+                              : 'border-ink-muted/50 bg-surface text-transparent hover:border-accent'
+                          }`}
+                        >
+                          <Check className="h-3 w-3 stroke-[2.5]" />
+                        </button>
+                      </li>
+                    )
+                  })}
                 </ul>
               </div>
-            </aside>
-          )}
+            ))}
+          </div>
         </div>
-      )}
+      </RightSidebarSlot>
+
+      {/* Center Frame Top Title + Tags Header (Sketch 2) */}
+      <header className="shrink-0 border-b border-border bg-surface px-5 py-4 sm:px-8">
+        <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2.5">
+            <h1 className="text-xl font-bold tracking-tight text-ink sm:text-2xl">{note.title}</h1>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {allTags.map((tag) => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center rounded-full border border-border bg-canvas px-3 py-0.5 text-xs font-medium text-ink-muted"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() =>
+              openTab({
+                id: 'export',
+                kind: 'export',
+                path: '/export',
+                title: t('workspace.tabs.export'),
+              })
+            }
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-canvas px-2.5 text-xs font-medium text-ink-muted hover:border-accent hover:text-accent"
+          >
+            <FileOutput className="h-3.5 w-3.5" />
+            <span>{t('nav.exportShort')}</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Center Frame Scrollable Linear Note Content */}
+      <div className="rf-pane-scroll flex-1 overflow-y-auto px-5 py-6 sm:px-8">
+        <div className="mx-auto max-w-3xl space-y-6">
+          {reviewError && (
+            <div className="rounded-xl border border-warn/40 bg-warn-soft px-4 py-3 text-xs font-medium text-warn">
+              {reviewError}
+            </div>
+          )}
+
+          {allDismissed && (
+            <section className="rounded-2xl border border-accent/30 bg-accent-soft/50 p-8 text-center">
+              <CheckCircle2 className="mx-auto h-9 w-9 text-accent" />
+              <h2 className="mt-3 text-base font-semibold text-ink">
+                {t('workspace.sidebar.allCheckedTitle')}
+              </h2>
+              <p className="mt-1 text-xs text-ink-muted">
+                {t('workspace.sidebar.allCheckedDesc')}
+              </p>
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={resetChecked}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-accent px-4 text-xs font-medium text-white hover:bg-accent-hover"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  <span>{t('workspace.sidebar.resetChecked')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowChecked(true)}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border bg-surface px-4 text-xs font-medium text-ink hover:bg-subtle"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  <span>{t('workspace.sidebar.showChecked')}</span>
+                </button>
+              </div>
+            </section>
+          )}
+
+          {chapters.map((chapter) => {
+            const visibleCards = chapter.cards.filter(
+              (entry) => showChecked || !checkedKeys.has(entry.key),
+            )
+            const chapterHidden =
+              chapter.cards.length > 0 && visibleCards.length === 0 && !showChecked
+
+            return (
+              <section
+                key={chapter.id}
+                id={chapter.id}
+                className="rf-collapse-item"
+                data-collapsed={chapterHidden}
+              >
+                <div className="rf-collapse-inner">
+                  <div className="mb-2 border-b border-border pb-2">
+                    {chapter.depth === 0 ? (
+                      <h2 className="text-base font-semibold tracking-tight text-accent">
+                        {chapter.heading}
+                      </h2>
+                    ) : (
+                      <h3 className="text-sm font-semibold tracking-tight text-ink">
+                        {chapter.heading}
+                      </h3>
+                    )}
+                    {chapter.introMarkdown && (
+                      <div className="mt-1.5">
+                        <MarkdownBlock text={chapter.introMarkdown} className="text-sm text-ink-muted" />
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    {chapter.cards.map((entry) => {
+                      const isChecked = checkedKeys.has(entry.key)
+                      const isCollapsed = isChecked && !showChecked
+                      const queryEntry = cardMap.get(entry.cardId)
+
+                      return (
+                        <div
+                          key={entry.key}
+                          id={`note-entry-${entry.key}`}
+                          className="rf-collapse-item scroll-mt-4"
+                          data-collapsed={isCollapsed}
+                        >
+                          <div className="rf-collapse-inner">
+                            {!queryEntry || queryEntry.loading ? (
+                              <div className="border-b border-border py-5 text-xs text-ink-muted">
+                                {t('common.loading')}
+                              </div>
+                            ) : queryEntry.error || !queryEntry.card ? (
+                              <div className="my-3 rounded-xl border border-bad/40 bg-bad-soft p-4 text-xs text-bad">
+                                {t('reading.missingCard')}
+                              </div>
+                            ) : (
+                              <KnowledgeCardView
+                                card={queryEntry.card}
+                                variant="linear"
+                                checked={isChecked}
+                                onToggleChecked={() => toggleChecked(entry.key)}
+                                onOpenAnchor={setActiveAnchorId}
+                                onOpenRelatedQuestions={(c) => void openRelatedQuestionsTab(c)}
+                                openingQuestions={openingCardId === queryEntry.card.id}
+                                showCardLink
+                              />
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </section>
+            )
+          })}
+        </div>
+      </div>
 
       <AnchorDrawer anchorId={activeAnchorId} onClose={() => setActiveAnchorId(null)} />
     </div>
