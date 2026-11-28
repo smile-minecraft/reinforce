@@ -52,13 +52,7 @@ export function useGraphNeighbors(
 export function useCardQuestions(id: string | undefined) {
   return useQuery({
     queryKey: cardKeys.questions(id ?? ''),
-    queryFn: async () => {
-      try {
-        return await api.listCardQuestions(id!)
-      } catch {
-        return { question_ids: [], count: 0 }
-      }
-    },
+    queryFn: () => api.listCardQuestions(id!),
     enabled: Boolean(id),
     staleTime: 60_000,
   })
